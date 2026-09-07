@@ -1,0 +1,27 @@
+name: Feature request
+description: Suggest a decision-support, performance or UX improvement
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Market Edge will remain manual decision support. Requests for automatic buying, selling, bidding, form submission or CAPTCHA bypass will not be implemented.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / opportunity
+      description: What Torn workflow would this improve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: value
+    attributes:
+      label: Why it is useful
+      description: Describe expected impact on decision quality, speed, reliability or UX.
