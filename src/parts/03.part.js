@@ -2,22 +2,44 @@
       return promise;
     }
 
+    cancelQueuedListRequests() {
+      this.scheduler.cancelQueued(
+        (job) => job.scope === "list" || job.scope === "list-meta",
+        "List changed before this API request started."
+      );
+    }
+
+    cooldownRemainingMs() {
+      return this.scheduler.cooldownRemainingMs();
+    }
+
     async testKey() {
-      const data = await this.request("/user/basic", { cacheMs: 0, priority: 100 });
+      const data = await this.request("/user/basic", {
+        cacheMs: 0,
+        priority: 100,
+        scope: "control"
+      });
       const playerId = asInt(data?.profile?.id ?? data?.basic?.id ?? data?.player_id ?? data?.id, 0);
       if (playerId) Store.set(STORAGE_KEYS.playerId, playerId);
       return { ok: true, playerId: playerId || null, data };
     }
 
-    async itemMarket(itemId, { limit = API_LIST_LIMIT, priority = 0 } = {}) {
+    async itemMarket(itemId, { limit = API_LIST_LIMIT, priority = 0, scope = "general" } = {}) {
       const safeLimit = clamp(asInt(limit, API_LIST_LIMIT), 1, API_DEEP_LIMIT);
-      return this.request(`/market/${asInt(itemId)}/itemmarket?limit=${safeLimit}&offset=0`, { priority });
+      return this.request(
+        `/market/${asInt(itemId)}/itemmarket?limit=${safeLimit}&offset=0`,
+        { priority, scope }
+      );
     }
 
-    async items(itemIds, { priority = 120 } = {}) {
+    async items(itemIds, { priority = 120, scope = "general" } = {}) {
       const ids = Array.from(new Set(itemIds.map((id) => asInt(id)).filter(Boolean))).slice(0, 100);
       if (!ids.length) return { items: [] };
-      return this.request(`/torn/${ids.join(",")}/items`, { cacheMs: ONE_DAY_MS, priority });
+      return this.request(`/torn/${ids.join(",")}/items`, {
+        cacheMs: ONE_DAY_MS,
+        priority,
+        scope
+      });
     }
   }
 
@@ -57,7 +79,7 @@
     });
     if (!missing.length) return result;
 
-    const payload = await api.items(missing, { priority: 150 });
+    const payload = await api.items(missing, { priority: 150, scope: "list-meta" });
     const rows = Array.isArray(payload?.items) ? payload.items : [];
     rows.forEach((item) => {
       const meta = normalizeItemMeta(item);
@@ -92,7 +114,12 @@
     return { snapshot, historyStats: calculateHistoryStats(history) };
   }
 
-  async function loadSnapshot(itemId, { limit = API_LIST_LIMIT, priority = 0, onCached = null } = {}) {
+  async function loadSnapshot(itemId, {
+    limit = API_LIST_LIMIT,
+    priority = 0,
+    onCached = null,
+    scope = "general"
+  } = {}) {
     const persisted = Store.snapshot(itemId);
     const persistedState = snapshotCacheState(persisted);
     if (persisted && typeof onCached === "function") {
@@ -107,7 +134,7 @@
       return { ...snapshotBundle(persisted), cacheState: persistedState, source: "persistent-cache" };
     }
 
-    const payload = await api.itemMarket(itemId, { limit, priority });
+    const payload = await api.itemMarket(itemId, { limit, priority, scope });
     const snapshot = normalizeMarketResponse(itemId, payload);
     Store.saveSnapshot(snapshot);
     Store.appendHistory(snapshot, settings);
