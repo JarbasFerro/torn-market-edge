@@ -1049,6 +1049,9 @@
       const match = combined.match(pattern);
       if (match) return asInt(match[1]);
     }
+    // Torn's current Item Market also exposes the selected item ID through
+    // aria-controls="wai-itemInfo-..." controls. This is deliberately a
+    // visible-DOM fallback rather than an extra Torn request.
     const controls = document.querySelector('button[aria-controls^="wai-itemInfo-"]')?.getAttribute("aria-controls") || "";
     const ids = controls.match(/\d+/g);
     return ids?.length ? asInt(ids[ids.length - 1]) : null;
@@ -1121,6 +1124,10 @@
   function inventoryListMarker() {
     if (detectSurface() !== "inventory") return null;
 
+    // On Torn's Items page, the equipped paper-doll/loadout appears before the
+    // actual inventory list. Prefer the visible "Your Items - <category>"
+    // heading as a structural boundary so only inventory rows below it are
+    // analyzed.
     const selectors = "h1,h2,h3,h4,h5,h6,div,span";
     const candidates = [];
     document.querySelectorAll(selectors).forEach((element) => {
@@ -1148,16 +1155,21 @@
     if (detectSurface() !== "inventory") return true;
     if (!card || card.closest("#market-edge-root")) return false;
 
+    // The "Your Items" heading is the strongest boundary. Anything before it
+    // belongs to the equipped paper-doll/loadout and must never be scanned.
     if (marker) {
       if (marker.contains(card)) return true;
       const relation = marker.compareDocumentPosition(card);
       return Boolean(relation & Node.DOCUMENT_POSITION_FOLLOWING);
     }
 
+    // If Torn changes the heading markup, accept cards inside known inventory
+    // list containers.
     if (card.closest(".items-cont, [class*='itemsCont'], [class*='items-cont'], [class*='inventoryList'], [class*='inventory-list']")) {
       return true;
     }
 
+    // Last-resort defensive exclusions for the equipped/loadout region.
     const equippedAncestor = card.closest(
       "[class*='equipped'],[class*='loadout'],[class*='paperdoll'],[class*='paper-doll'],[class*='characterEquipment'],[class*='character-equipment']"
     );
