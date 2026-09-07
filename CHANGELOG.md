@@ -4,6 +4,23 @@ All notable changes to Torn Market Edge are documented here.
 
 The project uses semantic-style version numbers for public userscript releases.
 
+## [0.2.1] - 2026-09-07
+
+### Fixed
+
+- Prevented long inventory/categories from exhausting Torn's shared per-user API quota.
+- Torn API error 5 / HTTP 429 now triggers a global Market Edge cooldown instead of rendering repeated red errors on every row.
+- Queued API work from an old SPA category is cancelled when the user switches categories, so stale rows no longer consume quota after navigation.
+
+### Changed
+
+- Reduced the Market Edge API budget from 45 to 20 new requests/minute to leave headroom for TornTools, Torn PDA and other tools using the same Torn user quota.
+- Reduced concurrent API requests from 4 to 3 and staggered new request starts by 300 ms.
+- List pages now analyze only the current viewport plus a modest look-ahead, with a maximum 12 nearby rows per scan.
+- Scrolling automatically discovers and analyzes newly visible rows.
+- Item Market fallback cache timing now matches Torn's 30-second global cache window.
+- Rate-limit recovery is automatic; cached prices remain visible while fresh requests are paused.
+
 ## [0.2.0] - 2026-09-07
 
 ### Added
