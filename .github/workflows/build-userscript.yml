@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - "src/parts/**"
+      - "tests/**"
   workflow_dispatch:
 
 permissions:
@@ -23,6 +24,9 @@ jobs:
 
       - name: Validate JavaScript
         run: node --check torn-market-edge.user.js
+
+      - name: Run tests
+        run: node --test tests/*.test.js
 
       - name: Commit generated userscript
         run: |
