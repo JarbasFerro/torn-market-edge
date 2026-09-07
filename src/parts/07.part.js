@@ -17,6 +17,7 @@
         const bundle = await loadSnapshot(visible.itemId, {
           limit: API_LIST_LIMIT,
           priority,
+          scope: "list",
           onCached: (cached) => {
             if (!visible.card?.isConnected || detectSurface() !== surface) return;
             renderedCached = true;
@@ -39,8 +40,20 @@
         });
         renderInlineResult(surface, result, ownBazaar);
       } catch (error) {
-        if (!renderedCached && visible.card?.isConnected) renderInlineError(visible, error.message);
-        else log("Refresh failed; keeping cached row", visible.itemId, error.message);
+        if (isCancelledError(error)) {
+          log("Cancelled stale list request", visible.itemId);
+        } else if (isRateLimitError(error)) {
+          if (!renderedCached && visible.card?.isConnected) {
+            renderInlineDeferred(visible, "API busy - retry later");
+          } else {
+            log("Rate limited; keeping cached row", visible.itemId);
+          }
+          scheduleRateLimitRecovery(surface, error.retryAfterMs);
+        } else if (!renderedCached && visible.card?.isConnected) {
+          renderInlineError(visible, error.message);
+        } else {
+          log("Refresh failed; keeping cached row", visible.itemId, error.message);
+        }
       } finally {
         if (visible.card?.dataset?.meScanning === String(visible.itemId)) delete visible.card.dataset.meScanning;
       }
@@ -55,12 +68,38 @@
 
   let refreshTimer = null;
   let signatureTimer = null;
+  let viewportScanTimer = null;
+  let rateLimitRecoveryTimer = null;
   let lastLocationKey = "";
   let lastListSignature = "";
 
   function scheduleRefresh(force = false) {
     clearTimeout(refreshTimer);
     refreshTimer = setTimeout(() => refresh(force), 160);
+  }
+
+  function scheduleViewportScan() {
+    clearTimeout(viewportScanTimer);
+    viewportScanTimer = setTimeout(() => {
+      if (document.visibilityState !== "visible") return;
+      const surface = detectSurface();
+      if (!["bazaar", "auction", "travel", "inventory"].includes(surface)) return;
+      scanVisibleSurface(surface, { retryIfEmpty: false, force: false });
+    }, 140);
+  }
+
+  function scheduleRateLimitRecovery(surface, waitMs = API_RATE_LIMIT_BACKOFF_MS) {
+    if (rateLimitRecoveryTimer) return;
+    const delay = Math.max(
+      1000,
+      asInt(waitMs, API_RATE_LIMIT_BACKOFF_MS),
+      api.cooldownRemainingMs()
+    ) + 250;
+    rateLimitRecoveryTimer = setTimeout(() => {
+      rateLimitRecoveryTimer = null;
+      if (document.visibilityState !== "visible" || detectSurface() !== surface) return;
+      scanVisibleSurface(surface, { retryIfEmpty: false, force: false });
+    }, delay);
   }
 
   function listSurfaceSignature(surface) {
@@ -92,8 +131,12 @@
       if (!["bazaar", "auction", "travel", "inventory"].includes(surface)) return;
       const signature = listSurfaceSignature(surface);
       if (!signature) return;
-      if (forceScan || signature !== lastListSignature) {
+      const signatureChanged = signature !== lastListSignature;
+      if (signatureChanged) {
+        api.cancelQueuedListRequests();
         lastListSignature = signature;
+      }
+      if (forceScan || signatureChanged) {
         scanVisibleSurface(surface, { retryIfEmpty: false, force: false });
       }
     }, 120);
@@ -109,6 +152,7 @@
       return;
     }
 
+    api.cancelQueuedListRequests();
     lastLocationKey = locationKey;
     ui.currentSurface = surface;
     clearBadges();
@@ -146,10 +190,17 @@
     };
 
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState !== "visible") return;
+      if (document.visibilityState !== "visible") {
+        api.cancelQueuedListRequests();
+        return;
+      }
       scheduleRefresh(false);
       scheduleSignatureCheck(false);
+      scheduleViewportScan();
     });
+
+    window.addEventListener("scroll", scheduleViewportScan, { passive: true });
+    window.addEventListener("resize", scheduleViewportScan, { passive: true });
 
     const observer = new MutationObserver(() => {
       if (document.visibilityState !== "visible") return;
