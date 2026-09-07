@@ -248,6 +248,8 @@
   function genericIntro(surface, { clear = true } = {}) {
     removeFloatingUi();
     if (clear) clearInlineAnalysis();
+    // List-style surfaces use War-Overlay-style inline intelligence rather
+    // than a floating results window. New rows are discovered incrementally.
     setTimeout(() => scanVisibleSurface(surface, { retryIfEmpty: true, force: false }), 250);
   }
 
