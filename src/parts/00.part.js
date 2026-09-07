@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.2.0
+// @version      0.2.1
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -23,13 +23,13 @@
 (function marketEdgeBootstrap(global) {
   "use strict";
 
-  // v0.2.0: SPA-safe incremental scanning, concurrent API loading, persistent
-  // stale-while-revalidate snapshots, batched item metadata, viewport priority
-  // and compact surface-specific inline intelligence.
+  // v0.2.1: adaptive shared-quota protection, stale queue cancellation,
+  // viewport-demand scanning and graceful Torn API rate-limit recovery layered
+  // on the v0.2 SPA-safe incremental market intelligence architecture.
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.2.0",
+    version: "0.2.1",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -40,12 +40,20 @@
   const ONE_DAY_MS = 24 * 60 * 60 * 1000;
   const HISTORY_MIN_GAP_MS = ONE_MINUTE_MS;
   const HISTORY_MAX_POINTS = 1000;
-  const API_MAX_REQUESTS_PER_MINUTE = 45;
-  const API_CONCURRENCY = 4;
+  // Torn limits API usage per user across all keys/tools, not per script.
+  // Keep Market Edge deliberately well below Torn's 100/minute ceiling so
+  // TornTools, Torn PDA and other scripts still have headroom.
+  const API_MAX_REQUESTS_PER_MINUTE = 20;
+  const API_CONCURRENCY = 3;
+  const API_MIN_REQUEST_GAP_MS = 300;
+  const API_RATE_LIMIT_BACKOFF_MS = 65 * 1000;
+  const API_RATE_LIMIT_RETRIES = 1;
+  const LIST_SCAN_BATCH_MAX = 12;
+  const LIST_SCAN_OVERSCAN_PX = 500;
   const API_LIST_LIMIT = 20;
   const API_DEEP_LIMIT = 100;
   const API_COMMENT = "market-edge";
-  const SNAPSHOT_FALLBACK_FRESH_MS = 25000;
+  const SNAPSHOT_FALLBACK_FRESH_MS = 30000;
   const ITEM_META_TTL_MS = 7 * ONE_DAY_MS;
 
   const STORAGE_KEYS = Object.freeze({
@@ -73,7 +81,7 @@
     minimumGreenConfidence: "MEDIUM",
     maxVolatility: 0.03,
     historyRetentionDays: 14,
-    scanMaxVisibleItems: 30,
+    scanMaxVisibleItems: 12,
     travelCapacity: 0,
     developerMode: false
   });
