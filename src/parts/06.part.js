@@ -3,6 +3,15 @@
     );
   }
 
+  function renderInlineDeferred(visible, message = "API busy - retrying") {
+    return renderInlineHtml(
+      visible,
+      `<span class="me-inline-brand">ME</span><span class="me-inline-secondary">${escapeHtml(message)}</span>`,
+      "YELLOW",
+      "me-loading"
+    );
+  }
+
   function staleMarker(result) {
     return result?.renderMeta?.stale ? `<span class="me-inline-stale" title="Showing cached data while Market Edge refreshes">*</span>` : "";
   }
@@ -108,7 +117,11 @@
 
     setPanel(`<div class="me-kicker">Item Market</div><div class="me-item-name">Loading item ${itemId}...</div>`, "API");
     try {
-      const { snapshot, historyStats } = await loadSnapshot(itemId, { limit: API_DEEP_LIMIT, priority: 200 });
+      const { snapshot, historyStats } = await loadSnapshot(itemId, {
+        limit: API_DEEP_LIMIT,
+        priority: 200,
+        scope: "detail"
+      });
       if (!snapshot.supportedCommodity) {
         setPanel(`<div class="me-kicker">Item Market</div><div class="me-item-name">${escapeHtml(snapshot.itemName)}</div><div class="me-callout GREY"><div class="me-decision GREY">- NOT SUPPORTED</div><div class="me-note">Advanced equipment valuation is not supported yet.</div></div>`);
         return;
@@ -174,7 +187,15 @@
 
       highlightItemMarketRows(liveRows, best);
     } catch (error) {
-      errorPanel(error.message);
+      if (isRateLimitError(error)) {
+        const seconds = Math.max(
+          1,
+          Math.ceil((error.retryAfterMs || API_RATE_LIMIT_BACKOFF_MS) / 1000)
+        );
+        errorPanel(`Torn's shared API limit was reached. Market Edge paused API requests for about ${seconds}s; existing cached prices remain usable.`);
+      } else if (!isCancelledError(error)) {
+        errorPanel(error.message);
+      }
     }
   }
 
@@ -197,6 +218,20 @@
     if (inViewport) return 1000 - Math.max(0, Math.round(rect.top / 10)) - index;
     if (rect.top > viewportHeight) return 500 - Math.min(300, Math.round((rect.top - viewportHeight) / 20)) - index;
     return 200 - index;
+  }
+
+  function isWithinListScanBand(visible) {
+    const rect = visible?.card?.getBoundingClientRect?.();
+    if (!rect) return false;
+    const viewportHeight = Math.max(window.innerHeight || 0, document.documentElement.clientHeight || 0);
+    const overscan = Math.min(
+      LIST_SCAN_OVERSCAN_PX,
+      Math.max(180, Math.round(viewportHeight * 0.6))
+    );
+    // Analyze only what the player can see plus a modest look-ahead. This
+    // avoids spending API quota on an entire long category before it is used.
+    return rect.bottom >= -Math.round(overscan * 0.25)
+      && rect.top <= viewportHeight + overscan;
   }
 
   function resultForSurface(surface, visible, snapshot, historyStats, ownBazaar, renderMeta = {}) {
@@ -285,12 +320,20 @@
     });
     if (!items.length) return;
 
+    items = items
+      .filter(isWithinListScanBand)
+      .sort((a, b) => viewportPriority(b) - viewportPriority(a))
+      .slice(0, Math.min(
+        LIST_SCAN_BATCH_MAX,
+        clamp(asInt(settings.scanMaxVisibleItems, LIST_SCAN_BATCH_MAX), 1, LIST_SCAN_BATCH_MAX)
+      ));
+    if (!items.length) return;
+
     if (!Store.apiKey()) {
       items.forEach((visible) => renderInlineError(visible, "Add API key in Market Edge settings"));
       return;
     }
 
-    items.sort((a, b) => viewportPriority(b) - viewportPriority(a));
     items.forEach((visible) => {
       if (visible.card?.dataset) visible.card.dataset.meScanning = String(visible.itemId);
       renderInlineLoading(visible);
