@@ -14,7 +14,7 @@ Torn Market Edge is **decision support, not trading automation**. It never buys,
 
 ## Current status
 
-**v0.2.0 beta**
+**v0.2.1 beta**
 
 The current release focuses on fast, inline market intelligence and mobile-friendly UX. It should be treated as a public beta while Torn DOM integration is validated across more pages and devices.
 
@@ -40,7 +40,10 @@ The commodity valuation model is intended for fungible/stackable items. Advanced
 - Local price-history observations
 - `cache_timestamp`/`cache_delay` aware caching
 - Persistent stale-while-revalidate snapshots
-- Four-request bounded concurrency with a 45 requests/minute Market Edge ceiling
+- Shared-quota-aware API scheduler: 20 new requests/minute, 3 concurrent requests, staggered starts
+- Automatic cooldown/retry when Torn returns API error 5 / HTTP 429
+- Cancellation of stale queued requests when SPA categories change
+- Viewport-demand loading: current rows plus a modest look-ahead instead of whole-category prefetch
 - In-flight request deduplication
 - Fast 20-listing snapshots on list pages and deeper analysis on Item Market pages
 - SPA-safe inventory category detection
@@ -116,7 +119,7 @@ Current settings include:
 - Item Market undercut;
 - minimum confidence for green classifications;
 - maximum tolerated volatility;
-- scan size;
+- nearby-row scan size;
 - travel capacity;
 - local history retention;
 - developer diagnostics.
@@ -136,6 +139,10 @@ The engine separates:
 7. confidence and data freshness.
 
 Displayed profit values are estimates, not guarantees. Market liquidity and future prices are uncertain.
+
+## API rate limits
+
+Torn's API limit is shared per player across API keys and tools. Market Edge deliberately keeps its own budget well below Torn's overall limit. If Torn still reports a rate limit because other tools are consuming the same quota, Market Edge pauses API work, keeps cached values visible where possible, and retries later instead of filling rows with repeated errors.
 
 ## Reporting bugs
 
