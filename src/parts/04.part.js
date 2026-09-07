@@ -51,6 +51,8 @@
 
     const inventoryMarker = inventoryListMarker();
 
+    // Prefer Torn's actual inventory-list containers when available. This
+    // prevents equipped items from ever entering the candidate set.
     if (detectSurface() === "inventory") {
       const roots = Array.from(document.querySelectorAll(
         ".items-cont, [class*='itemsCont'], [class*='items-cont'], [class*='inventoryList'], [class*='inventory-list']"
@@ -138,6 +140,9 @@
 
     if (best) return best;
 
+    // Fallback: locate the visible "Price per unit" label and then the nearest
+    // input in the same small container. This avoids ever confusing Torn's RRP
+    // value or the "Remove" quantity field with the actual Bazaar unit price.
     const textNodes = Array.from(card.querySelectorAll("label,span,div,p"));
     for (const label of textNodes) {
       const text = (label.textContent || "").replace(/\s+/g, " ").trim();
@@ -233,6 +238,7 @@
     }
     rawRows.sort((a, b) => a.price - b.price);
 
+    // Deduplicate nested DOM nodes representing the same rendered listing.
     const rows = [];
     for (const row of rawRows) {
       if (rows.some((existing) => existing.price === row.price && (existing.node.contains(row.node) || row.node.contains(existing.node)))) continue;
@@ -242,6 +248,9 @@
   }
 
   function currentBazaarOwnerId() {
+    // Torn uses both query-string and hash-based Bazaar routes. A shared Bazaar
+    // contains an explicit userId/userID; the plain bazaar.php#/ route opens
+    // the current player's own Bazaar.
     const match = location.href.match(/[?&#](?:userId|userID)=(\d+)/i);
     return match ? asInt(match[1], 0) || null : null;
   }
@@ -256,6 +265,7 @@
         const tested = await api.testKey();
         playerId = tested.playerId || 0;
       } catch {
+        // Pricing analysis can continue without identity detection.
       }
     }
     return Boolean(playerId && ownerId === playerId);
