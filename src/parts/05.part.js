@@ -188,12 +188,12 @@
         <div class="me-form-grid">
           <label>Minimum confidence for green</label><select data-setting="minimumGreenConfidence">${["VERY LOW", "LOW", "MEDIUM", "HIGH"].map((value) => `<option ${value === current.minimumGreenConfidence ? "selected" : ""}>${value}</option>`).join("")}</select>
           <label>Max MAD volatility (%)</label><input data-setting="maxVolatility" data-percent="1" type="number" min="0" max="100" step="0.1" value="${current.maxVolatility * 100}">
-          <label>Max visible items / scan</label><input data-setting="scanMaxVisibleItems" type="number" min="1" max="50" step="1" value="${current.scanMaxVisibleItems}">
+          <label>Max nearby rows / scan</label><input data-setting="scanMaxVisibleItems" type="number" min="1" max="${LIST_SCAN_BATCH_MAX}" step="1" value="${Math.min(current.scanMaxVisibleItems, LIST_SCAN_BATCH_MAX)}">
           <label>Travel capacity (0 = per-item only)</label><input data-setting="travelCapacity" type="number" min="0" max="1000" step="1" value="${current.travelCapacity}">
           <label>History retention (days)</label><input data-setting="historyRetentionDays" type="number" min="1" max="90" step="1" value="${current.historyRetentionDays}">
           <label>Developer diagnostics in console</label><input data-setting="developerMode" type="checkbox" ${current.developerMode ? "checked" : ""}>
         </div>
-        <div class="me-form-help">The API key stays in Tampermonkey storage and is sent only to api.torn.com. Market Edge never includes it in diagnostics or exports. Item Market sale fee is fixed at 5% in this release.</div>
+        <div class="me-form-help">The API key stays in Tampermonkey storage and is sent only to api.torn.com. Market Edge never includes it in diagnostics or exports. Torn's 100 requests/minute limit is shared across all of your API keys and tools; Market Edge reserves headroom by using at most ${API_MAX_REQUESTS_PER_MINUTE}/minute and pauses automatically if Torn reports a rate limit. Item Market sale fee is fixed at 5% in this release.</div>
         <div class="me-modal-actions"><button class="me-btn" id="me-cancel-settings" type="button">Cancel</button><button class="me-btn" id="me-save-settings" type="button">Save</button></div>
       </div>`;
     document.body.appendChild(backdrop);
@@ -225,6 +225,11 @@
         else if (input.dataset.percent) next[key] = Number(input.value || 0) / 100;
         else next[key] = Number(input.value || 0);
       });
+      next.scanMaxVisibleItems = clamp(
+        asInt(next.scanMaxVisibleItems, LIST_SCAN_BATCH_MAX),
+        1,
+        LIST_SCAN_BATCH_MAX
+      );
       Store.setApiKey(backdrop.querySelector("#me-api-key").value);
       Store.saveSettings(next);
       settings = Store.settings();
