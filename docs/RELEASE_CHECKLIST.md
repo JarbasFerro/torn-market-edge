@@ -25,8 +25,10 @@ Do not casually change `@name` + `@namespace` after Greasy Fork publication beca
 
 ## 3. Correctness
 
-- [ ] JavaScript syntax check passes.
-- [ ] Economic regression scenarios pass.
+- [ ] `npm run check` passes (build, syntax check, economics, DOM fixtures and panel smoke tests).
+- [ ] Own-listings panel verified with a Limited key and a Public key.
+- [ ] Watchlist alert verified once and confirmed silent while the tab is hidden.
+- [ ] Torn PDA smoke test (launcher, injected key, Bazaar fill).
 - [ ] Inventory category switching works without refresh.
 - [ ] Own-Bazaar Price per unit is read correctly.
 - [ ] Inline overlays render correctly on mobile.

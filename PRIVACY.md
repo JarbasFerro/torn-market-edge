@@ -12,19 +12,37 @@ The API key is transmitted to Torn using the API authorization header. It is not
 
 Market Edge does not load or execute remote JavaScript.
 
+## Torn API endpoints used
+
+All requests go to `https://api.torn.com/v2` with the `comment=market-edge` parameter so they are identifiable in your Torn API log:
+
+- `/market/{id}/itemmarket` (order books);
+- `/market/{id}/auctionhouse` (ended auction sales, equipment comparables only);
+- `/market/pointsmarket` (museum set valuation);
+- `/torn/{ids}/items` (item metadata and official market prices);
+- `/key/info` (access level, when you test the key);
+- `/user/basic` (fallback player identification);
+- `/user/itemmarket` (your own listings, only when you open that panel and only with a Limited key).
+
+Inside Torn PDA the requests go through PDA's own HTTP bridge to the same host. When neither the userscript bridge nor PDA is available, the browser's `fetch` is used, still only to `api.torn.com`.
+
 ## Data stored locally
 
-Market Edge may persist the following in userscript-manager storage:
+Market Edge may persist the following in userscript-manager storage (or, inside Torn PDA without userscript storage, in the page's local storage):
 
 - API key;
 - Market Edge settings;
 - player ID used for page-context detection;
+- API key access level and permitted selections (never the key itself in that record);
 - UI/panel state;
-- compact recent market snapshots;
+- watchlist entries (item IDs, names, target prices, last observed floor);
+- compact recent market snapshots, including equipment floor summaries;
+- recent ended Auction House sale prices per equipment item;
+- the current points-market ask;
 - derived local market-history observations;
 - cached Torn item metadata.
 
-This data is used only to provide the script's market-analysis functionality, reduce unnecessary Torn API requests, and improve loading performance.
+This data is used only to provide the script's market-analysis functionality, reduce unnecessary Torn API requests, and improve loading performance. Your own Item Market listings are fetched on demand and are not persisted.
 
 ## Torn page data
 

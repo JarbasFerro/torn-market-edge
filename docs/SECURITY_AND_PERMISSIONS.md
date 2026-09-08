@@ -16,24 +16,36 @@ Used only for requests to Torn's official API. The userscript metadata restricts
 
 Market Edge does not use this permission to fetch hidden Torn website pages.
 
+Transport fallbacks, in order: Torn PDA's `PDA_httpGet` bridge when running inside PDA, `GM_xmlhttpRequest`, then the page's own `fetch`. All three are called with the same `https://api.torn.com/v2` URLs and the `Authorization: ApiKey` header; there is no other host. The regression tests assert that `@connect` lists only `api.torn.com`.
+
 ### `@grant GM_getValue`, `GM_setValue`, `GM_deleteValue`
 
 Used for local persistence of:
 
 - API key;
 - settings;
-- compact recent market snapshots;
+- API key access level (from `/key/info`);
+- watchlist entries;
+- compact recent market snapshots and equipment floor summaries;
+- recent ended Auction House sale prices per equipment item;
+- the current points-market ask;
 - derived local market-history points;
 - cached item metadata;
 - small UI state values.
 
+When GM storage is unavailable (some Torn PDA builds), the same values are kept in `localStorage` under a `marketEdge.local.` prefix.
+
 ### `@grant GM_addStyle`
 
-Adds Market Edge's local CSS to the currently opened Torn page.
+Adds Market Edge's local CSS to the currently opened Torn page. Without it a `<style>` element is appended instead.
 
 ### `@grant GM_registerMenuCommand`
 
-Adds userscript-manager menu commands for settings and a manual analysis of the current page.
+Adds userscript-manager menu commands for settings, manual analysis of the current page, your Item Market listings and the watchlist. Without a menu (Torn PDA) a small on-page **ME** launcher provides the same entries.
+
+## Torn PDA API key injection
+
+The source contains the literal `###PDA-APIKEY###`. Torn PDA replaces it with the player's key at load time; every other environment leaves it untouched and the script ignores it. The injected key is used only when no key has been entered in settings and is never written back to storage.
 
 ## API key handling
 
@@ -67,6 +79,8 @@ Market Edge is decision support only. It does not automatically:
 - interact with CAPTCHA.
 
 When page-derived information is needed, Market Edge reads only the Torn page the player has manually opened. DOM processing is suspended while the page is not visible.
+
+The watchlist is API-only: it never loads Torn pages in the background, polls at a user-configured interval of at least 30 seconds only while a Torn tab is visible, and alerts with an in-page toast. Acting on an alert is a manual decision. The regression tests assert that the assembled script contains no `.click()`, `.submit()` or `location.reload` calls.
 
 ## Reporting security problems
 

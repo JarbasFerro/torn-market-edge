@@ -6,6 +6,27 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-08
+
+### Added
+
+- **Cold-start valuation from official signals.** Torn's daily average price (actual purchases) is now used as a fair-value reference from the first request. When it agrees with the depth anchor within 5%, the warm-up haircut is waived and confidence can reach MEDIUM without local history. Without history the daily average also caps an inflated order book.
+- **Full Item Market 2.0 fee model.** Settings for anonymous listings (+10% fee) and the 5-star company perk that waives it; Auction House 3% seller fee shown as an informational route; fee labels in the panel reflect the configured total.
+- **Your Item Market listings panel** (Limited access key). Compares every active listing with the live floor, counts units listed ahead of yours, shows net after fees, flags CHEAPEST / CLOSE / UNDERCUT and suggests floor-minus-undercut prices. Opens automatically on manage-style Item Market routes, from the panel toolbar, or from the userscript menu.
+- **Museum set economics.** Plushies and flowers get a set-implied value: 10 points at the current points-market ask minus the official market price of the other pieces. It appears as a "Museum set" route on inventory, Bazaar, Auction House and Item Market surfaces. One metadata batch per set per day plus the points market every five minutes.
+- **Weapon and armor comparables.** Equipment listings are grouped by rarity and bonus set, quality matched within 10 points, and compared with ended Auction House sales from the last 30 days. The Item Market page shows a comparables table and best-value listing; list pages show plain and bonus floors instead of "unsupported".
+- **API-only watchlist.** Watch items with a target price from the Item Market panel or settings. While a Torn tab is visible the script polls the official order book at a configurable interval (minimum 30 s, cache-delay aware) and raises an in-page toast plus a title marker. Alerts never buy anything.
+- **Torn PDA support.** `###PDA-APIKEY###` injection, `PDA_httpGet` transport, localStorage fallback when GM storage is missing, style injection without `GM_addStyle`, and an on-page launcher when no userscript menu exists. Plain `fetch` is the last-resort transport.
+- **Key diagnostics.** "Test API key" now calls `/key/info`, reports the access level and warns when the own-listings panel needs a Limited key. Torn error codes 2, 5 and 16 are translated into actionable messages.
+- **DOM fixture tests** (jsdom, dev-only) for the Bazaar add form, own Bazaar rows, inventory, Auction House and Item Market parsers, plus panel smoke tests with a stubbed API.
+
+### Changed
+
+- Request budget raised from 45 to 70 requests per minute (Torn allows 100 per player).
+- Mutation observation is scoped to Torn's content container instead of the whole document and no longer listens to character data.
+- Persistent snapshots moved to a new storage prefix so equipment summaries can be cached; old snapshots are ignored.
+- Floating panels opened from the menu stay pinned until closed or the page changes; the panel has a close button.
+
 ## [0.2.6] - 2026-09-08
 
 ### Changed

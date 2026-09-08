@@ -85,9 +85,11 @@ Actual trading actions remain completely manual.
 
 ## Commodity model
 
-The current valuation model is designed for economically fungible/stackable items such as drugs, boosters, consumables, flowers, plushies and similar commodities.
+The valuation model is designed for economically fungible/stackable items such as drugs, boosters, consumables, flowers, plushies and similar commodities.
 
-Weapons, armor and other stat/bonus-dependent equipment are not treated as ordinary commodities. Advanced equipment valuation is intentionally postponed until a dedicated model exists.
+Weapons, armor and other stat/bonus-dependent equipment are valued separately: listings are grouped by rarity and bonus set, quality is matched softly, and ended Auction House sales cap the comparable median. Treat it as a floor check, not a full valuation.
+
+Plushies and flowers also get a museum-set route: 10 points at the current points-market ask minus the official price of the other pieces.
 
 ## Market methodology
 
@@ -98,11 +100,13 @@ The engine considers:
 - current market floor;
 - market depth;
 - quantity-aware robust market anchor;
+- Torn's official daily average price as a cold-start reference and cap;
 - locally observed 1h/24h/7d history when available;
 - data freshness;
 - volatility;
 - expected resale route;
-- Item Market selling fee;
+- Item Market 5% sales tax and the optional 10% anonymous-listing fee;
+- Auction House 3% fee (informational);
 - Bazaar discount assumption;
 - configurable safety haircut;
 - capital limits;
@@ -111,9 +115,19 @@ The engine considers:
 
 Displayed profit and exit values are estimates, not guarantees.
 
+## Your listings and watchlist
+
+With a Limited access key, Market Edge can list your own Item Market listings next to the live floor and tell you whether you are cheapest, close or undercut. Suggested prices are shown, never applied.
+
+The watchlist polls the official Item Market API for watched items only while a Torn tab is visible, at an interval you choose (minimum 30 seconds), and shows an in-page alert. Nothing is bought automatically.
+
+## Torn PDA
+
+Market Edge runs inside Torn PDA: the PDA API key is injected automatically and a small on-page launcher replaces the userscript menu.
+
 ## Performance
 
-v0.2.0 uses:
+v0.3.0 uses:
 
 - bounded concurrent Torn API loading;
 - a conservative Market Edge request budget;
@@ -130,7 +144,7 @@ This is intended to make category switching and revisiting previously analyzed i
 
 ## API key
 
-An API key is entered in Market Edge settings and stored locally by your userscript manager.
+An API key is entered in Market Edge settings and stored locally by your userscript manager. A Public key is enough for everything except the own-listings panel, which needs Limited access.
 
 The key is sent only to Torn's official API at `api.torn.com` using Torn's API authorization header.
 

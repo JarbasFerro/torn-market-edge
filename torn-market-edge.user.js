@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.2.6
+// @version      0.3.0
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -18,43 +18,66 @@
 // @run-at       document-idle
 // ==/UserScript==
 
-/* global GM_xmlhttpRequest, GM_getValue, GM_setValue, GM_deleteValue, GM_addStyle, GM_registerMenuCommand */
+/* global GM_xmlhttpRequest, GM_getValue, GM_setValue, GM_deleteValue, GM_addStyle, GM_registerMenuCommand, PDA_httpGet */
 
 (function marketEdgeBootstrap(global) {
   "use strict";
 
-  // v0.2.6: Bazaar add intelligence occupies a dedicated second line below
-  // Torn's Qty/price controls, preserving the full item-name area. The explicit
-  // fill control uses ^ and still never submits the Bazaar form.
+  // v0.3.0 (includes the v0.2.5/v0.2.6 Bazaar add-form UI fixes): official-API cold-start valuation, full Item Market 2.0 fee model
+  // (5% tax, optional 10% anonymous fee, 3% Auction House fee), own Item
+  // Market listings panel, museum set economics, weapon/armor comparables,
+  // API-only watchlist alerts and Torn PDA transport support. Every action
+  // remains user-triggered; the script never buys, sells, bids or submits.
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.2.6",
+    version: "0.3.0",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
 
   const ITEM_MARKET_FEE_BPS = 500;
+  const ANONYMOUS_LISTING_FEE_BPS = 1000;
+  const AUCTION_HOUSE_FEE_BPS = 300;
   const BPS = 10000;
   const ONE_MINUTE_MS = 60 * 1000;
   const ONE_DAY_MS = 24 * 60 * 60 * 1000;
   const HISTORY_MIN_GAP_MS = ONE_MINUTE_MS;
   const HISTORY_MAX_POINTS = 1000;
-  const API_MAX_REQUESTS_PER_MINUTE = 45;
+  // Torn allows 100 requests/minute per player across all keys. Market Edge
+  // keeps a comfortable margin so other tools sharing the key keep working.
+  const API_MAX_REQUESTS_PER_MINUTE = 70;
   const API_CONCURRENCY = 4;
   const API_LIST_LIMIT = 20;
   const API_DEEP_LIMIT = 100;
+  const API_AUCTION_LIMIT = 50;
   const API_COMMENT = "market-edge";
   const SNAPSHOT_FALLBACK_FRESH_MS = 25000;
   const ITEM_META_TTL_MS = 7 * ONE_DAY_MS;
+  const SET_META_TTL_MS = ONE_DAY_MS;
+  const POINTS_MARKET_TTL_MS = 5 * ONE_MINUTE_MS;
+  const AUCTION_SALES_TTL_MS = 10 * ONE_MINUTE_MS;
+  const AUCTION_SALES_WINDOW_MS = 30 * ONE_DAY_MS;
+  const OFFICIAL_AGREEMENT_TOLERANCE = 0.05;
+  const WATCHLIST_MIN_INTERVAL_SEC = 30;
+  const WATCHLIST_MAX_ITEMS = 25;
+  const WATCHLIST_ALERT_COOLDOWN_MS = 10 * ONE_MINUTE_MS;
+  const OWN_LISTINGS_MAX = 25;
+  // Torn PDA replaces this literal with the player's key at load time. When it
+  // is untouched (desktop Tampermonkey), the stored key is used instead.
+  const PDA_API_KEY_PLACEHOLDER = "###PDA-APIKEY###";
 
   const STORAGE_KEYS = Object.freeze({
     settings: "marketEdge.settings.v1",
     apiKey: "marketEdge.apiKey",
     playerId: "marketEdge.playerId",
+    keyInfo: "marketEdge.keyInfo.v1",
     panelState: "marketEdge.panelState.v1",
+    watchlist: "marketEdge.watchlist.v1",
+    pointsMarket: "marketEdge.pointsMarket.v1",
+    auctionSalesPrefix: "marketEdge.auctionSales.v1.",
     historyPrefix: "marketEdge.history.v1.",
-    snapshotPrefix: "marketEdge.snapshot.v2.",
+    snapshotPrefix: "marketEdge.snapshot.v3.",
     itemMetaPrefix: "marketEdge.itemMeta.v2."
   });
 
@@ -70,12 +93,43 @@
     bazaarDiscount: 0.01,
     allowedHistoricalPremium: 1.01,
     itemMarketUndercut: 1,
+    anonymousListing: false,
+    anonymousFeeWaived: false,
+    museumSetsEnabled: true,
+    equipmentEnabled: true,
+    watchlistEnabled: true,
+    watchlistIntervalSeconds: 60,
     minimumGreenConfidence: "MEDIUM",
     maxVolatility: 0.03,
     historyRetentionDays: 14,
     scanMaxVisibleItems: 30,
     travelCapacity: 0,
     developerMode: false
+  });
+
+  // Museum set definitions (item IDs are stable Torn item identifiers).
+  // Both sets exchange for 10 points at the Museum.
+  const MUSEUM_SETS = Object.freeze({
+    plushie: Object.freeze({
+      key: "plushie",
+      label: "Plushie set",
+      points: 10,
+      items: Object.freeze([186, 187, 215, 258, 261, 266, 268, 269, 273, 274, 281, 384, 618])
+    }),
+    flower: Object.freeze({
+      key: "flower",
+      label: "Flower set",
+      points: 10,
+      items: Object.freeze([260, 263, 264, 267, 271, 272, 276, 277, 282, 385, 617])
+    })
+  });
+
+  const KEY_ACCESS_RANK = Object.freeze({
+    "Public Only": 1,
+    "Minimal Access": 2,
+    "Limited Access": 3,
+    "Full Access": 4,
+    Custom: 4
   });
 
   const CONFIDENCE_RANK = Object.freeze({
@@ -133,17 +187,80 @@
     return clean[clean.length - 1].price;
   }
 
-  function grossToItemMarketNet(gross) {
+  function grossToNet(gross, feeBps) {
     const safeGross = Math.max(0, asInt(gross));
-    // Conservative integer arithmetic: fee is treated as 5% of transaction gross,
+    const safeFee = clamp(asInt(feeBps, 0), 0, BPS);
+    // Conservative integer arithmetic: the fee is applied to transaction gross,
     // then net proceeds are floored to whole Torn dollars.
-    return Math.floor((safeGross * (BPS - ITEM_MARKET_FEE_BPS)) / BPS);
+    return Math.floor((safeGross * (BPS - safeFee)) / BPS);
   }
 
-  function itemMarketNetFor(pricePerUnit, quantity) {
+  // Item Market 2.0 fee model: 5% sales tax on every sale, plus an optional
+  // 10% anonymous-listing fee. Five-star Car Dealership / Property Broker
+  // company specials waive the anonymous fee, which the user can declare.
+  function itemMarketFeeBps(settings) {
+    const anonymous = Boolean(settings?.anonymousListing) && !settings?.anonymousFeeWaived;
+    return ITEM_MARKET_FEE_BPS + (anonymous ? ANONYMOUS_LISTING_FEE_BPS : 0);
+  }
+
+  function grossToItemMarketNet(gross, feeBps = ITEM_MARKET_FEE_BPS) {
+    return grossToNet(gross, feeBps);
+  }
+
+  function itemMarketNetFor(pricePerUnit, quantity, feeBps = ITEM_MARKET_FEE_BPS) {
     const price = Math.max(0, asInt(pricePerUnit));
     const qty = Math.max(0, asInt(quantity));
-    return grossToItemMarketNet(price * qty);
+    return grossToItemMarketNet(price * qty, feeBps);
+  }
+
+  function auctionNetFor(pricePerUnit, quantity) {
+    const price = Math.max(0, asInt(pricePerUnit));
+    const qty = Math.max(0, asInt(quantity));
+    return grossToNet(price * qty, AUCTION_HOUSE_FEE_BPS);
+  }
+
+  function isEquipmentType(type) {
+    return /weapon|armor|armour/i.test(String(type || ""));
+  }
+
+  function bonusSignature(details) {
+    const bonuses = Array.isArray(details?.bonuses) ? details.bonuses : [];
+    return bonuses
+      .map((bonus) => String(bonus?.title || bonus?.name || "").trim().toLowerCase())
+      .filter(Boolean)
+      .sort()
+      .join("+");
+  }
+
+  function equipmentGroupKey(details) {
+    const rarity = String(details?.rarity || "plain").toLowerCase();
+    const signature = bonusSignature(details);
+    return `${rarity}|${signature || "none"}`;
+  }
+
+  function summarizeEquipmentListings(listings) {
+    const detailed = listings.filter((row) => row.itemDetails && typeof row.itemDetails === "object");
+    if (!detailed.length) return null;
+    const plain = detailed.filter((row) => !bonusSignature(row.itemDetails) && !row.itemDetails.rarity);
+    const bonus = detailed.filter((row) => bonusSignature(row.itemDetails) || row.itemDetails.rarity);
+    const groups = new Map();
+    detailed.forEach((row) => {
+      const key = equipmentGroupKey(row.itemDetails);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(row.price);
+    });
+    return {
+      listingCount: detailed.length,
+      plainFloor: plain.length ? Math.min(...plain.map((row) => row.price)) : null,
+      plainMedian: median(plain.map((row) => row.price)),
+      bonusFloor: bonus.length ? Math.min(...bonus.map((row) => row.price)) : null,
+      groups: Array.from(groups.entries()).map(([key, prices]) => ({
+        key,
+        count: prices.length,
+        floor: Math.min(...prices),
+        median: median(prices)
+      }))
+    };
   }
 
   function robustMarketAnchor(listings) {
@@ -189,10 +306,11 @@
 
     const itemType = String(item.type ?? item.category ?? "");
     const hasDetailedListings = listings.some((row) => row.itemDetails && typeof row.itemDetails === "object");
-    const unsupportedEquipment = hasDetailedListings || /weapon|armor|armour/i.test(itemType);
+    const equipment = hasDetailedListings || isEquipmentType(itemType);
     const top20 = listings.slice(0, 20);
     const prices = listings.map((row) => row.price);
     const cacheTimestampSec = asInt(book?.cache_timestamp ?? payload?.cache_timestamp, 0);
+    const totalListings = asInt(payload?._metadata?.total, 0);
 
     return {
       itemId: asInt(item.id ?? itemId),
@@ -209,13 +327,29 @@
       top20Quantity: top20.reduce((sum, row) => sum + row.quantity, 0),
       depthMetrics: {
         listingCount: listings.length,
+        totalListings: totalListings || listings.length,
         top5Quantity: listings.slice(0, 5).reduce((sum, row) => sum + row.quantity, 0),
         top20Quantity: top20.reduce((sum, row) => sum + row.quantity, 0)
       },
       medianListingPrice: median(prices),
       calculatedMarketAnchor: robustMarketAnchor(listings),
-      supportedCommodity: !unsupportedEquipment
+      // The commodity model only applies to fungible stackable items.
+      // Equipment is valued separately through comparable-group analysis.
+      supportedCommodity: !equipment,
+      equipment,
+      equipmentSummary: equipment ? summarizeEquipmentListings(listings) : null
     };
+  }
+
+  // Agreement between Torn's official daily average (actual purchases) and
+  // the robust depth anchor is the strongest cold-start evidence available
+  // before local history has accumulated.
+  function officialAgreement(snapshot) {
+    const anchor = asInt(snapshot?.calculatedMarketAnchor, 0);
+    const average = asInt(snapshot?.averagePrice, 0);
+    if (anchor <= 0 || average <= 0) return { available: false, agrees: false, ratio: null };
+    const ratio = Math.abs(anchor - average) / average;
+    return { available: true, agrees: ratio <= OFFICIAL_AGREEMENT_TOLERANCE, ratio };
   }
 
   function calculateHistoryStats(points, nowMs = Date.now()) {
@@ -297,7 +431,16 @@
       if (Number.isFinite(boughtPrice) && Number.isFinite(afterMedian) && afterMedian >= boughtPrice * 1.02) score += 7;
     }
 
+    // Official daily average agreeing with current depth substitutes for
+    // missing local history during cold start, and adds a little on top of it
+    // once history exists.
+    const agreement = officialAgreement(snapshot);
+    if (agreement.agrees) score += day.count >= 5 ? 6 : 20;
+
     score = clamp(score, 0, 100);
+    // Without local observations the model cannot vouch for stability, so the
+    // label is capped at MEDIUM regardless of score.
+    if (day.count < 5 && score >= 78) score = 77;
     const label = score >= 78 ? "HIGH" : score >= 55 ? "MEDIUM" : score >= 32 ? "LOW" : "VERY LOW";
     return { score, label, freshness: fresh };
   }
@@ -308,7 +451,12 @@
     const currentAnchor = snapshot?.calculatedMarketAnchor || null;
     const averagePrice = snapshot?.averagePrice || null;
     if (currentAnchor && averagePrice) {
-      return { value: Math.min(currentAnchor, Math.round(averagePrice * 1.05)), source: "current depth + Torn value sanity check" };
+      const agreement = officialAgreement(snapshot);
+      return {
+        value: Math.min(currentAnchor, Math.round(averagePrice * 1.05)),
+        source: agreement.agrees ? "Torn daily average confirmed by current depth" : "current depth + Torn value sanity check",
+        officialAgreement: agreement
+      };
     }
     if (currentAnchor) return { value: currentAnchor, source: "current market depth" };
     if (averagePrice) return { value: averagePrice, source: "Torn value sanity check" };
@@ -318,6 +466,8 @@
   function calculateExit({ snapshot, historyStats, nextAsk = null, settings }) {
     const currentAnchor = snapshot?.calculatedMarketAnchor || null;
     const historicalFair = historyStats?.historicalFairValue || null;
+    const averagePrice = snapshot?.averagePrice || null;
+    const agreement = officialAgreement(snapshot);
     let exitAnchor = null;
 
     if (historicalFair && Number.isFinite(nextAsk)) {
@@ -332,8 +482,19 @@
       exitAnchor = currentAnchor || nextAsk || null;
     }
 
+    // Cold start: Torn's daily average reflects actual purchases. Without local
+    // history it caps the exit so a temporarily inflated order book cannot
+    // inflate the expected resale.
+    if (!historicalFair && Number.isFinite(exitAnchor) && averagePrice) {
+      const officialCap = Math.floor(averagePrice * settings.allowedHistoricalPremium);
+      exitAnchor = Math.min(exitAnchor, officialCap);
+    }
+
     if (!Number.isFinite(exitAnchor) || exitAnchor <= 0) return null;
-    const warmupExtra = (historyStats?.oneDay?.count || 0) < 5 ? 0.02 : 0;
+    const coldStart = (historyStats?.oneDay?.count || 0) < 5;
+    // The warm-up penalty is waived when the official average and the depth
+    // anchor agree; the two independent sources corroborate each other.
+    const warmupExtra = coldStart && !agreement.agrees ? 0.02 : 0;
     const haircut = clamp(settings.safetyHaircut + warmupExtra, 0, 0.10);
     const conservativeExitPrice = Math.max(1, Math.floor(exitAnchor * (1 - haircut)));
     const itemMarketSuggestedPrice = Math.max(1, conservativeExitPrice - Math.max(0, asInt(settings.itemMarketUndercut)));
@@ -342,25 +503,51 @@
     return {
       exitAnchor,
       haircut,
+      coldStart,
+      officialAgreement: agreement,
       conservativeExitPrice,
       itemMarketSuggestedPrice,
       bazaarSuggestedPrice
     };
   }
 
-  function routeEconomics(exit, quantity, settings) {
+  function routeEconomics(exit, quantity, settings, extras = {}) {
     const qty = Math.max(1, asInt(quantity, 1));
+    const feeBps = itemMarketFeeBps(settings);
     const itemMarketGross = exit.itemMarketSuggestedPrice * qty;
-    const itemMarketNet = itemMarketNetFor(exit.itemMarketSuggestedPrice, qty);
+    const itemMarketNet = itemMarketNetFor(exit.itemMarketSuggestedPrice, qty, feeBps);
     const bazaarGross = exit.bazaarSuggestedPrice * qty;
     const bazaarNet = settings.bazaarEnabled ? bazaarGross : Number.NEGATIVE_INFINITY;
-    const bestRoute = bazaarNet >= itemMarketNet ? "Bazaar" : "Item Market";
+    const auctionGross = exit.conservativeExitPrice * qty;
+    const auctionNet = auctionNetFor(exit.conservativeExitPrice, qty);
+
+    // Museum set route: value implied by completing a set and exchanging it for
+    // points. Informational unless the set model produced a positive value.
+    const museum = extras?.museum && Number.isFinite(extras.museum.impliedValue) && extras.museum.impliedValue > 0
+      ? {
+        suggestedPrice: Math.max(1, Math.floor(extras.museum.impliedValue * (1 - clamp(settings.safetyHaircut, 0, 0.10)))),
+        label: extras.museum.label || "Museum set"
+      }
+      : null;
+    const museumGross = museum ? museum.suggestedPrice * qty : Number.NEGATIVE_INFINITY;
+    const museumNet = museum && settings.museumSetsEnabled !== false ? museumGross : Number.NEGATIVE_INFINITY;
+
+    const candidates = [
+      { route: "Bazaar", net: bazaarNet },
+      { route: "Item Market", net: itemMarketNet },
+      { route: "Museum set", net: museumNet }
+    ].filter((candidate) => Number.isFinite(candidate.net));
+    candidates.sort((a, b) => b.net - a.net);
+    const bestRoute = candidates[0]?.route || "Item Market";
+    const bestNet = candidates[0]?.net ?? itemMarketNet;
+
     return {
       itemMarket: {
         suggestedPrice: exit.itemMarketSuggestedPrice,
         gross: itemMarketGross,
         net: itemMarketNet,
-        fee: itemMarketGross - itemMarketNet
+        fee: itemMarketGross - itemMarketNet,
+        feeBps
       },
       bazaar: settings.bazaarEnabled ? {
         suggestedPrice: exit.bazaarSuggestedPrice,
@@ -368,9 +555,25 @@
         net: bazaarNet,
         fee: 0
       } : null,
+      // Auction House is reported for sellers comparing exits but never
+      // chosen automatically: auction outcomes are uncertain.
+      auction: {
+        suggestedPrice: exit.conservativeExitPrice,
+        gross: auctionGross,
+        net: auctionNet,
+        fee: auctionGross - auctionNet,
+        feeBps: AUCTION_HOUSE_FEE_BPS
+      },
+      museum: museum ? {
+        suggestedPrice: museum.suggestedPrice,
+        gross: museumGross,
+        net: museumGross,
+        fee: 0,
+        label: museum.label
+      } : null,
       bestRoute,
-      bestNet: bestRoute === "Bazaar" ? bazaarNet : itemMarketNet,
-      bestNetPerUnit: Math.floor((bestRoute === "Bazaar" ? bazaarNet : itemMarketNet) / qty)
+      bestNet,
+      bestNetPerUnit: Math.floor(bestNet / qty)
     };
   }
 
@@ -414,7 +617,7 @@
     return Math.round(100 * (0.30 * roiComponent + 0.25 * profitComponent + 0.20 * confidenceComponent + 0.15 * stabilityDepth + 0.10 * capitalEfficiency));
   }
 
-  function evaluatePrefixes(snapshot, historyStats, settings, nowMs = Date.now()) {
+  function evaluatePrefixes(snapshot, historyStats, settings, nowMs = Date.now(), extras = {}) {
     if (!snapshot?.supportedCommodity) return { best: null, all: [], unsupported: true };
     const listings = snapshot.listings || [];
     if (listings.length < 2) return { best: null, all: [], unsupported: false };
@@ -438,7 +641,7 @@
       const averageBuyPrice = capitalRequired / quantityBought;
       const exit = calculateExit({ snapshot, historyStats, nextAsk, settings });
       if (!exit) continue;
-      const routes = routeEconomics(exit, quantityBought, settings);
+      const routes = routeEconomics(exit, quantityBought, settings, extras);
       const expectedProfit = routes.bestNet - capitalRequired;
       const roi = capitalRequired > 0 ? expectedProfit / capitalRequired : 0;
       const discount = 1 - averageBuyPrice / reference.value;
@@ -482,7 +685,7 @@
     return { best: eligible[0] || all[0] || null, all, unsupported: false };
   }
 
-  function evaluateDirectBuy({ buyPrice, quantity = 1, snapshot, historyStats, settings, nowMs = Date.now(), forceYellow = false }) {
+  function evaluateDirectBuy({ buyPrice, quantity = 1, snapshot, historyStats, settings, nowMs = Date.now(), forceYellow = false, museum = null }) {
     const unitPrice = Math.max(1, asInt(buyPrice));
     const reference = chooseReference(snapshot, historyStats);
     if (!unitPrice || !reference.value || !snapshot?.supportedCommodity) return null;
@@ -496,7 +699,7 @@
     const capitalRequired = unitPrice * qty;
     const exit = calculateExit({ snapshot, historyStats, settings });
     if (!exit) return null;
-    const routes = routeEconomics(exit, qty, settings);
+    const routes = routeEconomics(exit, qty, settings, { museum });
     const expectedProfit = routes.bestNet - capitalRequired;
     const roi = expectedProfit / capitalRequired;
     const discount = 1 - unitPrice / reference.value;
@@ -531,12 +734,12 @@
     };
   }
 
-  function maxRationalBid({ snapshot, historyStats, settings, quantity = 1 }) {
+  function maxRationalBid({ snapshot, historyStats, settings, quantity = 1, museum = null }) {
     if (!snapshot?.supportedCommodity) return null;
     const qty = Math.max(1, asInt(quantity, 1));
     const exit = calculateExit({ snapshot, historyStats, settings });
     if (!exit) return null;
-    const routes = routeEconomics(exit, qty, settings);
+    const routes = routeEconomics(exit, qty, settings, { museum });
     const reference = chooseReference(snapshot, historyStats).value;
     const maxByRoi = Math.floor((routes.bestNet / qty) / (1 + settings.minimumROI));
     const maxByProfit = Math.floor((routes.bestNet - settings.minimumProfit) / qty);
@@ -544,12 +747,12 @@
     return Math.max(0, Math.min(maxByRoi, maxByProfit, maxByDiscount));
   }
 
-  function estimateInventoryExit({ quantity, snapshot, historyStats, settings }) {
+  function estimateInventoryExit({ quantity, snapshot, historyStats, settings, museum = null }) {
     const qty = Math.max(1, asInt(quantity, 1));
     if (!snapshot?.supportedCommodity) return null;
     const exit = calculateExit({ snapshot, historyStats, settings });
     if (!exit) return null;
-    const routes = routeEconomics(exit, qty, settings);
+    const routes = routeEconomics(exit, qty, settings, { museum });
     return { quantity: qty, exit, routes, reference: chooseReference(snapshot, historyStats) };
   }
 
@@ -601,9 +804,361 @@
     return 1;
   }
 
+
+  // ---------------------------------------------------------------------------
+  // Pure evaluators added in v0.3.0: equipment comparables, museum sets,
+  // watchlist triggers, own Item Market listings and API key access.
+  // ---------------------------------------------------------------------------
+
+  function normalizeAuctionSales(payload, nowMs = Date.now()) {
+    const rows = Array.isArray(payload?.auctionhouse) ? payload.auctionhouse : [];
+    const cutoffSec = Math.floor((nowMs - AUCTION_SALES_WINDOW_MS) / 1000);
+    return rows
+      .map((row) => {
+        const item = row?.item || {};
+        const detailed = item && typeof item === "object" && (item.stats || Array.isArray(item.bonuses) || item.rarity !== undefined);
+        return {
+          id: asInt(row?.id, 0),
+          price: asInt(row?.price, 0),
+          bids: asInt(row?.bids, 0),
+          timestamp: asInt(row?.timestamp, 0),
+          itemId: asInt(item?.id, 0),
+          stackable: !detailed,
+          details: detailed ? {
+            uid: item.uid ?? null,
+            stats: item.stats || {},
+            bonuses: Array.isArray(item.bonuses) ? item.bonuses : [],
+            rarity: item.rarity ?? null
+          } : null
+        };
+      })
+      .filter((sale) => sale.price > 0 && sale.timestamp >= cutoffSec)
+      .sort((a, b) => b.timestamp - a.timestamp);
+  }
+
+  function equipmentQuality(details) {
+    const quality = Number(details?.stats?.quality);
+    return Number.isFinite(quality) ? quality : null;
+  }
+
+  function describeEquipmentGroup(key) {
+    const [rarity, signature] = String(key || "plain|none").split("|");
+    const bonuses = signature && signature !== "none" ? signature.split("+") : [];
+    const rarityLabel = rarity && rarity !== "plain" ? rarity.toUpperCase() : "Plain";
+    return bonuses.length ? `${rarityLabel} ${bonuses.join(" + ")}` : rarityLabel;
+  }
+
+  // Comparable-group valuation for weapons and armor. Listings are grouped by
+  // rarity + bonus signature; quality is matched softly (+/-10) when the group
+  // is deep enough. Ended Auction House sales of the same group are the only
+  // official transaction evidence and are used as a cap on the comparable
+  // median. Nothing here is a guarantee: rare bonus rolls trade on intangibles.
+  function analyzeEquipmentListings(snapshot, { auctionSales = [], settings = {} } = {}) {
+    const listings = (snapshot?.listings || []).filter((row) => row.itemDetails && typeof row.itemDetails === "object");
+    if (!listings.length) return { rows: [], groups: [], best: null, summary: null };
+
+    const minimumDiscount = Number.isFinite(settings.minimumDiscount) ? settings.minimumDiscount : DEFAULTS.minimumDiscount;
+    const haircut = clamp(Number.isFinite(settings.safetyHaircut) ? settings.safetyHaircut : DEFAULTS.safetyHaircut, 0, 0.10);
+    const feeBps = itemMarketFeeBps(settings);
+
+    const groupMap = new Map();
+    listings.forEach((row) => {
+      const key = equipmentGroupKey(row.itemDetails);
+      if (!groupMap.has(key)) groupMap.set(key, []);
+      groupMap.get(key).push(row);
+    });
+
+    const salesMap = new Map();
+    (auctionSales || []).forEach((sale) => {
+      if (!sale?.details || sale.price <= 0) return;
+      if (snapshot?.itemId && sale.itemId && sale.itemId !== snapshot.itemId) return;
+      const key = equipmentGroupKey(sale.details);
+      if (!salesMap.has(key)) salesMap.set(key, []);
+      salesMap.get(key).push(sale.price);
+    });
+
+    const rows = listings.map((row) => {
+      const key = equipmentGroupKey(row.itemDetails);
+      const quality = equipmentQuality(row.itemDetails);
+      const group = groupMap.get(key) || [];
+      const othersAll = group.filter((other) => other !== row);
+      const qualityMatched = Number.isFinite(quality)
+        ? othersAll.filter((other) => {
+          const otherQuality = equipmentQuality(other.itemDetails);
+          return Number.isFinite(otherQuality) && Math.abs(otherQuality - quality) <= 10;
+        })
+        : [];
+      const comparables = qualityMatched.length >= 3 ? qualityMatched : othersAll;
+      const compMedian = median(comparables.map((other) => other.price));
+      const sales = salesMap.get(key) || [];
+      const salesMedian = median(sales);
+
+      let reference = null;
+      let referenceSource = "none";
+      if (Number.isFinite(compMedian) && Number.isFinite(salesMedian)) {
+        reference = Math.min(compMedian, Math.round(salesMedian * 1.05));
+        referenceSource = "listings + AH sales";
+      } else if (Number.isFinite(compMedian)) {
+        reference = compMedian;
+        referenceSource = "comparable listings";
+      } else if (Number.isFinite(salesMedian)) {
+        reference = salesMedian;
+        referenceSource = "AH sales";
+      }
+
+      const discount = reference ? 1 - row.price / reference : null;
+      const resalePrice = reference ? Math.max(1, Math.floor(reference * (1 - haircut))) : null;
+      const expectedNet = resalePrice ? grossToNet(resalePrice, feeBps) - row.price : null;
+      const evidence = comparables.length + sales.length;
+
+      let state = "GREY";
+      if (Number.isFinite(discount) && Number.isFinite(expectedNet) && expectedNet > 0 && discount >= minimumDiscount) {
+        const strong = comparables.length >= 4 && (sales.length === 0 || salesMedian >= row.price * (1 + minimumDiscount));
+        state = strong ? "GREEN" : evidence >= 2 ? "YELLOW" : "GREY";
+      } else if (Number.isFinite(expectedNet) && expectedNet < 0 && Number.isFinite(discount) && discount < 0) {
+        state = "RED";
+      }
+
+      return {
+        price: row.price,
+        quantity: row.quantity,
+        uid: row.itemDetails.uid ?? null,
+        groupKey: key,
+        groupLabel: describeEquipmentGroup(key),
+        rarity: row.itemDetails.rarity ?? null,
+        bonuses: Array.isArray(row.itemDetails.bonuses) ? row.itemDetails.bonuses.map((bonus) => ({
+          title: String(bonus?.title || ""),
+          value: asInt(bonus?.value, 0)
+        })) : [],
+        quality,
+        qualityMatched: qualityMatched.length >= 3,
+        comparableCount: comparables.length,
+        comparableMedian: Number.isFinite(compMedian) ? Math.round(compMedian) : null,
+        salesCount: sales.length,
+        salesMedian: Number.isFinite(salesMedian) ? Math.round(salesMedian) : null,
+        reference,
+        referenceSource,
+        discount,
+        resalePrice,
+        expectedNet,
+        state
+      };
+    });
+
+    const groups = Array.from(groupMap.entries()).map(([key, members]) => {
+      const prices = members.map((member) => member.price);
+      const sales = salesMap.get(key) || [];
+      return {
+        key,
+        label: describeEquipmentGroup(key),
+        count: members.length,
+        floor: Math.min(...prices),
+        median: Math.round(median(prices)),
+        salesCount: sales.length,
+        salesMedian: sales.length ? Math.round(median(sales)) : null
+      };
+    }).sort((a, b) => b.count - a.count || a.floor - b.floor);
+
+    const stateRank = { GREEN: 4, YELLOW: 3, GREY: 2, RED: 1 };
+    const best = rows
+      .filter((row) => row.state === "GREEN" || row.state === "YELLOW")
+      .sort((a, b) => (stateRank[b.state] - stateRank[a.state]) || (b.discount - a.discount))[0] || null;
+
+    return { rows, groups, best, summary: snapshot?.equipmentSummary || summarizeEquipmentListings(listings) };
+  }
+
+  function museumSetFor(itemId) {
+    const id = asInt(itemId, 0);
+    if (!id) return null;
+    for (const set of Object.values(MUSEUM_SETS)) {
+      if (set.items.includes(id)) return set;
+    }
+    return null;
+  }
+
+  function normalizePointsMarket(payload, observedAtMs = Date.now()) {
+    const rows = Array.isArray(payload?.pointsmarket) ? payload.pointsmarket : [];
+    const asks = rows
+      .map((row) => ({ quantity: asInt(row?.quantity, 0), cost: asInt(row?.cost, 0) }))
+      .filter((row) => row.quantity > 0 && row.cost > 0)
+      .sort((a, b) => a.cost - b.cost);
+    return {
+      cheapest: asks[0]?.cost ?? null,
+      medianTop10: median(asks.slice(0, 10).map((row) => row.cost)),
+      listings: asks.length,
+      observedAt: Math.floor(observedAtMs / 1000)
+    };
+  }
+
+  // Value of one set piece implied by completing the set and exchanging it for
+  // museum points: set value minus the cost of buying every other piece at
+  // Torn's official market price. Negative or incomplete results mean the set
+  // route is not attractive for this piece right now.
+  function museumValuation({ itemId, memberPrices = {}, pointValue = null, settings = {} }) {
+    const set = museumSetFor(itemId);
+    const point = asInt(pointValue, 0);
+    if (!set || point <= 0) return null;
+    const id = asInt(itemId, 0);
+    const others = set.items.filter((member) => member !== id);
+    const missing = others.filter((member) => !(asInt(memberPrices?.[member], 0) > 0));
+    const setValue = set.points * point;
+    if (missing.length) {
+      return { setKey: set.key, label: set.label, points: set.points, pointValue: point, setValue, othersCost: null, impliedValue: null, complete: false, missing };
+    }
+    const othersCost = others.reduce((sum, member) => sum + asInt(memberPrices[member], 0), 0);
+    const impliedValue = setValue - othersCost;
+    return {
+      setKey: set.key,
+      label: set.label,
+      points: set.points,
+      pointValue: point,
+      setValue,
+      othersCost,
+      impliedValue,
+      complete: true,
+      missing: [],
+      enabled: settings.museumSetsEnabled !== false
+    };
+  }
+
+  function normalizeWatchlist(raw) {
+    const rows = Array.isArray(raw) ? raw : [];
+    const byId = new Map();
+    rows.forEach((row) => {
+      const itemId = asInt(row?.itemId, 0);
+      const target = asInt(row?.target, 0);
+      if (!itemId || target <= 0) return;
+      byId.set(itemId, {
+        itemId,
+        name: String(row?.name || `Item ${itemId}`).slice(0, 80),
+        target,
+        addedAt: asInt(row?.addedAt, 0) || Math.floor(Date.now() / 1000),
+        lastAlertAt: asInt(row?.lastAlertAt, 0) || 0,
+        lastFloor: asInt(row?.lastFloor, 0) || null,
+        lastCheckedAt: asInt(row?.lastCheckedAt, 0) || 0
+      });
+    });
+    return Array.from(byId.values()).slice(0, WATCHLIST_MAX_ITEMS);
+  }
+
+  function evaluateWatchItem(entry, snapshot, nowMs = Date.now()) {
+    const target = asInt(entry?.target, 0);
+    const floor = asInt(snapshot?.lowestPrice, 0) || null;
+    const triggered = Boolean(floor && target > 0 && floor <= target);
+    const quantityAtOrBelow = triggered
+      ? (snapshot?.listings || []).filter((row) => row.price <= target).reduce((sum, row) => sum + row.quantity, 0)
+      : 0;
+    const lastAlertMs = asInt(entry?.lastAlertAt, 0) * 1000;
+    const cooldownActive = lastAlertMs > 0 && nowMs - lastAlertMs < WATCHLIST_ALERT_COOLDOWN_MS;
+    const droppedFurther = Number.isFinite(entry?.lastFloor) && entry.lastFloor > 0 && floor && floor < entry.lastFloor * 0.98;
+    return {
+      triggered,
+      shouldAlert: triggered && (!cooldownActive || droppedFurther),
+      floor,
+      target,
+      quantityAtOrBelow,
+      discountToTarget: floor && target ? 1 - floor / target : null
+    };
+  }
+
+  function normalizeOwnListings(payload) {
+    const rows = Array.isArray(payload?.itemmarket) ? payload.itemmarket : [];
+    return rows
+      .map((row) => {
+        const item = row?.item || {};
+        const detailed = Boolean(item?.stats || (Array.isArray(item?.bonuses) && item.bonuses.length) || item?.rarity);
+        return {
+          listingId: asInt(row?.id, 0),
+          itemId: asInt(item?.id, 0),
+          name: String(item?.name || `Item ${item?.id || ""}`).trim(),
+          type: String(item?.type || ""),
+          uid: item?.uid ?? null,
+          price: asInt(row?.price, 0),
+          averagePrice: asInt(row?.average_price, 0),
+          amount: asInt(row?.amount, 0),
+          available: asInt(row?.available, 0),
+          anonymous: Boolean(row?.is_anonymous),
+          equipment: detailed || isEquipmentType(item?.type),
+          rarity: item?.rarity ?? null
+        };
+      })
+      .filter((row) => row.itemId > 0 && row.price > 0);
+  }
+
+  function evaluateOwnListing(listing, snapshot, settings = {}) {
+    const listings = snapshot?.listings || [];
+    const floor = asInt(snapshot?.lowestPrice, 0) || null;
+    const averagePrice = asInt(listing?.averagePrice, 0) || asInt(snapshot?.averagePrice, 0) || null;
+    const feeBps = ITEM_MARKET_FEE_BPS + (listing?.anonymous && !settings.anonymousFeeWaived ? ANONYMOUS_LISTING_FEE_BPS : 0);
+    const gross = listing.price * Math.max(1, listing.amount);
+    const net = grossToNet(gross, feeBps);
+    const cheaperRows = listings.filter((row) => row.price < listing.price);
+    const cheaperQuantity = cheaperRows.reduce((sum, row) => sum + row.quantity, 0);
+    const undercut = floor && floor < listing.price ? 1 - floor / listing.price : 0;
+    const versusAverage = averagePrice ? listing.price / averagePrice - 1 : null;
+    const undercutAmount = Math.max(0, asInt(settings.itemMarketUndercut ?? DEFAULTS.itemMarketUndercut));
+
+    let status = "NO DATA";
+    if (floor) {
+      if (listing.price <= floor) status = "CHEAPEST";
+      else if (cheaperQuantity <= Math.max(1, listing.amount)) status = "CLOSE";
+      else status = "UNDERCUT";
+    }
+
+    let suggestedPrice = null;
+    let note = "";
+    if (status === "UNDERCUT" || status === "CLOSE") {
+      suggestedPrice = Math.max(1, floor - undercutAmount);
+      if (averagePrice && floor < averagePrice * 0.9) {
+        note = `Floor is ${((1 - floor / averagePrice) * 100).toFixed(0)}% under Torn's daily average; matching it may be chasing a flash sale.`;
+      }
+    } else if (status === "CHEAPEST" && averagePrice && listing.price < averagePrice * 0.95) {
+      note = `Listed ${((1 - listing.price / averagePrice) * 100).toFixed(0)}% below Torn's daily average.`;
+    }
+
+    return {
+      status,
+      floor,
+      averagePrice,
+      cheaperListings: cheaperRows.length,
+      cheaperQuantity,
+      undercut,
+      versusAverage,
+      feeBps,
+      gross,
+      net,
+      suggestedPrice,
+      note
+    };
+  }
+
+  function keyAccessRank(info) {
+    const type = String(info?.access?.type || "");
+    if (KEY_ACCESS_RANK[type]) return KEY_ACCESS_RANK[type];
+    return 0;
+  }
+
+  function keyAllowsSelection(info, section, selection) {
+    const list = info?.selections?.[section];
+    if (!Array.isArray(list)) return null;
+    return list.includes(selection);
+  }
+
+  function keySupports(info, { section, selection, minimumType }) {
+    if (!info) return null;
+    const explicit = keyAllowsSelection(info, section, selection);
+    if (explicit !== null) return explicit;
+    const required = KEY_ACCESS_RANK[minimumType] || 0;
+    return keyAccessRank(info) >= required;
+  }
+
   const TEST_EXPORTS = Object.freeze({
     APP,
     DEFAULTS,
+    MUSEUM_SETS,
+    ITEM_MARKET_FEE_BPS,
+    ANONYMOUS_LISTING_FEE_BPS,
+    AUCTION_HOUSE_FEE_BPS,
     median,
     mad,
     weightedMedian,
@@ -612,15 +1167,32 @@
     calculateHistoryStats,
     freshness,
     confidenceForOpportunity,
+    officialAgreement,
     chooseReference,
     calculateExit,
     routeEconomics,
+    grossToNet,
     grossToItemMarketNet,
+    itemMarketFeeBps,
     itemMarketNetFor,
+    auctionNetFor,
     evaluatePrefixes,
     evaluateDirectBuy,
     maxRationalBid,
     estimateInventoryExit,
+    summarizeEquipmentListings,
+    equipmentGroupKey,
+    analyzeEquipmentListings,
+    normalizeAuctionSales,
+    museumSetFor,
+    museumValuation,
+    normalizePointsMarket,
+    normalizeWatchlist,
+    evaluateWatchItem,
+    normalizeOwnListings,
+    evaluateOwnListing,
+    keyAccessRank,
+    keySupports,
     formatMoney,
     parseMoney,
     parseQuantity
@@ -630,29 +1202,88 @@
   if (typeof document === "undefined" || typeof window === "undefined") return;
 
   // ---------------------------------------------------------------------------
+  // Environment detection (Tampermonkey/Violentmonkey vs Torn PDA)
+  // ---------------------------------------------------------------------------
+
+  const ENV = Object.freeze({
+    hasGmStorage: typeof GM_getValue === "function" && typeof GM_setValue === "function",
+    hasGmDelete: typeof GM_deleteValue === "function",
+    hasGmRequest: typeof GM_xmlhttpRequest === "function",
+    hasGmStyle: typeof GM_addStyle === "function",
+    hasGmMenu: typeof GM_registerMenuCommand === "function",
+    hasPdaRequest: typeof PDA_httpGet === "function",
+    pdaKey: PDA_API_KEY_PLACEHOLDER.startsWith("###") ? "" : PDA_API_KEY_PLACEHOLDER.trim(),
+    isPda: typeof PDA_httpGet === "function" || !PDA_API_KEY_PLACEHOLDER.startsWith("###") ||
+      typeof window.flutter_inappwebview !== "undefined"
+  });
+
+  // ---------------------------------------------------------------------------
   // Configuration and storage
   // ---------------------------------------------------------------------------
 
+  const LOCAL_STORAGE_PREFIX = "marketEdge.local.";
+
+  function localFallbackGet(key, fallback) {
+    try {
+      const raw = window.localStorage.getItem(`${LOCAL_STORAGE_PREFIX}${key}`);
+      if (raw === null || raw === undefined) return fallback;
+      return JSON.parse(raw);
+    } catch {
+      return fallback;
+    }
+  }
+
+  function localFallbackSet(key, value) {
+    try {
+      window.localStorage.setItem(`${LOCAL_STORAGE_PREFIX}${key}`, JSON.stringify(value));
+    } catch (error) {
+      console.warn(APP.logPrefix, "Local storage write failed", key, error);
+    }
+  }
+
+  function localFallbackDelete(key) {
+    try {
+      window.localStorage.removeItem(`${LOCAL_STORAGE_PREFIX}${key}`);
+    } catch {
+      // ignore
+    }
+  }
+
   class Store {
     static get(key, fallback) {
+      if (!ENV.hasGmStorage) return localFallbackGet(key, fallback);
       try {
         const value = GM_getValue(key, fallback);
-        return value === undefined ? fallback : value;
+        if (value === undefined) return fallback;
+        // Some userscript bridges (Torn PDA) persist values as strings.
+        if (typeof value === "string" && fallback !== undefined && typeof fallback !== "string") {
+          try { return JSON.parse(value); } catch { return value; }
+        }
+        return value;
       } catch (error) {
         console.warn(APP.logPrefix, "Storage read failed", key, error);
-        return fallback;
+        return localFallbackGet(key, fallback);
       }
     }
 
     static set(key, value) {
+      if (!ENV.hasGmStorage) {
+        localFallbackSet(key, value);
+        return;
+      }
       try {
         GM_setValue(key, value);
       } catch (error) {
         console.warn(APP.logPrefix, "Storage write failed", key, error);
+        localFallbackSet(key, value);
       }
     }
 
     static delete(key) {
+      if (!ENV.hasGmStorage || !ENV.hasGmDelete) {
+        localFallbackDelete(key);
+        return;
+      }
       try {
         GM_deleteValue(key);
       } catch (error) {
@@ -670,11 +1301,53 @@
     }
 
     static apiKey() {
-      return String(Store.get(STORAGE_KEYS.apiKey, "") || "").trim();
+      const stored = String(Store.get(STORAGE_KEYS.apiKey, "") || "").trim();
+      // Torn PDA injects the player's key; use it when nothing was stored.
+      return stored || ENV.pdaKey;
     }
 
     static setApiKey(key) {
       Store.set(STORAGE_KEYS.apiKey, String(key || "").trim());
+    }
+
+    static keyInfo() {
+      const raw = Store.get(STORAGE_KEYS.keyInfo, null);
+      return raw && typeof raw === "object" && raw.info ? raw : null;
+    }
+
+    static saveKeyInfo(info) {
+      if (!info || typeof info !== "object") return;
+      Store.set(STORAGE_KEYS.keyInfo, { savedAt: Date.now(), info });
+    }
+
+    static watchlist() {
+      return normalizeWatchlist(Store.get(STORAGE_KEYS.watchlist, []));
+    }
+
+    static saveWatchlist(entries) {
+      Store.set(STORAGE_KEYS.watchlist, normalizeWatchlist(entries));
+    }
+
+    static pointsMarket() {
+      const raw = Store.get(STORAGE_KEYS.pointsMarket, null);
+      if (!raw || typeof raw !== "object" || !raw.savedAt) return null;
+      return raw;
+    }
+
+    static savePointsMarket(points) {
+      if (!points) return;
+      Store.set(STORAGE_KEYS.pointsMarket, { ...points, savedAt: Date.now() });
+    }
+
+    static auctionSales(itemId) {
+      const raw = Store.get(`${STORAGE_KEYS.auctionSalesPrefix}${asInt(itemId)}`, null);
+      if (!raw || typeof raw !== "object" || !raw.savedAt || !Array.isArray(raw.sales)) return null;
+      return raw;
+    }
+
+    static saveAuctionSales(itemId, sales) {
+      if (!asInt(itemId)) return;
+      Store.set(`${STORAGE_KEYS.auctionSalesPrefix}${asInt(itemId)}`, { savedAt: Date.now(), sales: sales.slice(0, API_AUCTION_LIMIT) });
     }
 
     static snapshot(itemId) {
@@ -702,7 +1375,9 @@
           top5Quantity: listings.slice(0, 5).reduce((sum, row) => sum + row.quantity, 0),
           top20Quantity: listings.slice(0, 20).reduce((sum, row) => sum + row.quantity, 0)
         },
-        supportedCommodity: raw.supportedCommodity !== false
+        supportedCommodity: raw.supportedCommodity !== false,
+        equipment: raw.equipment === true,
+        equipmentSummary: raw.equipmentSummary && typeof raw.equipmentSummary === "object" ? raw.equipmentSummary : null
       };
     }
 
@@ -724,14 +1399,16 @@
         depthMetrics: snapshot.depthMetrics,
         medianListingPrice: snapshot.medianListingPrice,
         calculatedMarketAnchor: snapshot.calculatedMarketAnchor,
-        supportedCommodity: snapshot.supportedCommodity
+        supportedCommodity: snapshot.supportedCommodity,
+        equipment: snapshot.equipment === true,
+        equipmentSummary: snapshot.equipmentSummary || null
       });
     }
 
-    static itemMeta(itemId) {
+    static itemMeta(itemId, maxAgeMs = ITEM_META_TTL_MS) {
       const raw = Store.get(`${STORAGE_KEYS.itemMetaPrefix}${asInt(itemId)}`, null);
       if (!raw || typeof raw !== "object" || !raw.savedAt) return null;
-      if (Date.now() - asInt(raw.savedAt) > ITEM_META_TTL_MS) return null;
+      if (Date.now() - asInt(raw.savedAt) > maxAgeMs) return null;
       return raw.meta && typeof raw.meta === "object" ? raw.meta : null;
     }
 
@@ -850,6 +1527,42 @@
     }
   }
 
+  // Transport abstraction: Torn PDA exposes PDA_httpGet, userscript managers
+  // expose GM_xmlhttpRequest, and plain fetch is the last resort (the Torn API
+  // sends permissive CORS headers). All three only ever talk to api.torn.com.
+  function transportGet(url, headers) {
+    if (ENV.hasPdaRequest) {
+      return Promise.resolve(PDA_httpGet(url, headers)).then((response) => ({
+        status: asInt(response?.status, 200),
+        responseText: String(response?.responseText ?? "")
+      }));
+    }
+    if (ENV.hasGmRequest) {
+      return new Promise((resolve, reject) => {
+        GM_xmlhttpRequest({
+          method: "GET",
+          url,
+          headers,
+          timeout: 20000,
+          onload: (response) => resolve({ status: response.status, responseText: response.responseText }),
+          onerror: () => reject(new Error("Unable to reach the Torn API.")),
+          ontimeout: () => reject(new Error("Torn API request timed out."))
+        });
+      });
+    }
+    if (typeof fetch === "function") {
+      const controller = typeof AbortController === "function" ? new AbortController() : null;
+      const timer = controller ? setTimeout(() => controller.abort(), 20000) : null;
+      return fetch(url, { method: "GET", headers, signal: controller?.signal })
+        .then(async (response) => ({ status: response.status, responseText: await response.text() }))
+        .catch((error) => {
+          throw new Error(error?.name === "AbortError" ? "Torn API request timed out." : "Unable to reach the Torn API.");
+        })
+        .finally(() => { if (timer) clearTimeout(timer); });
+    }
+    return Promise.reject(new Error("No HTTP transport is available in this userscript environment."));
+  }
+
   class TornApi {
     constructor() {
       this.base = "https://api.torn.com/v2";
@@ -878,37 +1591,26 @@
 
       const promise = this.scheduler.schedule(() => {
         log("API request", path);
-        return new Promise((resolve, reject) => {
-          GM_xmlhttpRequest({
-            method: "GET",
-            url: this.buildUrl(path),
-            headers: {
-              Authorization: `ApiKey ${key}`,
-              Accept: "application/json"
-            },
-            timeout: 20000,
-            onload: (response) => {
-              let body;
-              try {
-                body = JSON.parse(response.responseText || "{}");
-              } catch {
-                reject(new Error(`Torn API returned invalid JSON (HTTP ${response.status}).`));
-                return;
-              }
-              if (response.status < 200 || response.status >= 300) {
-                const message = body?.error?.error || body?.error?.message || `HTTP ${response.status}`;
-                reject(new Error(`Torn API: ${message}`));
-                return;
-              }
-              if (body?.error) {
-                reject(new Error(`Torn API: ${body.error.error || body.error.message || "Unknown error"}`));
-                return;
-              }
-              resolve(body);
-            },
-            onerror: () => reject(new Error("Unable to reach the Torn API.")),
-            ontimeout: () => reject(new Error("Torn API request timed out."))
-          });
+        const headers = {
+          Authorization: `ApiKey ${key}`,
+          Accept: "application/json"
+        };
+        return transportGet(this.buildUrl(path), headers).then((response) => {
+          let body;
+          try {
+            body = JSON.parse(response.responseText || "{}");
+          } catch {
+            throw new Error(`Torn API returned invalid JSON (HTTP ${response.status}).`);
+          }
+          if (body?.error) {
+            const error = new Error(`Torn API: ${body.error.error || body.error.message || "Unknown error"}`);
+            error.tornCode = asInt(body.error.code, 0);
+            throw error;
+          }
+          if (response.status < 200 || response.status >= 300) {
+            throw new Error(`Torn API: HTTP ${response.status}`);
+          }
+          return body;
         });
       }, priority, { path, queueGroup })
         .then((data) => {
@@ -921,11 +1623,34 @@
       return promise;
     }
 
+    async keyInfo({ priority = 100, cacheMs = ONE_DAY_MS } = {}) {
+      const data = await this.request("/key/info", { cacheMs, priority });
+      const info = data?.info && typeof data.info === "object" ? data.info : null;
+      if (info) {
+        Store.saveKeyInfo(info);
+        const playerId = asInt(info?.user?.id, 0);
+        if (playerId) Store.set(STORAGE_KEYS.playerId, playerId);
+      }
+      return info;
+    }
+
     async testKey() {
-      const data = await this.request("/user/basic", { cacheMs: 0, priority: 100 });
-      const playerId = asInt(data?.profile?.id ?? data?.basic?.id ?? data?.player_id ?? data?.id, 0);
-      if (playerId) Store.set(STORAGE_KEYS.playerId, playerId);
-      return { ok: true, playerId: playerId || null, data };
+      // /key/info is available to every key type and reports the access
+      // level, which drives which optional features are offered.
+      const info = await this.keyInfo({ cacheMs: 0 });
+      let playerId = asInt(info?.user?.id, 0);
+      if (!playerId) {
+        const data = await this.request("/user/basic", { cacheMs: 0, priority: 100 });
+        playerId = asInt(data?.profile?.id ?? data?.basic?.id ?? data?.player_id ?? data?.id, 0);
+        if (playerId) Store.set(STORAGE_KEYS.playerId, playerId);
+      }
+      return {
+        ok: true,
+        playerId: playerId || null,
+        accessType: String(info?.access?.type || "Unknown"),
+        accessRank: keyAccessRank(info),
+        info
+      };
     }
 
     async itemMarket(itemId, { limit = API_LIST_LIMIT, priority = 0, queueGroup = null } = {}) {
@@ -933,14 +1658,38 @@
       return this.request(`/market/${asInt(itemId)}/itemmarket?limit=${safeLimit}&offset=0`, { priority, queueGroup });
     }
 
-    async items(itemIds, { priority = 120 } = {}) {
+    async items(itemIds, { priority = 120, cacheMs = ONE_DAY_MS } = {}) {
       const ids = Array.from(new Set(itemIds.map((id) => asInt(id)).filter(Boolean))).slice(0, 100);
       if (!ids.length) return { items: [] };
-      return this.request(`/torn/${ids.join(",")}/items`, { cacheMs: ONE_DAY_MS, priority });
+      return this.request(`/torn/${ids.join(",")}/items`, { cacheMs, priority });
+    }
+
+    async auctionSales(itemId, { priority = 40 } = {}) {
+      return this.request(`/market/${asInt(itemId)}/auctionhouse?limit=${API_AUCTION_LIMIT}&sort=DESC`, {
+        cacheMs: AUCTION_SALES_TTL_MS,
+        priority
+      });
+    }
+
+    async pointsMarket({ priority = 60 } = {}) {
+      return this.request("/market/pointsmarket", { cacheMs: POINTS_MARKET_TTL_MS, priority });
+    }
+
+    async ownListings({ priority = 150 } = {}) {
+      // Requires a Limited access key. Callers translate error code 16.
+      return this.request("/user/itemmarket", { cacheMs: 20000, priority });
     }
   }
 
   const api = new TornApi();
+
+  function describeApiError(error, { feature = "This feature" } = {}) {
+    if (!error) return "Unknown error";
+    if (error.tornCode === 16) return `${feature} needs a Limited access API key (current key is ${Store.keyInfo()?.info?.access?.type || "lower access"}).`;
+    if (error.tornCode === 2) return "Torn rejected the API key. Re-check it in Market Edge settings.";
+    if (error.tornCode === 5) return "Torn API rate limit reached; Market Edge will retry on the next refresh.";
+    return error.message || String(error);
+  }
 
   function normalizeItemMeta(item) {
     if (!item || !asInt(item.id)) return null;
@@ -962,21 +1711,21 @@
 
   function metadataSupportsCommodity(meta) {
     if (!meta) return true;
-    return !/weapon|armor|armour/i.test(String(meta.type || ""));
+    return !isEquipmentType(meta.type);
   }
 
-  async function loadItemMetadataBatch(itemIds) {
+  async function loadItemMetadataBatch(itemIds, { maxAgeMs = ITEM_META_TTL_MS, priority = 150 } = {}) {
     const ids = Array.from(new Set(itemIds.map((id) => asInt(id)).filter(Boolean)));
     const result = new Map();
     const missing = [];
     ids.forEach((id) => {
-      const cached = Store.itemMeta(id);
+      const cached = Store.itemMeta(id, maxAgeMs);
       if (cached) result.set(id, cached);
       else missing.push(id);
     });
     if (!missing.length) return result;
 
-    const payload = await api.items(missing, { priority: 150 });
+    const payload = await api.items(missing, { priority, cacheMs: Math.min(ONE_DAY_MS, maxAgeMs) });
     const rows = Array.isArray(payload?.items) ? payload.items : [];
     rows.forEach((item) => {
       const meta = normalizeItemMeta(item);
@@ -985,6 +1734,70 @@
       result.set(meta.id, meta);
     });
     return result;
+  }
+
+  async function loadPointsMarket({ priority = 60 } = {}) {
+    const cached = Store.pointsMarket();
+    if (cached && Date.now() - asInt(cached.savedAt) < POINTS_MARKET_TTL_MS) return cached;
+    try {
+      const payload = await api.pointsMarket({ priority });
+      const points = normalizePointsMarket(payload);
+      Store.savePointsMarket(points);
+      return { ...points, savedAt: Date.now() };
+    } catch (error) {
+      log("Points market unavailable", error.message);
+      return cached || null;
+    }
+  }
+
+  // Museum context: one batched metadata request per set (daily) plus the
+  // points market (every five minutes) gives set-implied values for every
+  // plushie/flower without touching per-item order books.
+  async function loadMuseumContext(itemIds, { priority = 60 } = {}) {
+    const result = new Map();
+    if (settings.museumSetsEnabled === false) return result;
+    const sets = new Map();
+    itemIds.forEach((itemId) => {
+      const set = museumSetFor(itemId);
+      if (set) sets.set(set.key, set);
+    });
+    if (!sets.size) return result;
+
+    const points = await loadPointsMarket({ priority });
+    const pointValue = asInt(points?.cheapest, 0);
+    if (!pointValue) return result;
+
+    const memberIds = Array.from(sets.values()).flatMap((set) => set.items);
+    let metadata = new Map();
+    try {
+      metadata = await loadItemMetadataBatch(memberIds, { maxAgeMs: SET_META_TTL_MS, priority });
+    } catch (error) {
+      log("Museum set metadata unavailable", error.message);
+      return result;
+    }
+    const memberPrices = {};
+    metadata.forEach((meta, id) => { memberPrices[id] = asInt(meta?.marketPrice, 0); });
+
+    itemIds.forEach((itemId) => {
+      if (!museumSetFor(itemId)) return;
+      const valuation = museumValuation({ itemId, memberPrices, pointValue, settings });
+      if (valuation) result.set(asInt(itemId), valuation);
+    });
+    return result;
+  }
+
+  async function loadAuctionSales(itemId, { priority = 40 } = {}) {
+    const cached = Store.auctionSales(itemId);
+    if (cached && Date.now() - asInt(cached.savedAt) < AUCTION_SALES_TTL_MS) return cached.sales;
+    try {
+      const payload = await api.auctionSales(itemId, { priority });
+      const sales = normalizeAuctionSales(payload);
+      Store.saveAuctionSales(itemId, sales);
+      return sales;
+    } catch (error) {
+      log("Auction sales unavailable", itemId, error.message);
+      return cached?.sales || [];
+    }
   }
 
   function snapshotCacheState(snapshot, nowMs = Date.now()) {
@@ -1825,7 +2638,9 @@
     title: null,
     status: null,
     currentSurface: null,
-    renderedBadges: new Set()
+    renderedBadges: new Set(),
+    pinned: false,
+    currentPanel: null
   };
 
   const CSS = `
@@ -1912,10 +2727,50 @@
     .me-modal-actions { display:flex; gap:7px; justify-content:flex-end; margin-top:14px; }
     .me-error { color:#e27a7a; font-size:11px; line-height:1.4; }
     .me-learning { color:#f0ca66; }
+    .me-table { width:100%; border-collapse:collapse; font-size:10px; margin-top:6px; }
+    .me-table th, .me-table td { padding:3px 4px; text-align:right; border-bottom:1px solid rgba(255,255,255,.06); white-space:nowrap; font-variant-numeric:tabular-nums; }
+    .me-table th { color:#aaa; font-weight:600; text-transform:uppercase; letter-spacing:.04em; font-size:9px; }
+    .me-table td:first-child, .me-table th:first-child { text-align:left; max-width:150px; overflow:hidden; text-overflow:ellipsis; }
+    .me-table tr.GREEN td { color:#b9e2c3; }
+    .me-table tr.YELLOW td { color:#f0d79a; }
+    .me-table tr.RED td { color:#e5a3a3; }
+    .me-pill { display:inline-block; padding:1px 5px; border-radius:3px; font-size:9px; font-weight:700; border:1px solid rgba(255,255,255,.2); }
+    .me-pill.GREEN { color:#7fd193; border-color:rgba(79,169,104,.5); }
+    .me-pill.YELLOW { color:#f0ca66; border-color:rgba(201,156,62,.5); }
+    .me-pill.GREY { color:#aaa; }
+    .me-pill.RED { color:#e27a7a; border-color:rgba(199,98,98,.5); }
+    .me-inline-input { width:110px; padding:4px 6px; border:1px solid #555; border-radius:4px; background:#171719; color:#eee; font-size:11px; }
+    .me-launcher { position:fixed; left:10px; bottom:10px; z-index:999997; padding:6px 9px; border-radius:16px; border:1px solid rgba(255,255,255,.25); background:rgba(28,28,30,.94); color:#eee; font:800 11px/1 Arial,sans-serif; cursor:pointer; box-shadow:0 4px 14px rgba(0,0,0,.4); }
+    .me-toast-host { position:fixed; left:10px; bottom:48px; z-index:999999; display:flex; flex-direction:column; gap:6px; max-width:min(360px, calc(100vw - 20px)); }
+    .me-toast { background:rgba(28,28,30,.97); border:1px solid rgba(74,165,100,.6); border-radius:6px; padding:8px 10px; color:#eee; font:12px/1.35 Arial,sans-serif; box-shadow:0 8px 24px rgba(0,0,0,.45); }
+    .me-toast a { color:#7fd193; font-weight:700; }
+    .me-toast .me-toast-close { float:right; margin-left:8px; cursor:pointer; color:#aaa; font-weight:700; }
+    .me-watch-row { display:flex; align-items:center; gap:6px; font-size:11px; padding:3px 0; border-bottom:1px solid rgba(255,255,255,.06); }
+    .me-watch-row .me-watch-name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .me-watch-row .me-watch-remove { cursor:pointer; color:#e27a7a; font-weight:700; padding:0 4px; }
     @media (max-width: 600px) { #market-edge-root { right:6px; bottom:6px; width:calc(100vw - 12px); } .me-body { max-height:58vh; } }
   `;
 
-  try { GM_addStyle(CSS); } catch { /* no-op */ }
+  function injectStyles(css) {
+    if (ENV.hasGmStyle) {
+      try {
+        GM_addStyle(css);
+        return;
+      } catch {
+        // fall through to a plain style element
+      }
+    }
+    try {
+      const style = document.createElement("style");
+      style.id = "market-edge-style";
+      style.textContent = css;
+      (document.head || document.documentElement).appendChild(style);
+    } catch {
+      // no-op
+    }
+  }
+
+  injectStyles(CSS);
 
   function ensureUi() {
     if (ui.root?.isConnected) return ui.root;
@@ -1928,6 +2783,7 @@
           <div class="me-status"></div>
           <button class="me-icon-btn me-settings" type="button" title="Settings">S</button>
           <button class="me-icon-btn me-collapse" type="button" title="Collapse">-</button>
+          <button class="me-icon-btn me-close" type="button" title="Close panel">X</button>
         </div>
         <div class="me-body"></div>
       </div>`;
@@ -1938,6 +2794,7 @@
     ui.status = root.querySelector(".me-status");
     root.querySelector(".me-settings").addEventListener("click", showSettings);
     root.querySelector(".me-collapse").addEventListener("click", togglePanelState);
+    root.querySelector(".me-close").addEventListener("click", () => removeFloatingUi(true));
     applyPanelState();
     return root;
   }
@@ -2026,13 +2883,17 @@
           <label>Minimum discount (%)</label><input data-setting="minimumDiscount" data-percent="1" type="number" min="0" max="100" step="0.1" value="${current.minimumDiscount * 100}">
         </div>
 
-        <div class="me-section-title">Exit assumptions</div>
+        <div class="me-section-title">Exit assumptions and fees</div>
         <div class="me-form-grid">
           <label>Bazaar enabled</label><input data-setting="bazaarEnabled" type="checkbox" ${current.bazaarEnabled ? "checked" : ""}>
           <label>Bazaar discount (%)</label><input data-setting="bazaarDiscount" data-percent="1" type="number" min="0" max="20" step="0.1" value="${current.bazaarDiscount * 100}">
           <label>Safety haircut (%)</label><input data-setting="safetyHaircut" data-percent="1" type="number" min="0" max="10" step="0.1" value="${current.safetyHaircut * 100}">
           <label>Historical premium cap (%)</label><input data-setting="allowedHistoricalPremium" data-premium="1" type="number" min="0" max="10" step="0.1" value="${(current.allowedHistoricalPremium - 1) * 100}">
           <label>Item Market undercut ($)</label><input data-setting="itemMarketUndercut" type="number" min="0" step="1" value="${current.itemMarketUndercut}">
+          <label>I list anonymously on the Item Market (+10% fee)</label><input data-setting="anonymousListing" type="checkbox" ${current.anonymousListing ? "checked" : ""}>
+          <label>Anonymous fee waived by 5-star company perk</label><input data-setting="anonymousFeeWaived" type="checkbox" ${current.anonymousFeeWaived ? "checked" : ""}>
+          <label>Museum set route for plushies/flowers</label><input data-setting="museumSetsEnabled" type="checkbox" ${current.museumSetsEnabled ? "checked" : ""}>
+          <label>Weapon/armor comparables</label><input data-setting="equipmentEnabled" type="checkbox" ${current.equipmentEnabled ? "checked" : ""}>
         </div>
 
         <div class="me-section-title">Risk & scanning</div>
@@ -2044,7 +2905,19 @@
           <label>History retention (days)</label><input data-setting="historyRetentionDays" type="number" min="1" max="90" step="1" value="${current.historyRetentionDays}">
           <label>Developer diagnostics in console</label><input data-setting="developerMode" type="checkbox" ${current.developerMode ? "checked" : ""}>
         </div>
-        <div class="me-form-help">The API key stays in Tampermonkey storage and is sent only to api.torn.com. Market Edge never includes it in diagnostics or exports. Item Market sale fee is fixed at 5% in this release.</div>
+
+        <div class="me-section-title">Watchlist (API polling while a Torn tab is visible)</div>
+        <div class="me-form-grid">
+          <label>Watchlist alerts enabled</label><input data-setting="watchlistEnabled" type="checkbox" ${current.watchlistEnabled ? "checked" : ""}>
+          <label>Check interval (seconds, min ${WATCHLIST_MIN_INTERVAL_SEC})</label><input data-setting="watchlistIntervalSeconds" type="number" min="${WATCHLIST_MIN_INTERVAL_SEC}" max="3600" step="5" value="${current.watchlistIntervalSeconds}">
+        </div>
+        <div id="me-watchlist-rows"></div>
+        <div class="me-actions">
+          <input id="me-watch-item" class="me-inline-input" type="number" min="1" placeholder="Item ID">
+          <input id="me-watch-target" class="me-inline-input" type="number" min="1" placeholder="Alert at or below $">
+          <button class="me-btn" id="me-watch-add" type="button">Add to watchlist</button>
+        </div>
+        <div class="me-form-help">The API key stays in userscript storage and is sent only to api.torn.com. Market Edge never includes it in diagnostics or exports. Fees modelled: Item Market 5% sales tax, optional 10% anonymous-listing fee, Auction House 3%. Bazaar and trades have no fee. Own Item Market listings need a Limited access key; everything else works with a Public key.${ENV.isPda ? " Torn PDA detected: the PDA API key is used automatically when no key is entered." : ""}</div>
         <div class="me-modal-actions"><button class="me-btn" id="me-cancel-settings" type="button">Cancel</button><button class="me-btn" id="me-save-settings" type="button">Save</button></div>
       </div>`;
     document.body.appendChild(backdrop);
@@ -2052,6 +2925,53 @@
     const close = () => backdrop.remove();
     backdrop.addEventListener("click", (event) => { if (event.target === backdrop) close(); });
     backdrop.querySelector("#me-cancel-settings").addEventListener("click", close);
+
+    const keyInfo = Store.keyInfo();
+    if (keyInfo?.info?.access?.type) {
+      const status = backdrop.querySelector("#me-api-status");
+      status.textContent = `${keyInfo.info.access.type} key (last verified ${formatAge(Math.floor((Date.now() - asInt(keyInfo.savedAt)) / 1000))} ago)`;
+    }
+
+    const renderWatchRows = () => {
+      const host = backdrop.querySelector("#me-watchlist-rows");
+      const entries = Store.watchlist();
+      if (!entries.length) {
+        host.innerHTML = `<div class="me-form-help">No watched items. Add one here or use "Watch" on an Item Market page.</div>`;
+        return;
+      }
+      host.innerHTML = entries.map((entry) => `
+        <div class="me-watch-row" data-item-id="${entry.itemId}">
+          <span class="me-watch-name" title="Item ${entry.itemId}">${escapeHtml(entry.name)}</span>
+          <span>at or below ${formatMoney(entry.target)}</span>
+          <span>${entry.lastFloor ? `floor ${formatMoney(entry.lastFloor)}` : ""}</span>
+          <span class="me-watch-remove" role="button" title="Remove">X</span>
+        </div>`).join("");
+      host.querySelectorAll(".me-watch-remove").forEach((button) => {
+        button.addEventListener("click", () => {
+          const itemId = asInt(button.closest(".me-watch-row")?.dataset?.itemId, 0);
+          Store.saveWatchlist(Store.watchlist().filter((entry) => entry.itemId !== itemId));
+          renderWatchRows();
+        });
+      });
+    };
+    renderWatchRows();
+    backdrop.querySelector("#me-watch-add").addEventListener("click", async () => {
+      const itemId = asInt(backdrop.querySelector("#me-watch-item").value, 0);
+      const target = asInt(backdrop.querySelector("#me-watch-target").value, 0);
+      if (!itemId || target <= 0) return;
+      let name = `Item ${itemId}`;
+      try {
+        const meta = await loadItemMetadataBatch([itemId]);
+        name = meta.get(itemId)?.name || name;
+      } catch {
+        // Name lookup is cosmetic.
+      }
+      addWatchItem({ itemId, name, target });
+      backdrop.querySelector("#me-watch-item").value = "";
+      backdrop.querySelector("#me-watch-target").value = "";
+      renderWatchRows();
+    });
+
     backdrop.querySelector("#me-test-key").addEventListener("click", async () => {
       const status = backdrop.querySelector("#me-api-status");
       Store.setApiKey(backdrop.querySelector("#me-api-key").value);
@@ -2059,10 +2979,12 @@
       status.textContent = "Testing...";
       try {
         const result = await api.testKey();
-        status.textContent = result.playerId ? `OK - player ${result.playerId}` : "OK";
-        status.className = "me-good";
+        const player = result.playerId ? `player ${result.playerId}` : "player unknown";
+        const limitedOk = result.accessRank >= KEY_ACCESS_RANK["Limited Access"];
+        status.textContent = `OK - ${player} - ${result.accessType}${limitedOk ? "" : " (own listings panel needs Limited access)"}`;
+        status.className = limitedOk ? "me-good" : "me-warn";
       } catch (error) {
-        status.textContent = error.message;
+        status.textContent = describeApiError(error, { feature: "Key test" });
         status.className = "me-bad";
       }
     });
@@ -2076,12 +2998,14 @@
         else if (input.dataset.percent) next[key] = Number(input.value || 0) / 100;
         else next[key] = Number(input.value || 0);
       });
+      next.watchlistIntervalSeconds = Math.max(WATCHLIST_MIN_INTERVAL_SEC, asInt(next.watchlistIntervalSeconds, DEFAULTS.watchlistIntervalSeconds));
       Store.setApiKey(backdrop.querySelector("#me-api-key").value);
       Store.saveSettings(next);
       settings = Store.settings();
       api.memoryCache.clear();
       close();
       scheduleRefresh(true);
+      restartWatchlist();
     });
   }
 
@@ -2111,7 +3035,12 @@
     document.querySelectorAll(".me-bazaar-add-row").forEach((node) => node.classList.remove("me-bazaar-add-row"));
   }
 
-  function removeFloatingUi() {
+  function removeFloatingUi(force = false) {
+    // Panels opened deliberately from the menu (own listings, watchlist) stay
+    // until the player closes them or navigates elsewhere.
+    if (ui.pinned && !force) return;
+    ui.pinned = false;
+    ui.currentPanel = null;
     if (ui.root?.isConnected) ui.root.remove();
     ui.root = null;
     ui.body = null;
@@ -2234,6 +3163,18 @@
     if (!visible || !visible.card?.isConnected) return null;
     const stale = staleMarker(result);
     if (result.error) return renderInlineError(visible, result.error);
+    if (result.equipment) {
+      // Weapons/armor on list pages: show the cheapest plain and cheapest
+      // bonus/rarity listing so the player has a floor to compare against.
+      const summary = result.equipment;
+      const plain = summary.plainFloor ? formatMoney(summary.plainFloor) : "-";
+      const bonus = summary.bonusFloor ? formatMoney(summary.bonusFloor) : null;
+      const bonusHtml = bonus ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Cheapest listing with a bonus or rarity">bonus ${bonus}</span>` : "";
+      return renderInlineHtml(visible,
+        `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="Cheapest plain listing on the Item Market">floor ${plain}</span>${bonusHtml}${stale}`,
+        "GREY"
+      );
+    }
     if (result.unsupported) {
       return renderInlineHtml(visible, `<span class="me-inline-brand">ME</span><span class="me-inline-secondary">unsupported equipment</span>`, "GREY");
     }
@@ -2249,8 +3190,13 @@
       const best = estimate?.routes?.bestRoute;
       const bzClass = best === "Bazaar" ? "me-inline-primary" : "me-inline-secondary";
       const imClass = best === "Item Market" ? "me-inline-primary" : "me-inline-secondary";
+      const museum = estimate?.routes?.museum;
+      const setClass = best === "Museum set" ? "me-inline-primary" : "me-inline-secondary";
+      const setHtml = museum
+        ? `<span class="me-inline-sep">|</span><span class="${setClass}" title="Value implied by completing the ${escapeHtml(museum.label)} and exchanging it for points">SET ${formatMoney(museum.suggestedPrice)}</span>`
+        : "";
       return renderInlineHtml(visible,
-        `<span class="me-inline-brand">ME</span><span class="${bzClass}">BZ ${bzValue}</span><span class="me-inline-sep">|</span><span class="${imClass}">IM ${imValue}</span>${stale}`,
+        `<span class="me-inline-brand">ME</span><span class="${bzClass}">BZ ${bzValue}</span><span class="me-inline-sep">|</span><span class="${imClass}">IM ${imValue}</span>${setHtml}${stale}`,
         "GREY"
       );
     }
@@ -2321,10 +3267,126 @@
   // Page-specific analyses
   // ---------------------------------------------------------------------------
 
+  function ownListingsRouteActive() {
+    const hash = String(location.hash || "").toLowerCase();
+    return /manage|mylist|my-list|yourlist|your-list|viewlisting|listings/.test(hash) && !/itemid=/.test(hash);
+  }
+
+  function panelToolbarHtml() {
+    return `<div class="me-actions">
+      <button class="me-btn me-open-listings" type="button" title="Compare your Item Market listings with the live floor (Limited key)">My listings</button>
+      <button class="me-btn me-open-watchlist" type="button" title="Watched items and alert targets">Watchlist</button>
+    </div>`;
+  }
+
+  function bindPanelToolbar() {
+    ui.body?.querySelector(".me-open-listings")?.addEventListener("click", () => renderOwnListingsPanel());
+    ui.body?.querySelector(".me-open-watchlist")?.addEventListener("click", () => renderWatchlistPanel());
+  }
+
+  function itemMarketLink(itemId, name = "") {
+    const encoded = encodeURIComponent(String(name || ""));
+    return `https://www.torn.com/page.php?sid=ItemMarket#/market/view=sell&itemID=${asInt(itemId)}${name ? `&itemName=${encoded}` : ""}`;
+  }
+
+  function watchControlsHtml(snapshot, best) {
+    const entry = Store.watchlist().find((row) => row.itemId === snapshot.itemId);
+    if (entry) {
+      return `<div class="me-actions"><span class="me-note">Watching: alert at or below ${formatMoney(entry.target)}</span><button class="me-btn me-unwatch" type="button">Stop watching</button></div>`;
+    }
+    const defaultTarget = best?.exit?.conservativeExitPrice
+      ? Math.floor(best.exit.conservativeExitPrice * (1 - settings.minimumDiscount))
+      : (snapshot.lowestPrice ? Math.floor(snapshot.lowestPrice * (1 - settings.minimumDiscount)) : 0);
+    return `<div class="me-actions"><input class="me-inline-input me-watch-target" type="number" min="1" value="${defaultTarget || ""}" placeholder="Alert at or below $"><button class="me-btn me-watch" type="button">Watch</button></div>`;
+  }
+
+  function bindWatchControls(snapshot) {
+    const body = ui.body;
+    if (!body) return;
+    body.querySelector(".me-watch")?.addEventListener("click", () => {
+      const target = asInt(body.querySelector(".me-watch-target")?.value, 0);
+      if (target <= 0) return;
+      addWatchItem({ itemId: snapshot.itemId, name: snapshot.itemName, target });
+      renderItemMarket();
+    });
+    body.querySelector(".me-unwatch")?.addEventListener("click", () => {
+      Store.saveWatchlist(Store.watchlist().filter((row) => row.itemId !== snapshot.itemId));
+      renderItemMarket();
+    });
+  }
+
+  function equipmentRowsHtml(analysis) {
+    const rows = analysis.rows.slice(0, 25);
+    if (!rows.length) return "";
+    return `<table class="me-table">
+      <thead><tr><th>Group</th><th>Q</th><th>Price</th><th>Comps</th><th>AH sold</th><th>Disc.</th><th></th></tr></thead>
+      <tbody>${rows.map((row) => `<tr class="${row.state}">
+        <td title="${escapeHtml(row.groupLabel)}">${escapeHtml(row.groupLabel)}</td>
+        <td>${Number.isFinite(row.quality) ? row.quality.toFixed(0) : "-"}</td>
+        <td title="${formatMoney(row.price, true)}">${formatMoney(row.price)}</td>
+        <td title="${row.comparableCount} comparable listings${row.qualityMatched ? " (quality matched)" : ""}">${row.comparableMedian ? `${formatMoney(row.comparableMedian)} x${row.comparableCount}` : "-"}</td>
+        <td title="${row.salesCount} ended auctions in 30 days">${row.salesMedian ? `${formatMoney(row.salesMedian)} x${row.salesCount}` : "-"}</td>
+        <td>${Number.isFinite(row.discount) ? `${(row.discount * 100).toFixed(1)}%` : "-"}</td>
+        <td><span class="me-pill ${row.state}">${CLASS_META[row.state]?.label || row.state}</span></td>
+      </tr>`).join("")}</tbody>
+    </table>`;
+  }
+
+  async function renderEquipmentItemMarket(snapshot, historyStats) {
+    const fresh = freshness(snapshot.cacheTimestamp);
+    setPanel(`<div class="me-kicker">Item Market - equipment</div><div class="me-item-name">${escapeHtml(snapshot.itemName)}</div><div class="me-note">Loading ended Auction House sales for comparables...</div>`, fresh.label);
+    const auctionSales = await loadAuctionSales(snapshot.itemId, { priority: 180 });
+    if (detectSurface() !== "itemmarket" || getItemIdFromLocation() !== snapshot.itemId) return;
+    const analysis = analyzeEquipmentListings(snapshot, { auctionSales, settings });
+    const best = analysis.best;
+    const summary = analysis.summary || {};
+    const feeBps = itemMarketFeeBps(settings);
+    const groupsHtml = analysis.groups.slice(0, 8).map((group) => `<div class="me-diag-row">${escapeHtml(group.label)}: ${group.count} listed from ${formatMoney(group.floor)} (median ${formatMoney(group.median)})${group.salesCount ? `; ${group.salesCount} AH sales, median ${formatMoney(group.salesMedian)}` : ""}</div>`).join("");
+
+    setPanel(`
+      <div class="me-kicker">Item Market - equipment comparables</div>
+      <div class="me-item-name">${escapeHtml(snapshot.itemName)}</div>
+      ${metricRows([
+        ["Listings analyzed", `${analysis.rows.length}${snapshot.depthMetrics?.totalListings > analysis.rows.length ? ` of ${snapshot.depthMetrics.totalListings}` : ""}`],
+        ["Plain floor", summary.plainFloor ? formatMoney(summary.plainFloor) : "-"],
+        ["Plain median", summary.plainMedian ? formatMoney(summary.plainMedian) : "-"],
+        ["Bonus/rarity floor", summary.bonusFloor ? formatMoney(summary.bonusFloor) : "-"],
+        ["Torn daily average", snapshot.averagePrice ? formatMoney(snapshot.averagePrice) : "-"],
+        ["AH sales (30d)", String(auctionSales.filter((sale) => sale.details).length)],
+        ["API age", `${formatAge(fresh.ageSeconds)} - ${fresh.label}`]
+      ])}
+      <div class="me-rule"></div>
+      <div class="me-kicker">Best value listing</div>
+      ${best ? `<div class="me-callout ${best.state}">
+        <div class="me-decision ${best.state}">${CLASS_META[best.state].icon} ${CLASS_META[best.state].label}</div>
+        ${metricRows([
+          ["Group", escapeHtml(best.groupLabel)],
+          ["Quality", Number.isFinite(best.quality) ? best.quality.toFixed(1) : "-"],
+          ["Price", formatMoney(best.price)],
+          ["Reference", `${formatMoney(best.reference)} (${escapeHtml(best.referenceSource)})`],
+          ["Discount", `${(best.discount * 100).toFixed(1)}%`],
+          [`Net if resold (IM ${feeBps / 100}%)`, formatMoney(best.expectedNet), best.expectedNet >= 0 ? "me-good" : "me-bad"]
+        ])}
+      </div>` : `<div class="me-note">No listing is priced meaningfully below its comparable group.</div>`}
+      ${equipmentRowsHtml(analysis)}
+      ${groupsHtml ? `<details class="me-diag"><summary>Comparable groups</summary>${groupsHtml}</details>` : ""}
+      ${watchControlsHtml(snapshot, null)}
+      ${panelToolbarHtml()}
+      <div class="me-note">Equipment is grouped by rarity and bonus set, quality matched within 10 points when enough listings exist. Ended Auction House sales are the only official transaction evidence. Rare rolls trade on intangibles; treat this as a floor check, not a valuation.</div>
+    `, fresh.label);
+    bindWatchControls(snapshot);
+    bindPanelToolbar();
+  }
+
   async function renderItemMarket() {
+    if (ownListingsRouteActive()) {
+      await renderOwnListingsPanel();
+      return;
+    }
     const itemId = getItemIdFromLocation();
     if (!itemId) {
-      setPanel(`<div class="me-kicker">Item Market</div><div class="me-note">Open a specific stackable item to analyze its order book.</div>`);
+      setPanel(`<div class="me-kicker">Item Market</div><div class="me-note">Open a specific item to analyze its order book.</div>${panelToolbarHtml()}`);
+      bindPanelToolbar();
       return;
     }
     if (!Store.apiKey()) {
@@ -2336,15 +3398,21 @@
     try {
       const { snapshot, historyStats } = await loadSnapshot(itemId, { limit: API_DEEP_LIMIT, priority: 200 });
       if (!snapshot.supportedCommodity) {
-        setPanel(`<div class="me-kicker">Item Market</div><div class="me-item-name">${escapeHtml(snapshot.itemName)}</div><div class="me-callout GREY"><div class="me-decision GREY">- NOT SUPPORTED</div><div class="me-note">Advanced equipment valuation is not supported yet.</div></div>`);
+        if (settings.equipmentEnabled !== false && snapshot.equipment) {
+          await renderEquipmentItemMarket(snapshot, historyStats);
+          return;
+        }
+        setPanel(`<div class="me-kicker">Item Market</div><div class="me-item-name">${escapeHtml(snapshot.itemName)}</div><div class="me-callout GREY"><div class="me-decision GREY">- NOT SUPPORTED</div><div class="me-note">Enable weapon/armor comparables in settings to analyze equipment listings.</div></div>`);
         return;
       }
 
       const liveRows = parseLiveItemMarketListings();
+      const museumContext = await loadMuseumContext([itemId], { priority: 190 });
+      const museum = museumContext.get(itemId) || null;
 
       // The official Torn API is the authoritative valuation source. The live
       // DOM is used only to confirm/highlight what the player currently sees.
-      const evaluated = evaluatePrefixes(snapshot, historyStats, settings);
+      const evaluated = evaluatePrefixes(snapshot, historyStats, settings, Date.now(), { museum });
       const best = evaluated.best;
       const compareCount = Math.max(2, best?.prefixCount || Math.min(5, snapshot.listings.length));
       const liveMatchesApi = liveRows.length >= compareCount && snapshot.listings.length >= compareCount &&
@@ -2358,10 +3426,26 @@
       const fresh = freshness(snapshot.cacheTimestamp);
       const reference = chooseReference(snapshot, historyStats);
       const learning = historyStats.oneDay.count < 5;
+      const agreement = officialAgreement(snapshot);
       const currentDiscount = reference.value && snapshot.lowestPrice ? 1 - snapshot.lowestPrice / reference.value : null;
       const sourceWarning = liveRows.length >= 2 && !liveMatchesApi
         ? `<div class="me-note me-warn">The visible Torn listings differ from the current API cache. Market Edge is keeping the official API snapshot authoritative and will not mix the two books.</div>`
         : "";
+      const feeBps = itemMarketFeeBps(settings);
+      const feeLabel = `${feeBps / 100}%${feeBps > ITEM_MARKET_FEE_BPS ? " incl. anonymous" : ""}`;
+      const fairValueCell = historyStats.historicalFairValue
+        ? `<span title="${formatMoney(historyStats.historicalFairValue, true)}">${formatMoney(historyStats.historicalFairValue)}</span>`
+        : (agreement.agrees
+          ? `<span title="Torn daily average and current depth agree within ${(OFFICIAL_AGREEMENT_TOLERANCE * 100).toFixed(0)}%">${formatMoney(reference.value)} (official)</span>`
+          : "Learning...");
+      const coldStartNote = learning
+        ? (agreement.agrees
+          ? `<div class="me-note">Cold start: Torn's daily average (${formatMoney(snapshot.averagePrice)}) and the current depth anchor agree, so no warm-up penalty is applied. Local observations: ${historyStats.oneDay.count}/5.</div>`
+          : `<div class="me-note me-learning">Learning market... ${historyStats.oneDay.count}/5 observations. ${agreement.available ? `Torn's daily average (${formatMoney(snapshot.averagePrice)}) differs ${(agreement.ratio * 100).toFixed(1)}% from the depth anchor, so` : "Without an official average,"} an extra 2% safety haircut applies.</div>`)
+        : "";
+      const museumRows = museum && museum.complete
+        ? [[`${museum.label} implied value`, `<span title="${museum.points} points x ${formatMoney(museum.pointValue, true)} minus ${formatMoney(museum.othersCost, true)} for the other pieces">${formatMoney(museum.impliedValue)}</span>`, museum.impliedValue > (reference.value || 0) ? "me-good" : ""]]
+        : [];
 
       setPanel(`
         <div class="me-kicker">Item Market - ${escapeHtml(liveConfirmation)}</div>
@@ -2369,11 +3453,13 @@
         ${metricRows([
           ["Lowest", `<span title="${formatMoney(snapshot.lowestPrice, true)}">${formatMoney(snapshot.lowestPrice)}</span>`],
           ["Current anchor", `<span title="${formatMoney(snapshot.calculatedMarketAnchor, true)}">${formatMoney(snapshot.calculatedMarketAnchor)}</span>`],
-          ["24h fair value", historyStats.historicalFairValue ? `<span title="${formatMoney(historyStats.historicalFairValue, true)}">${formatMoney(historyStats.historicalFairValue)}</span>` : "Learning...", learning ? "me-learning" : ""],
+          ["Torn daily average", snapshot.averagePrice ? `<span title="${formatMoney(snapshot.averagePrice, true)}">${formatMoney(snapshot.averagePrice)}</span>` : "-"],
+          ["Fair value", fairValueCell, learning && !agreement.agrees ? "me-learning" : ""],
           ["Lowest discount", Number.isFinite(currentDiscount) ? `${(currentDiscount * 100).toFixed(2)}%` : "-"],
           ["24h MAD volatility", Number.isFinite(historyStats.oneDay.volatility) ? `${(historyStats.oneDay.volatility * 100).toFixed(2)}%` : "-"],
           ["API age", `${formatAge(fresh.ageSeconds)} - ${fresh.label}`],
-          ["Observations (24h)", String(historyStats.oneDay.count)]
+          ["Observations (24h)", String(historyStats.oneDay.count)],
+          ...museumRows
         ])}
         ${sourceWarning}
         <div class="me-rule"></div>
@@ -2385,19 +3471,25 @@
           ["Best exit", escapeHtml(best.routes.bestRoute)],
           ["Bazaar target", best.routes.bazaar ? formatMoney(best.routes.bazaar.suggestedPrice) : "Disabled"],
           ["Item Market target", formatMoney(best.routes.itemMarket.suggestedPrice)],
-          ["IM net after 5%", formatMoney(Math.floor(best.routes.itemMarket.net / best.quantityBought))]
+          [`IM net after ${feeLabel}`, formatMoney(Math.floor(best.routes.itemMarket.net / best.quantityBought))],
+          ["Auction net after 3%", `<span title="Informational: auctions are never chosen as the best route">${formatMoney(Math.floor(best.routes.auction.net / best.quantityBought))}</span>`],
+          ...(best.routes.museum ? [[`${best.routes.museum.label} target`, formatMoney(best.routes.museum.suggestedPrice)]] : [])
         ]) : `<div class="me-note">No affordable prefix with positive expected profit.</div>`}
         <div class="me-rule"></div>
         ${decisionHtml(best)}
         ${diagnosticsHtml(best)}
-        ${learning ? `<div class="me-note me-learning">Learning market... ${historyStats.oneDay.count} observations collected. Until 5 observations, Market Edge applies an extra 2% safety haircut and does not treat current lowest as fair value.</div>` : ""}
-        <div class="me-note">Facts: official API asks and 5% Item Market fee. The visible page is used only for confirmation/highlighting. Local data: observed anchors. Exit, profit and confidence are estimates - not guarantees.</div>
+        ${coldStartNote}
+        ${watchControlsHtml(snapshot, best)}
+        ${panelToolbarHtml()}
+        <div class="me-note">Facts: official API asks, Torn daily average and the ${feeLabel} Item Market fee. The visible page is used only for confirmation/highlighting. Local data: observed anchors. Exit, profit and confidence are estimates - not guarantees.</div>
       `, fresh.label);
+      bindWatchControls(snapshot);
+      bindPanelToolbar();
 
       if (liveMatchesApi) highlightItemMarketRows(liveRows, best);
       else clearBadges();
     } catch (error) {
-      errorPanel(error.message);
+      errorPanel(describeApiError(error, { feature: "Item Market analysis" }));
     }
   }
 
@@ -2422,25 +3514,30 @@
     return 200 - index;
   }
 
-  function resultForSurface(surface, visible, snapshot, historyStats, ownBazaar, renderMeta = {}) {
-    if (!snapshot?.supportedCommodity) return { visible, snapshot, unsupported: true, renderMeta };
+  function resultForSurface(surface, visible, snapshot, historyStats, ownBazaar, renderMeta = {}, museum = null) {
+    if (!snapshot?.supportedCommodity) {
+      if (settings.equipmentEnabled !== false && snapshot?.equipment && snapshot.equipmentSummary) {
+        return { visible, snapshot, equipment: snapshot.equipmentSummary, renderMeta };
+      }
+      return { visible, snapshot, unsupported: true, renderMeta };
+    }
 
     if (surface === "inventory") {
-      const estimate = estimateInventoryExit({ quantity: visible.quantity, snapshot, historyStats, settings });
+      const estimate = estimateInventoryExit({ quantity: visible.quantity, snapshot, historyStats, settings, museum });
       return { visible, snapshot, historyStats, inventory: estimate, renderMeta };
     }
 
     if (surface === "auction") {
-      const maxBid = maxRationalBid({ snapshot, historyStats, settings, quantity: visible.quantity });
+      const maxBid = maxRationalBid({ snapshot, historyStats, settings, quantity: visible.quantity, museum });
       const headroom = Number.isFinite(maxBid) ? maxBid - visible.price : null;
       const direct = visible.price > 0
-        ? evaluateDirectBuy({ buyPrice: visible.price, quantity: visible.quantity, snapshot, historyStats, settings, forceYellow: true })
+        ? evaluateDirectBuy({ buyPrice: visible.price, quantity: visible.quantity, snapshot, historyStats, settings, forceYellow: true, museum })
         : null;
       return { visible, snapshot, historyStats, auction: { maxBid, headroom, direct }, renderMeta };
     }
 
     if (surface === "bazaar" && ownBazaar) {
-      const estimate = estimateInventoryExit({ quantity: visible.quantity, snapshot, historyStats, settings });
+      const estimate = estimateInventoryExit({ quantity: visible.quantity, snapshot, historyStats, settings, museum });
       const target = estimate?.routes?.bazaar?.suggestedPrice;
       const delta = Number.isFinite(target) ? target - visible.price : null;
       return { visible, snapshot, historyStats, ownBazaar: { target, delta, estimate }, renderMeta };
@@ -2455,7 +3552,8 @@
       snapshot,
       historyStats,
       settings,
-      forceYellow: surface === "auction"
+      forceYellow: surface === "auction",
+      museum
     });
     return {
       visible,
@@ -2559,16 +3657,26 @@
       log("Item metadata batch failed; continuing with Item Market fallback", error.message);
     }
 
+    // Museum context is one cheap batch shared by every plushie/flower row.
+    let museumContext = new Map();
+    try {
+      museumContext = await loadMuseumContext(items.map((item) => item.itemId), { priority: 140 });
+    } catch (error) {
+      log("Museum context unavailable", error.message);
+    }
+    if (detectSurface() !== surface || document.visibilityState !== "visible") return;
+
     const tasks = items.map(async (visible, index) => {
       const priority = viewportPriority(visible, index);
       let renderedCached = false;
       try {
         if (!visible.card?.isConnected || detectSurface() !== surface) return;
         const meta = metadata.get(visible.itemId);
-        if (meta && !metadataSupportsCommodity(meta)) {
+        if (meta && !metadataSupportsCommodity(meta) && settings.equipmentEnabled === false) {
           renderInlineResult(surface, { visible, unsupported: true, renderMeta: { stale: false } }, ownBazaar);
           return;
         }
+        const museum = museumContext.get(visible.itemId) || null;
 
         const bundle = await loadSnapshot(visible.itemId, {
           limit: API_LIST_LIMIT,
@@ -2583,7 +3691,8 @@
               cached.snapshot,
               cached.historyStats,
               ownBazaar,
-              { stale: Boolean(cached.refreshing), cacheAgeSeconds: cached.cacheState?.ageSeconds }
+              { stale: Boolean(cached.refreshing), cacheAgeSeconds: cached.cacheState?.ageSeconds },
+              museum
             );
             renderInlineResult(surface, result, ownBazaar);
           }
@@ -2593,7 +3702,7 @@
         const result = resultForSurface(surface, visible, bundle.snapshot, bundle.historyStats, ownBazaar, {
           stale: false,
           cacheAgeSeconds: bundle.cacheState?.ageSeconds
-        });
+        }, museum);
         renderInlineResult(surface, result, ownBazaar);
       } catch (error) {
         if (error?.marketEdgeCanceled) return;
@@ -2608,6 +3717,288 @@
     });
 
     await Promise.allSettled(tasks);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Own Item Market listings panel (Limited access key)
+  // ---------------------------------------------------------------------------
+
+  function ownListingRowHtml(listing, evaluation) {
+    const name = escapeHtml(listing.name);
+    const anonymous = listing.anonymous ? ` <span class="me-pill GREY" title="Anonymous listing: +10% fee">anon</span>` : "";
+    if (!evaluation) {
+      return `<tr><td>${name}${anonymous}</td><td>${listing.amount}</td><td>${formatMoney(listing.price)}</td><td colspan="3" class="me-inline-secondary">loading...</td></tr>`;
+    }
+    if (evaluation.equipment) {
+      return `<tr><td>${name}${anonymous}</td><td>${listing.amount}</td><td>${formatMoney(listing.price)}</td><td colspan="3">equipment: see item page</td></tr>`;
+    }
+    const stateClass = evaluation.status === "UNDERCUT" ? "RED" : evaluation.status === "CLOSE" ? "YELLOW" : evaluation.status === "CHEAPEST" ? "GREEN" : "GREY";
+    const floor = evaluation.floor ? formatMoney(evaluation.floor) : "-";
+    const ahead = evaluation.status === "CHEAPEST" ? "0" : `${evaluation.cheaperQuantity.toLocaleString("en-US")}`;
+    const suggestion = evaluation.suggestedPrice ? formatMoney(evaluation.suggestedPrice) : "-";
+    const versus = Number.isFinite(evaluation.versusAverage) ? `${evaluation.versusAverage >= 0 ? "+" : ""}${(evaluation.versusAverage * 100).toFixed(1)}%` : "-";
+    const title = [
+      `Net after ${evaluation.feeBps / 100}% fees: ${formatMoney(evaluation.net, true)}`,
+      `Versus Torn daily average: ${versus}`,
+      evaluation.note
+    ].filter(Boolean).join("\n");
+    return `<tr class="${stateClass}" title="${escapeHtml(title)}">
+      <td>${name}${anonymous}</td>
+      <td>${listing.amount}</td>
+      <td>${formatMoney(listing.price)}</td>
+      <td title="Cheapest listing on the Item Market">${floor}</td>
+      <td title="Units listed cheaper than yours">${ahead}</td>
+      <td><span class="me-pill ${stateClass}">${evaluation.status}</span>${evaluation.suggestedPrice ? ` <span class="me-inline-secondary" title="Floor minus your configured undercut">${suggestion}</span>` : ""}</td>
+    </tr>`;
+  }
+
+  function ownListingsHtml(listings, evaluations) {
+    const evaluated = listings.map((listing) => evaluations.get(listing.listingId)).filter((row) => row && !row.equipment);
+    const gross = listings.reduce((sum, listing) => sum + listing.price * Math.max(1, listing.amount), 0);
+    const net = evaluated.reduce((sum, row) => sum + row.net, 0);
+    const undercut = evaluated.filter((row) => row.status === "UNDERCUT").length;
+    const close = evaluated.filter((row) => row.status === "CLOSE").length;
+    const cheapest = evaluated.filter((row) => row.status === "CHEAPEST").length;
+    return `
+      <div class="me-kicker">Your Item Market listings</div>
+      ${metricRows([
+        ["Active listings", String(listings.length)],
+        ["Listed value", formatMoney(gross)],
+        ["Net if all sold at your prices", evaluated.length ? formatMoney(net) : "-"],
+        ["Cheapest / close / undercut", `${cheapest} / ${close} / ${undercut}`]
+      ])}
+      <table class="me-table">
+        <thead><tr><th>Item</th><th>Qty</th><th>Yours</th><th>Floor</th><th>Ahead</th><th>Status</th></tr></thead>
+        <tbody>${listings.map((listing) => ownListingRowHtml(listing, evaluations.get(listing.listingId))).join("")}</tbody>
+      </table>
+      <div class="me-actions"><button class="me-btn me-refresh-listings" type="button">Refresh</button></div>
+      ${panelToolbarHtml()}
+      <div class="me-note">Floor comes from the official Item Market order book. "Ahead" counts units listed below your price. Suggested prices are floor minus your configured undercut; they are never applied automatically. Anonymous listings pay 15% total in fees${settings.anonymousFeeWaived ? " (waived by your company perk)" : ""}.</div>`;
+  }
+
+  async function renderOwnListingsPanel({ force = false } = {}) {
+    ui.pinned = true;
+    ensureUi();
+    if (!Store.apiKey()) {
+      errorPanel("Add a Torn API key to compare your listings.");
+      return;
+    }
+    const keyInfo = Store.keyInfo()?.info || null;
+    const allowed = keySupports(keyInfo, { section: "user", selection: "itemmarket", minimumType: "Limited Access" });
+    if (allowed === false) {
+      setPanel(`<div class="me-kicker">Your Item Market listings</div><div class="me-error">This panel needs a Limited access API key. The current key is ${escapeHtml(keyInfo?.access?.type || "lower access")}. Create a Limited key in Torn API settings and test it in Market Edge settings.</div>${panelToolbarHtml()}`);
+      bindPanelToolbar();
+      return;
+    }
+
+    setPanel(`<div class="me-kicker">Your Item Market listings</div><div class="me-note">Loading your listings...</div>`, "API");
+    try {
+      if (force) api.memoryCache.delete("/user/itemmarket");
+      const payload = await api.ownListings({ priority: 200 });
+      const listings = normalizeOwnListings(payload).slice(0, OWN_LISTINGS_MAX);
+      const evaluations = new Map();
+      const render = () => {
+        if (!ui.root?.isConnected) return;
+        setPanel(ownListingsHtml(listings, evaluations), "LISTINGS");
+        ui.body.querySelector(".me-refresh-listings")?.addEventListener("click", () => renderOwnListingsPanel({ force: true }));
+        bindPanelToolbar();
+      };
+      if (!listings.length) {
+        setPanel(`<div class="me-kicker">Your Item Market listings</div><div class="me-note">No active Item Market listings were returned for this key.</div>${panelToolbarHtml()}`);
+        bindPanelToolbar();
+        return;
+      }
+      render();
+
+      await Promise.allSettled(listings.map(async (listing, index) => {
+        if (listing.equipment) {
+          evaluations.set(listing.listingId, { equipment: true });
+          render();
+          return;
+        }
+        try {
+          const bundle = await loadSnapshot(listing.itemId, { limit: API_LIST_LIMIT, priority: 150 - index, queueGroup: "listings" });
+          evaluations.set(listing.listingId, evaluateOwnListing(listing, bundle.snapshot, settings));
+        } catch (error) {
+          evaluations.set(listing.listingId, { status: "ERROR", floor: null, cheaperQuantity: 0, net: 0, feeBps: ITEM_MARKET_FEE_BPS, note: error.message, suggestedPrice: null, versusAverage: null });
+        }
+        render();
+      }));
+    } catch (error) {
+      errorPanel(describeApiError(error, { feature: "The own listings panel" }));
+      bindPanelToolbar();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Watchlist: API-only polling while a Torn tab is visible, in-page alerts
+  // ---------------------------------------------------------------------------
+
+  let watchTimer = null;
+  let watchLastPollAt = 0;
+  let watchRunning = false;
+  let toastHost = null;
+  const originalTitle = document.title;
+
+  function addWatchItem({ itemId, name, target }) {
+    const id = asInt(itemId, 0);
+    const price = asInt(target, 0);
+    if (!id || price <= 0) return false;
+    const entries = Store.watchlist().filter((entry) => entry.itemId !== id);
+    entries.push({ itemId: id, name: String(name || `Item ${id}`), target: price, addedAt: Math.floor(Date.now() / 1000) });
+    Store.saveWatchlist(entries);
+    return true;
+  }
+
+  function showToast(html, { timeoutMs = 25000 } = {}) {
+    if (!toastHost?.isConnected) {
+      toastHost = document.createElement("div");
+      toastHost.className = "me-toast-host";
+      document.body.appendChild(toastHost);
+    }
+    const toast = document.createElement("div");
+    toast.className = "me-toast";
+    toast.innerHTML = `<span class="me-toast-close" role="button" aria-label="Dismiss">X</span>${html}`;
+    toast.querySelector(".me-toast-close").addEventListener("click", () => toast.remove());
+    toastHost.appendChild(toast);
+    if (timeoutMs > 0) setTimeout(() => toast.remove(), timeoutMs);
+    if (!document.title.startsWith("[ME] ")) document.title = `[ME] ${originalTitle}`;
+    const resetTitle = () => {
+      if (document.visibilityState === "visible") {
+        document.title = originalTitle;
+        document.removeEventListener("visibilitychange", resetTitle);
+      }
+    };
+    setTimeout(() => document.addEventListener("visibilitychange", resetTitle), 0);
+    return toast;
+  }
+
+  async function watchTick({ force = false } = {}) {
+    if (!settings.watchlistEnabled || watchRunning) return;
+    if (document.visibilityState !== "visible") return;
+    const entries = Store.watchlist();
+    if (!entries.length || !Store.apiKey()) return;
+    const intervalMs = Math.max(WATCHLIST_MIN_INTERVAL_SEC, asInt(settings.watchlistIntervalSeconds, DEFAULTS.watchlistIntervalSeconds)) * 1000;
+    if (!force && Date.now() - watchLastPollAt < intervalMs) return;
+    watchLastPollAt = Date.now();
+    watchRunning = true;
+    try {
+      for (const entry of entries) {
+        if (document.visibilityState !== "visible") break;
+        try {
+          const bundle = await loadSnapshot(entry.itemId, { limit: API_LIST_LIMIT, priority: -50, queueGroup: "watch" });
+          const outcome = evaluateWatchItem(entry, bundle.snapshot);
+          entry.lastCheckedAt = Math.floor(Date.now() / 1000);
+          if (outcome.shouldAlert) {
+            entry.lastAlertAt = Math.floor(Date.now() / 1000);
+            showToast(`<strong>${escapeHtml(entry.name)}</strong> is ${formatMoney(outcome.floor)} on the Item Market (target ${formatMoney(entry.target)}, ${outcome.quantityAtOrBelow.toLocaleString("en-US")} units at or below). <a href="${itemMarketLink(entry.itemId, entry.name)}">Open listing</a>`);
+          }
+          entry.lastFloor = outcome.floor;
+        } catch (error) {
+          if (!error?.marketEdgeCanceled) log("Watchlist check failed", entry.itemId, error.message);
+        }
+      }
+      Store.saveWatchlist(entries);
+      if (ui.currentPanel === "watchlist" && ui.root?.isConnected) renderWatchlistPanel({ refresh: false });
+    } finally {
+      watchRunning = false;
+    }
+  }
+
+  function startWatchlist() {
+    if (watchTimer) clearInterval(watchTimer);
+    watchTimer = setInterval(() => { watchTick().catch((error) => log("Watchlist tick failed", error.message)); }, 15000);
+    setTimeout(() => { watchTick().catch(() => {}); }, 4000);
+  }
+
+  function restartWatchlist() {
+    watchLastPollAt = 0;
+    startWatchlist();
+  }
+
+  function renderWatchlistPanel({ refresh = false } = {}) {
+    ui.pinned = true;
+    ensureUi();
+    ui.currentPanel = "watchlist";
+    const entries = Store.watchlist();
+    const intervalSec = Math.max(WATCHLIST_MIN_INTERVAL_SEC, asInt(settings.watchlistIntervalSeconds, DEFAULTS.watchlistIntervalSeconds));
+    const rows = entries.map((entry) => {
+      const hit = entry.lastFloor && entry.lastFloor <= entry.target;
+      return `<div class="me-watch-row" data-item-id="${entry.itemId}">
+        <span class="me-watch-name"><a href="${itemMarketLink(entry.itemId, entry.name)}" style="color:inherit">${escapeHtml(entry.name)}</a></span>
+        <span title="Alert target">&le; ${formatMoney(entry.target)}</span>
+        <span class="${hit ? "me-good" : "me-inline-secondary"}" title="Last observed floor">${entry.lastFloor ? formatMoney(entry.lastFloor) : "-"}</span>
+        <span class="me-inline-secondary" title="Last checked">${entry.lastCheckedAt ? formatAge(Math.floor(Date.now() / 1000 - entry.lastCheckedAt)) : "never"}</span>
+        <span class="me-watch-remove" role="button" title="Remove">X</span>
+      </div>`;
+    }).join("");
+    setPanel(`
+      <div class="me-kicker">Watchlist ${settings.watchlistEnabled ? `- every ${intervalSec}s while visible` : "- disabled in settings"}</div>
+      ${entries.length ? rows : `<div class="me-note">No watched items. Open an Item Market item and press Watch, or add an item ID in settings.</div>`}
+      <div class="me-actions"><button class="me-btn me-watch-check" type="button">Check now</button></div>
+      ${panelToolbarHtml()}
+      <div class="me-note">Polling only happens while a Torn tab is visible, uses the official Item Market API, and respects Torn's cache delay. Alerts are in-page only. Market Edge never buys.</div>
+    `, "WATCH");
+    ui.body.querySelectorAll(".me-watch-remove").forEach((button) => {
+      button.addEventListener("click", () => {
+        const itemId = asInt(button.closest(".me-watch-row")?.dataset?.itemId, 0);
+        Store.saveWatchlist(Store.watchlist().filter((entry) => entry.itemId !== itemId));
+        renderWatchlistPanel();
+      });
+    });
+    ui.body.querySelector(".me-watch-check")?.addEventListener("click", async () => {
+      await watchTick({ force: true });
+      renderWatchlistPanel();
+    });
+    bindPanelToolbar();
+    if (refresh) watchTick({ force: true }).catch(() => {});
+  }
+
+  // ---------------------------------------------------------------------------
+  // On-page launcher for environments without a userscript menu (Torn PDA)
+  // ---------------------------------------------------------------------------
+
+  let launcher = null;
+
+  function ensureLauncher() {
+    if (launcher?.isConnected) return launcher;
+    launcher = document.createElement("button");
+    launcher.type = "button";
+    launcher.className = "me-launcher";
+    launcher.textContent = "ME";
+    launcher.title = "Market Edge";
+    launcher.addEventListener("click", () => {
+      const existing = document.querySelector(".me-launcher-menu");
+      if (existing) {
+        existing.remove();
+        return;
+      }
+      const menu = document.createElement("div");
+      menu.className = "me-toast me-launcher-menu";
+      menu.style.position = "fixed";
+      menu.style.left = "10px";
+      menu.style.bottom = "44px";
+      menu.style.zIndex = "999999";
+      menu.innerHTML = `<div class="me-actions" style="margin:0">
+        <button class="me-btn" data-action="settings" type="button">Settings</button>
+        <button class="me-btn" data-action="analyze" type="button">Analyze page</button>
+        <button class="me-btn" data-action="listings" type="button">My listings</button>
+        <button class="me-btn" data-action="watchlist" type="button">Watchlist</button>
+      </div>`;
+      menu.querySelectorAll("[data-action]").forEach((button) => {
+        button.addEventListener("click", () => {
+          menu.remove();
+          const action = button.dataset.action;
+          if (action === "settings") showSettings();
+          else if (action === "analyze") analyzeCurrentPage();
+          else if (action === "listings") renderOwnListingsPanel();
+          else if (action === "watchlist") renderWatchlistPanel();
+        });
+      });
+      document.body.appendChild(menu);
+    });
+    document.body.appendChild(launcher);
+    return launcher;
   }
 
   // ---------------------------------------------------------------------------
@@ -2688,13 +4079,15 @@
 
     lastLocationKey = locationKey;
     ui.currentSurface = surface;
+    ui.pinned = false;
+    ui.currentPanel = null;
     clearBadges();
     lastListSignature = "";
 
     if (surface === "other") {
       cancelQueuedListRequests("Market Edge left a supported market/list view.");
       clearInlineAnalysis();
-      removeFloatingUi();
+      removeFloatingUi(true);
       return;
     }
     if (surface === "itemmarket") {
@@ -2730,7 +4123,18 @@
       scheduleSignatureCheck(false);
     });
 
-    const observer = new MutationObserver(() => {
+    // Torn renders every page inside a stable content container. Observing it
+    // instead of the whole document keeps mutation callbacks cheap on mobile.
+    // A light body-level observer re-attaches if Torn ever replaces the
+    // container itself.
+    const observerOptions = {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["class", "style", "aria-selected", "aria-hidden"]
+    };
+    let observedRoot = null;
+    const contentObserver = new MutationObserver(() => {
       if (document.visibilityState !== "visible") return;
       const currentKey = `${detectSurface()}|${location.pathname}|${location.search}|${location.hash}`;
       if (currentKey !== lastLocationKey) {
@@ -2739,26 +4143,89 @@
       }
       scheduleSignatureCheck(false);
     });
-    observer.observe(document.documentElement, {
-      childList: true,
-      subtree: true,
-      characterData: true,
-      attributes: true,
-      attributeFilter: ["class", "style", "aria-selected", "aria-hidden"]
+
+    const attachContentObserver = () => {
+      const root = document.querySelector("#mainContainer, .content-wrapper, #bazaarRoot, #react-root") || document.body;
+      if (!root || root === observedRoot) return;
+      contentObserver.disconnect();
+      contentObserver.observe(root, observerOptions);
+      observedRoot = root;
+    };
+    attachContentObserver();
+
+    const rootObserver = new MutationObserver(() => {
+      if (observedRoot && !observedRoot.isConnected) {
+        observedRoot = null;
+        attachContentObserver();
+        scheduleRefresh(true);
+      } else if (observedRoot === document.body) {
+        // Content container may have been created after load.
+        attachContentObserver();
+      }
     });
+    rootObserver.observe(document.body, { childList: true });
   }
 
-  try {
-    GM_registerMenuCommand("Market Edge settings", showSettings);
-    GM_registerMenuCommand("Market Edge analyze current page", () => {
-      const surface = detectSurface();
-      if (surface === "itemmarket") renderItemMarket();
-      else if (["bazaar", "auction", "travel", "inventory"].includes(surface)) scanVisibleSurface(surface, { force: true });
-    });
-  } catch {
-    // Menu commands are optional.
+  function analyzeCurrentPage() {
+    const surface = detectSurface();
+    if (surface === "itemmarket") renderItemMarket();
+    else if (["bazaar", "auction", "travel", "inventory"].includes(surface)) scanVisibleSurface(surface, { force: true });
   }
 
-  installNavigationHooks();
-  scheduleRefresh(true);
+  function registerMenu() {
+    if (ENV.hasGmMenu) {
+      try {
+        GM_registerMenuCommand("Market Edge settings", showSettings);
+        GM_registerMenuCommand("Market Edge analyze current page", analyzeCurrentPage);
+        GM_registerMenuCommand("Market Edge my Item Market listings", () => renderOwnListingsPanel());
+        GM_registerMenuCommand("Market Edge watchlist", () => renderWatchlistPanel());
+        return;
+      } catch {
+        // fall through to the on-page launcher
+      }
+    }
+    // Torn PDA and other managers without a menu get a small on-page launcher.
+    ensureLauncher();
+  }
+
+  if (global.__MARKET_EDGE_EXPOSE_DOM__) {
+    // DOM fixture tests (jsdom) drive the collectors directly.
+    global.__MARKET_EDGE_DOM__ = Object.freeze({
+      ENV,
+      Store,
+      api,
+      detectSurface,
+      getItemIdFromLocation,
+      itemIdFromElement,
+      collectVisibleItems,
+      collectBazaarAddItems,
+      collectManagedBazaarItems,
+      collectAuctionItems,
+      parseLiveItemMarketListings,
+      findBazaarAddPriceInput,
+      findBazaarAddQuantityInput,
+      bazaarAddSection,
+      knownBazaarAddRows,
+      inventoryListMarker,
+      renderInlineResult,
+      resultForSurface,
+      ownListingsRouteActive,
+      renderItemMarket,
+      renderOwnListingsPanel,
+      renderWatchlistPanel,
+      scanVisibleSurface,
+      watchTick,
+      loadMuseumContext,
+      showSettings,
+      addWatchItem,
+      ensureLauncher,
+      showToast,
+      ui
+    });
+  } else {
+    registerMenu();
+    installNavigationHooks();
+    scheduleRefresh(true);
+    startWatchlist();
+  }
 })(typeof globalThis !== "undefined" ? globalThis : this);

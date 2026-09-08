@@ -606,7 +606,9 @@
     title: null,
     status: null,
     currentSurface: null,
-    renderedBadges: new Set()
+    renderedBadges: new Set(),
+    pinned: false,
+    currentPanel: null
   };
 
   const CSS = `

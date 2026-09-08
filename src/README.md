@@ -9,6 +9,12 @@ cat src/parts/*.part.js > torn-market-edge.user.js
 node --check torn-market-edge.user.js
 ```
 
-GitHub Actions performs this assembly automatically whenever a source part changes and commits the validated generated userscript back to `main`.
+`npm run build` runs the same two commands; `npm run check` also runs the tests (jsdom is a development-only dependency used by the DOM fixture tests).
+
+GitHub Actions performs this assembly automatically whenever a source part changes and commits the validated generated userscript back to `main`, which Greasy Fork picks up through the repository webhook.
 
 Do not edit `torn-market-edge.user.js` directly. Make source changes in `src/parts/`, then let the build workflow regenerate the public userscript.
+
+## Part boundaries
+
+The parts were originally split every 300 lines, so several boundaries fall **inside** a function body. Never add a new part file between two existing parts: in strict mode a function declared inside another function's block is block-scoped and will be undefined elsewhere, even though `node --check` passes. Add new code inside an existing part at a function boundary instead (for example just before `const TEST_EXPORTS` in `02.part.js` for pure helpers, or right after `scanVisibleSurface` in `07.part.js` for UI code).

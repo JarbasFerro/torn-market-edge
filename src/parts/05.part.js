@@ -68,10 +68,50 @@
     .me-modal-actions { display:flex; gap:7px; justify-content:flex-end; margin-top:14px; }
     .me-error { color:#e27a7a; font-size:11px; line-height:1.4; }
     .me-learning { color:#f0ca66; }
+    .me-table { width:100%; border-collapse:collapse; font-size:10px; margin-top:6px; }
+    .me-table th, .me-table td { padding:3px 4px; text-align:right; border-bottom:1px solid rgba(255,255,255,.06); white-space:nowrap; font-variant-numeric:tabular-nums; }
+    .me-table th { color:#aaa; font-weight:600; text-transform:uppercase; letter-spacing:.04em; font-size:9px; }
+    .me-table td:first-child, .me-table th:first-child { text-align:left; max-width:150px; overflow:hidden; text-overflow:ellipsis; }
+    .me-table tr.GREEN td { color:#b9e2c3; }
+    .me-table tr.YELLOW td { color:#f0d79a; }
+    .me-table tr.RED td { color:#e5a3a3; }
+    .me-pill { display:inline-block; padding:1px 5px; border-radius:3px; font-size:9px; font-weight:700; border:1px solid rgba(255,255,255,.2); }
+    .me-pill.GREEN { color:#7fd193; border-color:rgba(79,169,104,.5); }
+    .me-pill.YELLOW { color:#f0ca66; border-color:rgba(201,156,62,.5); }
+    .me-pill.GREY { color:#aaa; }
+    .me-pill.RED { color:#e27a7a; border-color:rgba(199,98,98,.5); }
+    .me-inline-input { width:110px; padding:4px 6px; border:1px solid #555; border-radius:4px; background:#171719; color:#eee; font-size:11px; }
+    .me-launcher { position:fixed; left:10px; bottom:10px; z-index:999997; padding:6px 9px; border-radius:16px; border:1px solid rgba(255,255,255,.25); background:rgba(28,28,30,.94); color:#eee; font:800 11px/1 Arial,sans-serif; cursor:pointer; box-shadow:0 4px 14px rgba(0,0,0,.4); }
+    .me-toast-host { position:fixed; left:10px; bottom:48px; z-index:999999; display:flex; flex-direction:column; gap:6px; max-width:min(360px, calc(100vw - 20px)); }
+    .me-toast { background:rgba(28,28,30,.97); border:1px solid rgba(74,165,100,.6); border-radius:6px; padding:8px 10px; color:#eee; font:12px/1.35 Arial,sans-serif; box-shadow:0 8px 24px rgba(0,0,0,.45); }
+    .me-toast a { color:#7fd193; font-weight:700; }
+    .me-toast .me-toast-close { float:right; margin-left:8px; cursor:pointer; color:#aaa; font-weight:700; }
+    .me-watch-row { display:flex; align-items:center; gap:6px; font-size:11px; padding:3px 0; border-bottom:1px solid rgba(255,255,255,.06); }
+    .me-watch-row .me-watch-name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .me-watch-row .me-watch-remove { cursor:pointer; color:#e27a7a; font-weight:700; padding:0 4px; }
     @media (max-width: 600px) { #market-edge-root { right:6px; bottom:6px; width:calc(100vw - 12px); } .me-body { max-height:58vh; } }
   `;
 
-  try { GM_addStyle(CSS); } catch { /* no-op */ }
+  function injectStyles(css) {
+    if (ENV.hasGmStyle) {
+      try {
+        GM_addStyle(css);
+        return;
+      } catch {
+        // fall through to a plain style element
+      }
+    }
+    try {
+      const style = document.createElement("style");
+      style.id = "market-edge-style";
+      style.textContent = css;
+      (document.head || document.documentElement).appendChild(style);
+    } catch {
+      // no-op
+    }
+  }
+
+  injectStyles(CSS);
 
   function ensureUi() {
     if (ui.root?.isConnected) return ui.root;
@@ -84,6 +124,7 @@
           <div class="me-status"></div>
           <button class="me-icon-btn me-settings" type="button" title="Settings">S</button>
           <button class="me-icon-btn me-collapse" type="button" title="Collapse">-</button>
+          <button class="me-icon-btn me-close" type="button" title="Close panel">X</button>
         </div>
         <div class="me-body"></div>
       </div>`;
@@ -94,6 +135,7 @@
     ui.status = root.querySelector(".me-status");
     root.querySelector(".me-settings").addEventListener("click", showSettings);
     root.querySelector(".me-collapse").addEventListener("click", togglePanelState);
+    root.querySelector(".me-close").addEventListener("click", () => removeFloatingUi(true));
     applyPanelState();
     return root;
   }
@@ -182,13 +224,17 @@
           <label>Minimum discount (%)</label><input data-setting="minimumDiscount" data-percent="1" type="number" min="0" max="100" step="0.1" value="${current.minimumDiscount * 100}">
         </div>
 
-        <div class="me-section-title">Exit assumptions</div>
+        <div class="me-section-title">Exit assumptions and fees</div>
         <div class="me-form-grid">
           <label>Bazaar enabled</label><input data-setting="bazaarEnabled" type="checkbox" ${current.bazaarEnabled ? "checked" : ""}>
           <label>Bazaar discount (%)</label><input data-setting="bazaarDiscount" data-percent="1" type="number" min="0" max="20" step="0.1" value="${current.bazaarDiscount * 100}">
           <label>Safety haircut (%)</label><input data-setting="safetyHaircut" data-percent="1" type="number" min="0" max="10" step="0.1" value="${current.safetyHaircut * 100}">
           <label>Historical premium cap (%)</label><input data-setting="allowedHistoricalPremium" data-premium="1" type="number" min="0" max="10" step="0.1" value="${(current.allowedHistoricalPremium - 1) * 100}">
           <label>Item Market undercut ($)</label><input data-setting="itemMarketUndercut" type="number" min="0" step="1" value="${current.itemMarketUndercut}">
+          <label>I list anonymously on the Item Market (+10% fee)</label><input data-setting="anonymousListing" type="checkbox" ${current.anonymousListing ? "checked" : ""}>
+          <label>Anonymous fee waived by 5-star company perk</label><input data-setting="anonymousFeeWaived" type="checkbox" ${current.anonymousFeeWaived ? "checked" : ""}>
+          <label>Museum set route for plushies/flowers</label><input data-setting="museumSetsEnabled" type="checkbox" ${current.museumSetsEnabled ? "checked" : ""}>
+          <label>Weapon/armor comparables</label><input data-setting="equipmentEnabled" type="checkbox" ${current.equipmentEnabled ? "checked" : ""}>
         </div>
 
         <div class="me-section-title">Risk & scanning</div>
@@ -200,7 +246,19 @@
           <label>History retention (days)</label><input data-setting="historyRetentionDays" type="number" min="1" max="90" step="1" value="${current.historyRetentionDays}">
           <label>Developer diagnostics in console</label><input data-setting="developerMode" type="checkbox" ${current.developerMode ? "checked" : ""}>
         </div>
-        <div class="me-form-help">The API key stays in Tampermonkey storage and is sent only to api.torn.com. Market Edge never includes it in diagnostics or exports. Item Market sale fee is fixed at 5% in this release.</div>
+
+        <div class="me-section-title">Watchlist (API polling while a Torn tab is visible)</div>
+        <div class="me-form-grid">
+          <label>Watchlist alerts enabled</label><input data-setting="watchlistEnabled" type="checkbox" ${current.watchlistEnabled ? "checked" : ""}>
+          <label>Check interval (seconds, min ${WATCHLIST_MIN_INTERVAL_SEC})</label><input data-setting="watchlistIntervalSeconds" type="number" min="${WATCHLIST_MIN_INTERVAL_SEC}" max="3600" step="5" value="${current.watchlistIntervalSeconds}">
+        </div>
+        <div id="me-watchlist-rows"></div>
+        <div class="me-actions">
+          <input id="me-watch-item" class="me-inline-input" type="number" min="1" placeholder="Item ID">
+          <input id="me-watch-target" class="me-inline-input" type="number" min="1" placeholder="Alert at or below $">
+          <button class="me-btn" id="me-watch-add" type="button">Add to watchlist</button>
+        </div>
+        <div class="me-form-help">The API key stays in userscript storage and is sent only to api.torn.com. Market Edge never includes it in diagnostics or exports. Fees modelled: Item Market 5% sales tax, optional 10% anonymous-listing fee, Auction House 3%. Bazaar and trades have no fee. Own Item Market listings need a Limited access key; everything else works with a Public key.${ENV.isPda ? " Torn PDA detected: the PDA API key is used automatically when no key is entered." : ""}</div>
         <div class="me-modal-actions"><button class="me-btn" id="me-cancel-settings" type="button">Cancel</button><button class="me-btn" id="me-save-settings" type="button">Save</button></div>
       </div>`;
     document.body.appendChild(backdrop);
@@ -208,6 +266,53 @@
     const close = () => backdrop.remove();
     backdrop.addEventListener("click", (event) => { if (event.target === backdrop) close(); });
     backdrop.querySelector("#me-cancel-settings").addEventListener("click", close);
+
+    const keyInfo = Store.keyInfo();
+    if (keyInfo?.info?.access?.type) {
+      const status = backdrop.querySelector("#me-api-status");
+      status.textContent = `${keyInfo.info.access.type} key (last verified ${formatAge(Math.floor((Date.now() - asInt(keyInfo.savedAt)) / 1000))} ago)`;
+    }
+
+    const renderWatchRows = () => {
+      const host = backdrop.querySelector("#me-watchlist-rows");
+      const entries = Store.watchlist();
+      if (!entries.length) {
+        host.innerHTML = `<div class="me-form-help">No watched items. Add one here or use "Watch" on an Item Market page.</div>`;
+        return;
+      }
+      host.innerHTML = entries.map((entry) => `
+        <div class="me-watch-row" data-item-id="${entry.itemId}">
+          <span class="me-watch-name" title="Item ${entry.itemId}">${escapeHtml(entry.name)}</span>
+          <span>at or below ${formatMoney(entry.target)}</span>
+          <span>${entry.lastFloor ? `floor ${formatMoney(entry.lastFloor)}` : ""}</span>
+          <span class="me-watch-remove" role="button" title="Remove">X</span>
+        </div>`).join("");
+      host.querySelectorAll(".me-watch-remove").forEach((button) => {
+        button.addEventListener("click", () => {
+          const itemId = asInt(button.closest(".me-watch-row")?.dataset?.itemId, 0);
+          Store.saveWatchlist(Store.watchlist().filter((entry) => entry.itemId !== itemId));
+          renderWatchRows();
+        });
+      });
+    };
+    renderWatchRows();
+    backdrop.querySelector("#me-watch-add").addEventListener("click", async () => {
+      const itemId = asInt(backdrop.querySelector("#me-watch-item").value, 0);
+      const target = asInt(backdrop.querySelector("#me-watch-target").value, 0);
+      if (!itemId || target <= 0) return;
+      let name = `Item ${itemId}`;
+      try {
+        const meta = await loadItemMetadataBatch([itemId]);
+        name = meta.get(itemId)?.name || name;
+      } catch {
+        // Name lookup is cosmetic.
+      }
+      addWatchItem({ itemId, name, target });
+      backdrop.querySelector("#me-watch-item").value = "";
+      backdrop.querySelector("#me-watch-target").value = "";
+      renderWatchRows();
+    });
+
     backdrop.querySelector("#me-test-key").addEventListener("click", async () => {
       const status = backdrop.querySelector("#me-api-status");
       Store.setApiKey(backdrop.querySelector("#me-api-key").value);
@@ -215,10 +320,12 @@
       status.textContent = "Testing...";
       try {
         const result = await api.testKey();
-        status.textContent = result.playerId ? `OK - player ${result.playerId}` : "OK";
-        status.className = "me-good";
+        const player = result.playerId ? `player ${result.playerId}` : "player unknown";
+        const limitedOk = result.accessRank >= KEY_ACCESS_RANK["Limited Access"];
+        status.textContent = `OK - ${player} - ${result.accessType}${limitedOk ? "" : " (own listings panel needs Limited access)"}`;
+        status.className = limitedOk ? "me-good" : "me-warn";
       } catch (error) {
-        status.textContent = error.message;
+        status.textContent = describeApiError(error, { feature: "Key test" });
         status.className = "me-bad";
       }
     });
@@ -232,12 +339,14 @@
         else if (input.dataset.percent) next[key] = Number(input.value || 0) / 100;
         else next[key] = Number(input.value || 0);
       });
+      next.watchlistIntervalSeconds = Math.max(WATCHLIST_MIN_INTERVAL_SEC, asInt(next.watchlistIntervalSeconds, DEFAULTS.watchlistIntervalSeconds));
       Store.setApiKey(backdrop.querySelector("#me-api-key").value);
       Store.saveSettings(next);
       settings = Store.settings();
       api.memoryCache.clear();
       close();
       scheduleRefresh(true);
+      restartWatchlist();
     });
   }
 
@@ -267,7 +376,12 @@
     document.querySelectorAll(".me-bazaar-add-row").forEach((node) => node.classList.remove("me-bazaar-add-row"));
   }
 
-  function removeFloatingUi() {
+  function removeFloatingUi(force = false) {
+    // Panels opened deliberately from the menu (own listings, watchlist) stay
+    // until the player closes them or navigates elsewhere.
+    if (ui.pinned && !force) return;
+    ui.pinned = false;
+    ui.currentPanel = null;
     if (ui.root?.isConnected) ui.root.remove();
     ui.root = null;
     ui.body = null;

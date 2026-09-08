@@ -7,6 +7,8 @@ on:
     paths:
       - "src/parts/**"
       - "tests/**"
+      - "package.json"
+      - "package-lock.json"
       - ".github/workflows/build-userscript.yml"
   pull_request:
     branches:
@@ -14,6 +16,8 @@ on:
     paths:
       - "src/parts/**"
       - "tests/**"
+      - "package.json"
+      - "package-lock.json"
       - ".github/workflows/build-userscript.yml"
   workflow_dispatch:
 
@@ -26,6 +30,15 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install development dependencies (jsdom for DOM fixture tests)
+        run: npm ci --no-audit --no-fund
 
       - name: Build userscript
         run: cat src/parts/*.part.js > torn-market-edge.user.js

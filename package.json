@@ -1,0 +1,15 @@
+{
+  "name": "torn-market-edge",
+  "version": "0.3.0",
+  "private": true,
+  "description": "Decision-support userscript for Torn markets using the official Torn API.",
+  "license": "MIT",
+  "scripts": {
+    "build": "cat src/parts/*.part.js > torn-market-edge.user.js && node --check torn-market-edge.user.js",
+    "test": "node --test tests/*.test.js",
+    "check": "npm run build && npm test"
+  },
+  "devDependencies": {
+    "jsdom": "^30.0.1"
+  }
+}

@@ -71,6 +71,18 @@
     if (!visible || !visible.card?.isConnected) return null;
     const stale = staleMarker(result);
     if (result.error) return renderInlineError(visible, result.error);
+    if (result.equipment) {
+      // Weapons/armor on list pages: show the cheapest plain and cheapest
+      // bonus/rarity listing so the player has a floor to compare against.
+      const summary = result.equipment;
+      const plain = summary.plainFloor ? formatMoney(summary.plainFloor) : "-";
+      const bonus = summary.bonusFloor ? formatMoney(summary.bonusFloor) : null;
+      const bonusHtml = bonus ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Cheapest listing with a bonus or rarity">bonus ${bonus}</span>` : "";
+      return renderInlineHtml(visible,
+        `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="Cheapest plain listing on the Item Market">floor ${plain}</span>${bonusHtml}${stale}`,
+        "GREY"
+      );
+    }
     if (result.unsupported) {
       return renderInlineHtml(visible, `<span class="me-inline-brand">ME</span><span class="me-inline-secondary">unsupported equipment</span>`, "GREY");
     }
@@ -86,8 +98,13 @@
       const best = estimate?.routes?.bestRoute;
       const bzClass = best === "Bazaar" ? "me-inline-primary" : "me-inline-secondary";
       const imClass = best === "Item Market" ? "me-inline-primary" : "me-inline-secondary";
+      const museum = estimate?.routes?.museum;
+      const setClass = best === "Museum set" ? "me-inline-primary" : "me-inline-secondary";
+      const setHtml = museum
+        ? `<span class="me-inline-sep">|</span><span class="${setClass}" title="Value implied by completing the ${escapeHtml(museum.label)} and exchanging it for points">SET ${formatMoney(museum.suggestedPrice)}</span>`
+        : "";
       return renderInlineHtml(visible,
-        `<span class="me-inline-brand">ME</span><span class="${bzClass}">BZ ${bzValue}</span><span class="me-inline-sep">|</span><span class="${imClass}">IM ${imValue}</span>${stale}`,
+        `<span class="me-inline-brand">ME</span><span class="${bzClass}">BZ ${bzValue}</span><span class="me-inline-sep">|</span><span class="${imClass}">IM ${imValue}</span>${setHtml}${stale}`,
         "GREY"
       );
     }
@@ -158,10 +175,126 @@
   // Page-specific analyses
   // ---------------------------------------------------------------------------
 
+  function ownListingsRouteActive() {
+    const hash = String(location.hash || "").toLowerCase();
+    return /manage|mylist|my-list|yourlist|your-list|viewlisting|listings/.test(hash) && !/itemid=/.test(hash);
+  }
+
+  function panelToolbarHtml() {
+    return `<div class="me-actions">
+      <button class="me-btn me-open-listings" type="button" title="Compare your Item Market listings with the live floor (Limited key)">My listings</button>
+      <button class="me-btn me-open-watchlist" type="button" title="Watched items and alert targets">Watchlist</button>
+    </div>`;
+  }
+
+  function bindPanelToolbar() {
+    ui.body?.querySelector(".me-open-listings")?.addEventListener("click", () => renderOwnListingsPanel());
+    ui.body?.querySelector(".me-open-watchlist")?.addEventListener("click", () => renderWatchlistPanel());
+  }
+
+  function itemMarketLink(itemId, name = "") {
+    const encoded = encodeURIComponent(String(name || ""));
+    return `https://www.torn.com/page.php?sid=ItemMarket#/market/view=sell&itemID=${asInt(itemId)}${name ? `&itemName=${encoded}` : ""}`;
+  }
+
+  function watchControlsHtml(snapshot, best) {
+    const entry = Store.watchlist().find((row) => row.itemId === snapshot.itemId);
+    if (entry) {
+      return `<div class="me-actions"><span class="me-note">Watching: alert at or below ${formatMoney(entry.target)}</span><button class="me-btn me-unwatch" type="button">Stop watching</button></div>`;
+    }
+    const defaultTarget = best?.exit?.conservativeExitPrice
+      ? Math.floor(best.exit.conservativeExitPrice * (1 - settings.minimumDiscount))
+      : (snapshot.lowestPrice ? Math.floor(snapshot.lowestPrice * (1 - settings.minimumDiscount)) : 0);
+    return `<div class="me-actions"><input class="me-inline-input me-watch-target" type="number" min="1" value="${defaultTarget || ""}" placeholder="Alert at or below $"><button class="me-btn me-watch" type="button">Watch</button></div>`;
+  }
+
+  function bindWatchControls(snapshot) {
+    const body = ui.body;
+    if (!body) return;
+    body.querySelector(".me-watch")?.addEventListener("click", () => {
+      const target = asInt(body.querySelector(".me-watch-target")?.value, 0);
+      if (target <= 0) return;
+      addWatchItem({ itemId: snapshot.itemId, name: snapshot.itemName, target });
+      renderItemMarket();
+    });
+    body.querySelector(".me-unwatch")?.addEventListener("click", () => {
+      Store.saveWatchlist(Store.watchlist().filter((row) => row.itemId !== snapshot.itemId));
+      renderItemMarket();
+    });
+  }
+
+  function equipmentRowsHtml(analysis) {
+    const rows = analysis.rows.slice(0, 25);
+    if (!rows.length) return "";
+    return `<table class="me-table">
+      <thead><tr><th>Group</th><th>Q</th><th>Price</th><th>Comps</th><th>AH sold</th><th>Disc.</th><th></th></tr></thead>
+      <tbody>${rows.map((row) => `<tr class="${row.state}">
+        <td title="${escapeHtml(row.groupLabel)}">${escapeHtml(row.groupLabel)}</td>
+        <td>${Number.isFinite(row.quality) ? row.quality.toFixed(0) : "-"}</td>
+        <td title="${formatMoney(row.price, true)}">${formatMoney(row.price)}</td>
+        <td title="${row.comparableCount} comparable listings${row.qualityMatched ? " (quality matched)" : ""}">${row.comparableMedian ? `${formatMoney(row.comparableMedian)} x${row.comparableCount}` : "-"}</td>
+        <td title="${row.salesCount} ended auctions in 30 days">${row.salesMedian ? `${formatMoney(row.salesMedian)} x${row.salesCount}` : "-"}</td>
+        <td>${Number.isFinite(row.discount) ? `${(row.discount * 100).toFixed(1)}%` : "-"}</td>
+        <td><span class="me-pill ${row.state}">${CLASS_META[row.state]?.label || row.state}</span></td>
+      </tr>`).join("")}</tbody>
+    </table>`;
+  }
+
+  async function renderEquipmentItemMarket(snapshot, historyStats) {
+    const fresh = freshness(snapshot.cacheTimestamp);
+    setPanel(`<div class="me-kicker">Item Market - equipment</div><div class="me-item-name">${escapeHtml(snapshot.itemName)}</div><div class="me-note">Loading ended Auction House sales for comparables...</div>`, fresh.label);
+    const auctionSales = await loadAuctionSales(snapshot.itemId, { priority: 180 });
+    if (detectSurface() !== "itemmarket" || getItemIdFromLocation() !== snapshot.itemId) return;
+    const analysis = analyzeEquipmentListings(snapshot, { auctionSales, settings });
+    const best = analysis.best;
+    const summary = analysis.summary || {};
+    const feeBps = itemMarketFeeBps(settings);
+    const groupsHtml = analysis.groups.slice(0, 8).map((group) => `<div class="me-diag-row">${escapeHtml(group.label)}: ${group.count} listed from ${formatMoney(group.floor)} (median ${formatMoney(group.median)})${group.salesCount ? `; ${group.salesCount} AH sales, median ${formatMoney(group.salesMedian)}` : ""}</div>`).join("");
+
+    setPanel(`
+      <div class="me-kicker">Item Market - equipment comparables</div>
+      <div class="me-item-name">${escapeHtml(snapshot.itemName)}</div>
+      ${metricRows([
+        ["Listings analyzed", `${analysis.rows.length}${snapshot.depthMetrics?.totalListings > analysis.rows.length ? ` of ${snapshot.depthMetrics.totalListings}` : ""}`],
+        ["Plain floor", summary.plainFloor ? formatMoney(summary.plainFloor) : "-"],
+        ["Plain median", summary.plainMedian ? formatMoney(summary.plainMedian) : "-"],
+        ["Bonus/rarity floor", summary.bonusFloor ? formatMoney(summary.bonusFloor) : "-"],
+        ["Torn daily average", snapshot.averagePrice ? formatMoney(snapshot.averagePrice) : "-"],
+        ["AH sales (30d)", String(auctionSales.filter((sale) => sale.details).length)],
+        ["API age", `${formatAge(fresh.ageSeconds)} - ${fresh.label}`]
+      ])}
+      <div class="me-rule"></div>
+      <div class="me-kicker">Best value listing</div>
+      ${best ? `<div class="me-callout ${best.state}">
+        <div class="me-decision ${best.state}">${CLASS_META[best.state].icon} ${CLASS_META[best.state].label}</div>
+        ${metricRows([
+          ["Group", escapeHtml(best.groupLabel)],
+          ["Quality", Number.isFinite(best.quality) ? best.quality.toFixed(1) : "-"],
+          ["Price", formatMoney(best.price)],
+          ["Reference", `${formatMoney(best.reference)} (${escapeHtml(best.referenceSource)})`],
+          ["Discount", `${(best.discount * 100).toFixed(1)}%`],
+          [`Net if resold (IM ${feeBps / 100}%)`, formatMoney(best.expectedNet), best.expectedNet >= 0 ? "me-good" : "me-bad"]
+        ])}
+      </div>` : `<div class="me-note">No listing is priced meaningfully below its comparable group.</div>`}
+      ${equipmentRowsHtml(analysis)}
+      ${groupsHtml ? `<details class="me-diag"><summary>Comparable groups</summary>${groupsHtml}</details>` : ""}
+      ${watchControlsHtml(snapshot, null)}
+      ${panelToolbarHtml()}
+      <div class="me-note">Equipment is grouped by rarity and bonus set, quality matched within 10 points when enough listings exist. Ended Auction House sales are the only official transaction evidence. Rare rolls trade on intangibles; treat this as a floor check, not a valuation.</div>
+    `, fresh.label);
+    bindWatchControls(snapshot);
+    bindPanelToolbar();
+  }
+
   async function renderItemMarket() {
+    if (ownListingsRouteActive()) {
+      await renderOwnListingsPanel();
+      return;
+    }
     const itemId = getItemIdFromLocation();
     if (!itemId) {
-      setPanel(`<div class="me-kicker">Item Market</div><div class="me-note">Open a specific stackable item to analyze its order book.</div>`);
+      setPanel(`<div class="me-kicker">Item Market</div><div class="me-note">Open a specific item to analyze its order book.</div>${panelToolbarHtml()}`);
+      bindPanelToolbar();
       return;
     }
     if (!Store.apiKey()) {
@@ -173,15 +306,21 @@
     try {
       const { snapshot, historyStats } = await loadSnapshot(itemId, { limit: API_DEEP_LIMIT, priority: 200 });
       if (!snapshot.supportedCommodity) {
-        setPanel(`<div class="me-kicker">Item Market</div><div class="me-item-name">${escapeHtml(snapshot.itemName)}</div><div class="me-callout GREY"><div class="me-decision GREY">- NOT SUPPORTED</div><div class="me-note">Advanced equipment valuation is not supported yet.</div></div>`);
+        if (settings.equipmentEnabled !== false && snapshot.equipment) {
+          await renderEquipmentItemMarket(snapshot, historyStats);
+          return;
+        }
+        setPanel(`<div class="me-kicker">Item Market</div><div class="me-item-name">${escapeHtml(snapshot.itemName)}</div><div class="me-callout GREY"><div class="me-decision GREY">- NOT SUPPORTED</div><div class="me-note">Enable weapon/armor comparables in settings to analyze equipment listings.</div></div>`);
         return;
       }
 
       const liveRows = parseLiveItemMarketListings();
+      const museumContext = await loadMuseumContext([itemId], { priority: 190 });
+      const museum = museumContext.get(itemId) || null;
 
       // The official Torn API is the authoritative valuation source. The live
       // DOM is used only to confirm/highlight what the player currently sees.
-      const evaluated = evaluatePrefixes(snapshot, historyStats, settings);
+      const evaluated = evaluatePrefixes(snapshot, historyStats, settings, Date.now(), { museum });
       const best = evaluated.best;
       const compareCount = Math.max(2, best?.prefixCount || Math.min(5, snapshot.listings.length));
       const liveMatchesApi = liveRows.length >= compareCount && snapshot.listings.length >= compareCount &&
@@ -195,10 +334,26 @@
       const fresh = freshness(snapshot.cacheTimestamp);
       const reference = chooseReference(snapshot, historyStats);
       const learning = historyStats.oneDay.count < 5;
+      const agreement = officialAgreement(snapshot);
       const currentDiscount = reference.value && snapshot.lowestPrice ? 1 - snapshot.lowestPrice / reference.value : null;
       const sourceWarning = liveRows.length >= 2 && !liveMatchesApi
         ? `<div class="me-note me-warn">The visible Torn listings differ from the current API cache. Market Edge is keeping the official API snapshot authoritative and will not mix the two books.</div>`
         : "";
+      const feeBps = itemMarketFeeBps(settings);
+      const feeLabel = `${feeBps / 100}%${feeBps > ITEM_MARKET_FEE_BPS ? " incl. anonymous" : ""}`;
+      const fairValueCell = historyStats.historicalFairValue
+        ? `<span title="${formatMoney(historyStats.historicalFairValue, true)}">${formatMoney(historyStats.historicalFairValue)}</span>`
+        : (agreement.agrees
+          ? `<span title="Torn daily average and current depth agree within ${(OFFICIAL_AGREEMENT_TOLERANCE * 100).toFixed(0)}%">${formatMoney(reference.value)} (official)</span>`
+          : "Learning...");
+      const coldStartNote = learning
+        ? (agreement.agrees
+          ? `<div class="me-note">Cold start: Torn's daily average (${formatMoney(snapshot.averagePrice)}) and the current depth anchor agree, so no warm-up penalty is applied. Local observations: ${historyStats.oneDay.count}/5.</div>`
+          : `<div class="me-note me-learning">Learning market... ${historyStats.oneDay.count}/5 observations. ${agreement.available ? `Torn's daily average (${formatMoney(snapshot.averagePrice)}) differs ${(agreement.ratio * 100).toFixed(1)}% from the depth anchor, so` : "Without an official average,"} an extra 2% safety haircut applies.</div>`)
+        : "";
+      const museumRows = museum && museum.complete
+        ? [[`${museum.label} implied value`, `<span title="${museum.points} points x ${formatMoney(museum.pointValue, true)} minus ${formatMoney(museum.othersCost, true)} for the other pieces">${formatMoney(museum.impliedValue)}</span>`, museum.impliedValue > (reference.value || 0) ? "me-good" : ""]]
+        : [];
 
       setPanel(`
         <div class="me-kicker">Item Market - ${escapeHtml(liveConfirmation)}</div>
@@ -206,11 +361,13 @@
         ${metricRows([
           ["Lowest", `<span title="${formatMoney(snapshot.lowestPrice, true)}">${formatMoney(snapshot.lowestPrice)}</span>`],
           ["Current anchor", `<span title="${formatMoney(snapshot.calculatedMarketAnchor, true)}">${formatMoney(snapshot.calculatedMarketAnchor)}</span>`],
-          ["24h fair value", historyStats.historicalFairValue ? `<span title="${formatMoney(historyStats.historicalFairValue, true)}">${formatMoney(historyStats.historicalFairValue)}</span>` : "Learning...", learning ? "me-learning" : ""],
+          ["Torn daily average", snapshot.averagePrice ? `<span title="${formatMoney(snapshot.averagePrice, true)}">${formatMoney(snapshot.averagePrice)}</span>` : "-"],
+          ["Fair value", fairValueCell, learning && !agreement.agrees ? "me-learning" : ""],
           ["Lowest discount", Number.isFinite(currentDiscount) ? `${(currentDiscount * 100).toFixed(2)}%` : "-"],
           ["24h MAD volatility", Number.isFinite(historyStats.oneDay.volatility) ? `${(historyStats.oneDay.volatility * 100).toFixed(2)}%` : "-"],
           ["API age", `${formatAge(fresh.ageSeconds)} - ${fresh.label}`],
-          ["Observations (24h)", String(historyStats.oneDay.count)]
+          ["Observations (24h)", String(historyStats.oneDay.count)],
+          ...museumRows
         ])}
         ${sourceWarning}
         <div class="me-rule"></div>
@@ -222,19 +379,25 @@
           ["Best exit", escapeHtml(best.routes.bestRoute)],
           ["Bazaar target", best.routes.bazaar ? formatMoney(best.routes.bazaar.suggestedPrice) : "Disabled"],
           ["Item Market target", formatMoney(best.routes.itemMarket.suggestedPrice)],
-          ["IM net after 5%", formatMoney(Math.floor(best.routes.itemMarket.net / best.quantityBought))]
+          [`IM net after ${feeLabel}`, formatMoney(Math.floor(best.routes.itemMarket.net / best.quantityBought))],
+          ["Auction net after 3%", `<span title="Informational: auctions are never chosen as the best route">${formatMoney(Math.floor(best.routes.auction.net / best.quantityBought))}</span>`],
+          ...(best.routes.museum ? [[`${best.routes.museum.label} target`, formatMoney(best.routes.museum.suggestedPrice)]] : [])
         ]) : `<div class="me-note">No affordable prefix with positive expected profit.</div>`}
         <div class="me-rule"></div>
         ${decisionHtml(best)}
         ${diagnosticsHtml(best)}
-        ${learning ? `<div class="me-note me-learning">Learning market... ${historyStats.oneDay.count} observations collected. Until 5 observations, Market Edge applies an extra 2% safety haircut and does not treat current lowest as fair value.</div>` : ""}
-        <div class="me-note">Facts: official API asks and 5% Item Market fee. The visible page is used only for confirmation/highlighting. Local data: observed anchors. Exit, profit and confidence are estimates - not guarantees.</div>
+        ${coldStartNote}
+        ${watchControlsHtml(snapshot, best)}
+        ${panelToolbarHtml()}
+        <div class="me-note">Facts: official API asks, Torn daily average and the ${feeLabel} Item Market fee. The visible page is used only for confirmation/highlighting. Local data: observed anchors. Exit, profit and confidence are estimates - not guarantees.</div>
       `, fresh.label);
+      bindWatchControls(snapshot);
+      bindPanelToolbar();
 
       if (liveMatchesApi) highlightItemMarketRows(liveRows, best);
       else clearBadges();
     } catch (error) {
-      errorPanel(error.message);
+      errorPanel(describeApiError(error, { feature: "Item Market analysis" }));
     }
   }
 
@@ -259,25 +422,30 @@
     return 200 - index;
   }
 
-  function resultForSurface(surface, visible, snapshot, historyStats, ownBazaar, renderMeta = {}) {
-    if (!snapshot?.supportedCommodity) return { visible, snapshot, unsupported: true, renderMeta };
+  function resultForSurface(surface, visible, snapshot, historyStats, ownBazaar, renderMeta = {}, museum = null) {
+    if (!snapshot?.supportedCommodity) {
+      if (settings.equipmentEnabled !== false && snapshot?.equipment && snapshot.equipmentSummary) {
+        return { visible, snapshot, equipment: snapshot.equipmentSummary, renderMeta };
+      }
+      return { visible, snapshot, unsupported: true, renderMeta };
+    }
 
     if (surface === "inventory") {
-      const estimate = estimateInventoryExit({ quantity: visible.quantity, snapshot, historyStats, settings });
+      const estimate = estimateInventoryExit({ quantity: visible.quantity, snapshot, historyStats, settings, museum });
       return { visible, snapshot, historyStats, inventory: estimate, renderMeta };
     }
 
     if (surface === "auction") {
-      const maxBid = maxRationalBid({ snapshot, historyStats, settings, quantity: visible.quantity });
+      const maxBid = maxRationalBid({ snapshot, historyStats, settings, quantity: visible.quantity, museum });
       const headroom = Number.isFinite(maxBid) ? maxBid - visible.price : null;
       const direct = visible.price > 0
-        ? evaluateDirectBuy({ buyPrice: visible.price, quantity: visible.quantity, snapshot, historyStats, settings, forceYellow: true })
+        ? evaluateDirectBuy({ buyPrice: visible.price, quantity: visible.quantity, snapshot, historyStats, settings, forceYellow: true, museum })
         : null;
       return { visible, snapshot, historyStats, auction: { maxBid, headroom, direct }, renderMeta };
     }
 
     if (surface === "bazaar" && ownBazaar) {
-      const estimate = estimateInventoryExit({ quantity: visible.quantity, snapshot, historyStats, settings });
+      const estimate = estimateInventoryExit({ quantity: visible.quantity, snapshot, historyStats, settings, museum });
       const target = estimate?.routes?.bazaar?.suggestedPrice;
       const delta = Number.isFinite(target) ? target - visible.price : null;
       return { visible, snapshot, historyStats, ownBazaar: { target, delta, estimate }, renderMeta };
@@ -292,7 +460,8 @@
       snapshot,
       historyStats,
       settings,
-      forceYellow: surface === "auction"
+      forceYellow: surface === "auction",
+      museum
     });
     return {
       visible,

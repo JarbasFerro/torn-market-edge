@@ -2,11 +2,34 @@
       return promise;
     }
 
+    async keyInfo({ priority = 100, cacheMs = ONE_DAY_MS } = {}) {
+      const data = await this.request("/key/info", { cacheMs, priority });
+      const info = data?.info && typeof data.info === "object" ? data.info : null;
+      if (info) {
+        Store.saveKeyInfo(info);
+        const playerId = asInt(info?.user?.id, 0);
+        if (playerId) Store.set(STORAGE_KEYS.playerId, playerId);
+      }
+      return info;
+    }
+
     async testKey() {
-      const data = await this.request("/user/basic", { cacheMs: 0, priority: 100 });
-      const playerId = asInt(data?.profile?.id ?? data?.basic?.id ?? data?.player_id ?? data?.id, 0);
-      if (playerId) Store.set(STORAGE_KEYS.playerId, playerId);
-      return { ok: true, playerId: playerId || null, data };
+      // /key/info is available to every key type and reports the access
+      // level, which drives which optional features are offered.
+      const info = await this.keyInfo({ cacheMs: 0 });
+      let playerId = asInt(info?.user?.id, 0);
+      if (!playerId) {
+        const data = await this.request("/user/basic", { cacheMs: 0, priority: 100 });
+        playerId = asInt(data?.profile?.id ?? data?.basic?.id ?? data?.player_id ?? data?.id, 0);
+        if (playerId) Store.set(STORAGE_KEYS.playerId, playerId);
+      }
+      return {
+        ok: true,
+        playerId: playerId || null,
+        accessType: String(info?.access?.type || "Unknown"),
+        accessRank: keyAccessRank(info),
+        info
+      };
     }
 
     async itemMarket(itemId, { limit = API_LIST_LIMIT, priority = 0, queueGroup = null } = {}) {
@@ -14,14 +37,38 @@
       return this.request(`/market/${asInt(itemId)}/itemmarket?limit=${safeLimit}&offset=0`, { priority, queueGroup });
     }
 
-    async items(itemIds, { priority = 120 } = {}) {
+    async items(itemIds, { priority = 120, cacheMs = ONE_DAY_MS } = {}) {
       const ids = Array.from(new Set(itemIds.map((id) => asInt(id)).filter(Boolean))).slice(0, 100);
       if (!ids.length) return { items: [] };
-      return this.request(`/torn/${ids.join(",")}/items`, { cacheMs: ONE_DAY_MS, priority });
+      return this.request(`/torn/${ids.join(",")}/items`, { cacheMs, priority });
+    }
+
+    async auctionSales(itemId, { priority = 40 } = {}) {
+      return this.request(`/market/${asInt(itemId)}/auctionhouse?limit=${API_AUCTION_LIMIT}&sort=DESC`, {
+        cacheMs: AUCTION_SALES_TTL_MS,
+        priority
+      });
+    }
+
+    async pointsMarket({ priority = 60 } = {}) {
+      return this.request("/market/pointsmarket", { cacheMs: POINTS_MARKET_TTL_MS, priority });
+    }
+
+    async ownListings({ priority = 150 } = {}) {
+      // Requires a Limited access key. Callers translate error code 16.
+      return this.request("/user/itemmarket", { cacheMs: 20000, priority });
     }
   }
 
   const api = new TornApi();
+
+  function describeApiError(error, { feature = "This feature" } = {}) {
+    if (!error) return "Unknown error";
+    if (error.tornCode === 16) return `${feature} needs a Limited access API key (current key is ${Store.keyInfo()?.info?.access?.type || "lower access"}).`;
+    if (error.tornCode === 2) return "Torn rejected the API key. Re-check it in Market Edge settings.";
+    if (error.tornCode === 5) return "Torn API rate limit reached; Market Edge will retry on the next refresh.";
+    return error.message || String(error);
+  }
 
   function normalizeItemMeta(item) {
     if (!item || !asInt(item.id)) return null;
@@ -43,21 +90,21 @@
 
   function metadataSupportsCommodity(meta) {
     if (!meta) return true;
-    return !/weapon|armor|armour/i.test(String(meta.type || ""));
+    return !isEquipmentType(meta.type);
   }
 
-  async function loadItemMetadataBatch(itemIds) {
+  async function loadItemMetadataBatch(itemIds, { maxAgeMs = ITEM_META_TTL_MS, priority = 150 } = {}) {
     const ids = Array.from(new Set(itemIds.map((id) => asInt(id)).filter(Boolean)));
     const result = new Map();
     const missing = [];
     ids.forEach((id) => {
-      const cached = Store.itemMeta(id);
+      const cached = Store.itemMeta(id, maxAgeMs);
       if (cached) result.set(id, cached);
       else missing.push(id);
     });
     if (!missing.length) return result;
 
-    const payload = await api.items(missing, { priority: 150 });
+    const payload = await api.items(missing, { priority, cacheMs: Math.min(ONE_DAY_MS, maxAgeMs) });
     const rows = Array.isArray(payload?.items) ? payload.items : [];
     rows.forEach((item) => {
       const meta = normalizeItemMeta(item);
@@ -66,6 +113,70 @@
       result.set(meta.id, meta);
     });
     return result;
+  }
+
+  async function loadPointsMarket({ priority = 60 } = {}) {
+    const cached = Store.pointsMarket();
+    if (cached && Date.now() - asInt(cached.savedAt) < POINTS_MARKET_TTL_MS) return cached;
+    try {
+      const payload = await api.pointsMarket({ priority });
+      const points = normalizePointsMarket(payload);
+      Store.savePointsMarket(points);
+      return { ...points, savedAt: Date.now() };
+    } catch (error) {
+      log("Points market unavailable", error.message);
+      return cached || null;
+    }
+  }
+
+  // Museum context: one batched metadata request per set (daily) plus the
+  // points market (every five minutes) gives set-implied values for every
+  // plushie/flower without touching per-item order books.
+  async function loadMuseumContext(itemIds, { priority = 60 } = {}) {
+    const result = new Map();
+    if (settings.museumSetsEnabled === false) return result;
+    const sets = new Map();
+    itemIds.forEach((itemId) => {
+      const set = museumSetFor(itemId);
+      if (set) sets.set(set.key, set);
+    });
+    if (!sets.size) return result;
+
+    const points = await loadPointsMarket({ priority });
+    const pointValue = asInt(points?.cheapest, 0);
+    if (!pointValue) return result;
+
+    const memberIds = Array.from(sets.values()).flatMap((set) => set.items);
+    let metadata = new Map();
+    try {
+      metadata = await loadItemMetadataBatch(memberIds, { maxAgeMs: SET_META_TTL_MS, priority });
+    } catch (error) {
+      log("Museum set metadata unavailable", error.message);
+      return result;
+    }
+    const memberPrices = {};
+    metadata.forEach((meta, id) => { memberPrices[id] = asInt(meta?.marketPrice, 0); });
+
+    itemIds.forEach((itemId) => {
+      if (!museumSetFor(itemId)) return;
+      const valuation = museumValuation({ itemId, memberPrices, pointValue, settings });
+      if (valuation) result.set(asInt(itemId), valuation);
+    });
+    return result;
+  }
+
+  async function loadAuctionSales(itemId, { priority = 40 } = {}) {
+    const cached = Store.auctionSales(itemId);
+    if (cached && Date.now() - asInt(cached.savedAt) < AUCTION_SALES_TTL_MS) return cached.sales;
+    try {
+      const payload = await api.auctionSales(itemId, { priority });
+      const sales = normalizeAuctionSales(payload);
+      Store.saveAuctionSales(itemId, sales);
+      return sales;
+    } catch (error) {
+      log("Auction sales unavailable", itemId, error.message);
+      return cached?.sales || [];
+    }
   }
 
   function snapshotCacheState(snapshot, nowMs = Date.now()) {

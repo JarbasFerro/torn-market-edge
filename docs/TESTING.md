@@ -2,6 +2,24 @@
 
 Torn Market Edge is a userscript running against a live SPA, so both economic regression tests and manual Torn integration checks are required.
 
+## Running the automated tests
+
+```sh
+npm ci            # installs jsdom (development only; the userscript itself has no dependencies)
+npm run check     # builds the userscript, syntax-checks it and runs every test
+```
+
+`node --test tests/*.test.js` works without `npm ci` too; the jsdom-based DOM and panel tests are skipped when jsdom is missing.
+
+Test files:
+
+- `tests/economics.test.js` - original pure-function regression scenarios.
+- `tests/features-0-3.test.js` - fee model, cold-start valuation, equipment comparables, museum sets, watchlist, own listings, key access and source guards.
+- `tests/dom.test.js` - collectors against saved HTML fixtures in `tests/fixtures/` (Bazaar add form, own Bazaar rows, inventory, Auction House, Item Market), transport selection (GM vs Torn PDA), settings modal.
+- `tests/panels.test.js` - end-to-end panel smoke tests with a stubbed Torn API (Item Market, equipment, own listings, watchlist tick, museum context).
+
+When Torn changes a page layout, update the matching fixture to the new markup and adjust the collector; the fixtures are the contract.
+
 ## Economic regression scenarios
 
 At minimum, preserve these cases:
@@ -16,6 +34,12 @@ At minimum, preserve these cases:
 8. **Stale data** - stale API information must lower confidence/warn the user.
 9. **Single listing** - do not invent market depth.
 10. **Unsupported equipment** - do not apply the commodity model to stat-based equipment.
+11. **Anonymous listing fee** - a 15% total fee can flip the best route to Bazaar.
+12. **Cold start with official agreement** - no warm-up haircut when Torn's daily average agrees with depth; the daily average caps an inflated book; confidence never exceeds MEDIUM without local history.
+13. **Equipment comparables** - cheap plain listings are judged against their own group, bonus rolls against theirs, and ended Auction House sales cap the reference.
+14. **Museum sets** - implied value is set value minus the other pieces; negative or incomplete sets never become a route.
+15. **Watchlist** - alerts trigger at or below target, respect the cooldown and re-alert on a further drop.
+16. **Own listings** - CHEAPEST / CLOSE / UNDERCUT statuses, anonymous fee and flash-sale warnings.
 
 ## Manual UI regression matrix
 
@@ -64,6 +88,31 @@ At minimum, preserve these cases:
 - Confirm visible item prices are compared with Torn resale economics.
 - Confirm configured travel capacity affects trip totals only when set.
 
+### Your Item Market listings
+
+- With a Limited key, open the Item Market manage view or use the menu command.
+- Confirm each listing shows floor, units ahead and a status.
+- Confirm suggested prices are never applied to Torn's form.
+- With a Public key, confirm the panel explains the access requirement and makes no `/user/itemmarket` request.
+
+### Equipment
+
+- Open a weapon or armor on the Item Market.
+- Confirm the comparables table groups by rarity/bonus and shows Auction House sales when any exist.
+- On inventory/Bazaar, confirm weapon rows show plain and bonus floors.
+
+### Watchlist
+
+- Add an item with a target above the current floor; confirm a toast and `[ME]` title marker appear within one interval.
+- Hide the tab; confirm no polling happens (developer diagnostics log requests).
+- Confirm alerts stop after removing the item.
+
+### Torn PDA
+
+- Install from the raw GitHub URL; confirm the **ME** launcher appears and settings open.
+- Confirm the Item Market panel loads without entering a key (PDA injection).
+- Confirm Bazaar add-form fill works with a tap.
+
 ## Mobile UX
 
 Verify on a narrow/mobile viewport:
@@ -93,7 +142,8 @@ There should be no code that:
 
 ## API-rate behavior
 
-- Maximum Market Edge budget: 45 requests/minute.
+- Maximum Market Edge budget: 70 requests/minute (Torn allows 100 per player across all keys).
 - Maximum in-flight concurrency: 4.
+- Watchlist polling: at most one pass per configured interval (minimum 30 s), low priority, only while visible, and cached snapshots are reused until Torn's cache delay has elapsed.
 - Repeated item requests should use cache/in-flight deduplication when appropriate.
 - List-style pages should use a small Item Market depth; detailed Item Market analysis may use deeper data.

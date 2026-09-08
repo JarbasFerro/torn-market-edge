@@ -8,7 +8,12 @@
     const currentAnchor = snapshot?.calculatedMarketAnchor || null;
     const averagePrice = snapshot?.averagePrice || null;
     if (currentAnchor && averagePrice) {
-      return { value: Math.min(currentAnchor, Math.round(averagePrice * 1.05)), source: "current depth + Torn value sanity check" };
+      const agreement = officialAgreement(snapshot);
+      return {
+        value: Math.min(currentAnchor, Math.round(averagePrice * 1.05)),
+        source: agreement.agrees ? "Torn daily average confirmed by current depth" : "current depth + Torn value sanity check",
+        officialAgreement: agreement
+      };
     }
     if (currentAnchor) return { value: currentAnchor, source: "current market depth" };
     if (averagePrice) return { value: averagePrice, source: "Torn value sanity check" };
@@ -18,6 +23,8 @@
   function calculateExit({ snapshot, historyStats, nextAsk = null, settings }) {
     const currentAnchor = snapshot?.calculatedMarketAnchor || null;
     const historicalFair = historyStats?.historicalFairValue || null;
+    const averagePrice = snapshot?.averagePrice || null;
+    const agreement = officialAgreement(snapshot);
     let exitAnchor = null;
 
     if (historicalFair && Number.isFinite(nextAsk)) {
@@ -32,8 +39,19 @@
       exitAnchor = currentAnchor || nextAsk || null;
     }
 
+    // Cold start: Torn's daily average reflects actual purchases. Without local
+    // history it caps the exit so a temporarily inflated order book cannot
+    // inflate the expected resale.
+    if (!historicalFair && Number.isFinite(exitAnchor) && averagePrice) {
+      const officialCap = Math.floor(averagePrice * settings.allowedHistoricalPremium);
+      exitAnchor = Math.min(exitAnchor, officialCap);
+    }
+
     if (!Number.isFinite(exitAnchor) || exitAnchor <= 0) return null;
-    const warmupExtra = (historyStats?.oneDay?.count || 0) < 5 ? 0.02 : 0;
+    const coldStart = (historyStats?.oneDay?.count || 0) < 5;
+    // The warm-up penalty is waived when the official average and the depth
+    // anchor agree; the two independent sources corroborate each other.
+    const warmupExtra = coldStart && !agreement.agrees ? 0.02 : 0;
     const haircut = clamp(settings.safetyHaircut + warmupExtra, 0, 0.10);
     const conservativeExitPrice = Math.max(1, Math.floor(exitAnchor * (1 - haircut)));
     const itemMarketSuggestedPrice = Math.max(1, conservativeExitPrice - Math.max(0, asInt(settings.itemMarketUndercut)));
@@ -42,25 +60,51 @@
     return {
       exitAnchor,
       haircut,
+      coldStart,
+      officialAgreement: agreement,
       conservativeExitPrice,
       itemMarketSuggestedPrice,
       bazaarSuggestedPrice
     };
   }
 
-  function routeEconomics(exit, quantity, settings) {
+  function routeEconomics(exit, quantity, settings, extras = {}) {
     const qty = Math.max(1, asInt(quantity, 1));
+    const feeBps = itemMarketFeeBps(settings);
     const itemMarketGross = exit.itemMarketSuggestedPrice * qty;
-    const itemMarketNet = itemMarketNetFor(exit.itemMarketSuggestedPrice, qty);
+    const itemMarketNet = itemMarketNetFor(exit.itemMarketSuggestedPrice, qty, feeBps);
     const bazaarGross = exit.bazaarSuggestedPrice * qty;
     const bazaarNet = settings.bazaarEnabled ? bazaarGross : Number.NEGATIVE_INFINITY;
-    const bestRoute = bazaarNet >= itemMarketNet ? "Bazaar" : "Item Market";
+    const auctionGross = exit.conservativeExitPrice * qty;
+    const auctionNet = auctionNetFor(exit.conservativeExitPrice, qty);
+
+    // Museum set route: value implied by completing a set and exchanging it for
+    // points. Informational unless the set model produced a positive value.
+    const museum = extras?.museum && Number.isFinite(extras.museum.impliedValue) && extras.museum.impliedValue > 0
+      ? {
+        suggestedPrice: Math.max(1, Math.floor(extras.museum.impliedValue * (1 - clamp(settings.safetyHaircut, 0, 0.10)))),
+        label: extras.museum.label || "Museum set"
+      }
+      : null;
+    const museumGross = museum ? museum.suggestedPrice * qty : Number.NEGATIVE_INFINITY;
+    const museumNet = museum && settings.museumSetsEnabled !== false ? museumGross : Number.NEGATIVE_INFINITY;
+
+    const candidates = [
+      { route: "Bazaar", net: bazaarNet },
+      { route: "Item Market", net: itemMarketNet },
+      { route: "Museum set", net: museumNet }
+    ].filter((candidate) => Number.isFinite(candidate.net));
+    candidates.sort((a, b) => b.net - a.net);
+    const bestRoute = candidates[0]?.route || "Item Market";
+    const bestNet = candidates[0]?.net ?? itemMarketNet;
+
     return {
       itemMarket: {
         suggestedPrice: exit.itemMarketSuggestedPrice,
         gross: itemMarketGross,
         net: itemMarketNet,
-        fee: itemMarketGross - itemMarketNet
+        fee: itemMarketGross - itemMarketNet,
+        feeBps
       },
       bazaar: settings.bazaarEnabled ? {
         suggestedPrice: exit.bazaarSuggestedPrice,
@@ -68,9 +112,25 @@
         net: bazaarNet,
         fee: 0
       } : null,
+      // Auction House is reported for sellers comparing exits but never
+      // chosen automatically: auction outcomes are uncertain.
+      auction: {
+        suggestedPrice: exit.conservativeExitPrice,
+        gross: auctionGross,
+        net: auctionNet,
+        fee: auctionGross - auctionNet,
+        feeBps: AUCTION_HOUSE_FEE_BPS
+      },
+      museum: museum ? {
+        suggestedPrice: museum.suggestedPrice,
+        gross: museumGross,
+        net: museumGross,
+        fee: 0,
+        label: museum.label
+      } : null,
       bestRoute,
-      bestNet: bestRoute === "Bazaar" ? bazaarNet : itemMarketNet,
-      bestNetPerUnit: Math.floor((bestRoute === "Bazaar" ? bazaarNet : itemMarketNet) / qty)
+      bestNet,
+      bestNetPerUnit: Math.floor(bestNet / qty)
     };
   }
 
@@ -114,7 +174,7 @@
     return Math.round(100 * (0.30 * roiComponent + 0.25 * profitComponent + 0.20 * confidenceComponent + 0.15 * stabilityDepth + 0.10 * capitalEfficiency));
   }
 
-  function evaluatePrefixes(snapshot, historyStats, settings, nowMs = Date.now()) {
+  function evaluatePrefixes(snapshot, historyStats, settings, nowMs = Date.now(), extras = {}) {
     if (!snapshot?.supportedCommodity) return { best: null, all: [], unsupported: true };
     const listings = snapshot.listings || [];
     if (listings.length < 2) return { best: null, all: [], unsupported: false };
@@ -138,7 +198,7 @@
       const averageBuyPrice = capitalRequired / quantityBought;
       const exit = calculateExit({ snapshot, historyStats, nextAsk, settings });
       if (!exit) continue;
-      const routes = routeEconomics(exit, quantityBought, settings);
+      const routes = routeEconomics(exit, quantityBought, settings, extras);
       const expectedProfit = routes.bestNet - capitalRequired;
       const roi = capitalRequired > 0 ? expectedProfit / capitalRequired : 0;
       const discount = 1 - averageBuyPrice / reference.value;
@@ -182,7 +242,7 @@
     return { best: eligible[0] || all[0] || null, all, unsupported: false };
   }
 
-  function evaluateDirectBuy({ buyPrice, quantity = 1, snapshot, historyStats, settings, nowMs = Date.now(), forceYellow = false }) {
+  function evaluateDirectBuy({ buyPrice, quantity = 1, snapshot, historyStats, settings, nowMs = Date.now(), forceYellow = false, museum = null }) {
     const unitPrice = Math.max(1, asInt(buyPrice));
     const reference = chooseReference(snapshot, historyStats);
     if (!unitPrice || !reference.value || !snapshot?.supportedCommodity) return null;
@@ -196,7 +256,7 @@
     const capitalRequired = unitPrice * qty;
     const exit = calculateExit({ snapshot, historyStats, settings });
     if (!exit) return null;
-    const routes = routeEconomics(exit, qty, settings);
+    const routes = routeEconomics(exit, qty, settings, { museum });
     const expectedProfit = routes.bestNet - capitalRequired;
     const roi = expectedProfit / capitalRequired;
     const discount = 1 - unitPrice / reference.value;
@@ -231,12 +291,12 @@
     };
   }
 
-  function maxRationalBid({ snapshot, historyStats, settings, quantity = 1 }) {
+  function maxRationalBid({ snapshot, historyStats, settings, quantity = 1, museum = null }) {
     if (!snapshot?.supportedCommodity) return null;
     const qty = Math.max(1, asInt(quantity, 1));
     const exit = calculateExit({ snapshot, historyStats, settings });
     if (!exit) return null;
-    const routes = routeEconomics(exit, qty, settings);
+    const routes = routeEconomics(exit, qty, settings, { museum });
     const reference = chooseReference(snapshot, historyStats).value;
     const maxByRoi = Math.floor((routes.bestNet / qty) / (1 + settings.minimumROI));
     const maxByProfit = Math.floor((routes.bestNet - settings.minimumProfit) / qty);
@@ -244,12 +304,12 @@
     return Math.max(0, Math.min(maxByRoi, maxByProfit, maxByDiscount));
   }
 
-  function estimateInventoryExit({ quantity, snapshot, historyStats, settings }) {
+  function estimateInventoryExit({ quantity, snapshot, historyStats, settings, museum = null }) {
     const qty = Math.max(1, asInt(quantity, 1));
     if (!snapshot?.supportedCommodity) return null;
     const exit = calculateExit({ snapshot, historyStats, settings });
     if (!exit) return null;
-    const routes = routeEconomics(exit, qty, settings);
+    const routes = routeEconomics(exit, qty, settings, { museum });
     return { quantity: qty, exit, routes, reference: chooseReference(snapshot, historyStats) };
   }
 
