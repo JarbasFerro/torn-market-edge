@@ -1,0 +1,43 @@
+name: Apply v0.2.1 hardening
+
+on:
+  push:
+    branches:
+      - v0.2.1-hardening-work2
+    paths:
+      - ".github/workflows/apply-v021-hardening.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  harden:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Apply hardening patch
+        run: python3 scripts/apply_v021_hardening.py
+
+      - name: Build userscript
+        run: cat src/parts/*.part.js > torn-market-edge.user.js
+
+      - name: Validate JavaScript syntax
+        run: node --check torn-market-edge.user.js
+
+      - name: Run regression tests
+        run: node --test tests/*.test.js
+
+      - name: Commit hardening changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/parts torn-market-edge.user.js tests CHANGELOG.md
+          if git diff --cached --quiet; then
+            echo "No hardening changes to commit."
+            exit 0
+          fi
+          git commit -m "fix: harden v0.2.1 release candidate"
+          git push
