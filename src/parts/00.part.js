@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.3.14
+// @version      0.4.0
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.3.14",
+    version: "0.4.0",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -63,6 +63,26 @@
   const WATCHLIST_MAX_ITEMS = 25;
   const WATCHLIST_ALERT_COOLDOWN_MS = 10 * ONE_MINUTE_MS;
   const OWN_LISTINGS_MAX = 25;
+  // v0.4.0 surfaces: portfolio, shop runs, travel planner, auction guidance.
+  const INVENTORY_TTL_MS = 60 * ONE_MINUTE_MS;
+  const INVENTORY_PAGE_LIMIT = 250;
+  const INVENTORY_MAX_PAGES = 8;
+  const ITEM_DETAILS_BATCH = 25;
+  const ITEM_DETAILS_MAX_CACHED = 400;
+  const CITY_SHOPS_TTL_MS = 5 * ONE_MINUTE_MS;
+  const FOREIGN_CATALOG_TTL_MS = 6 * 60 * ONE_MINUTE_MS;
+  const AUCTION_LISTING_TTL_MS = 5 * ONE_MINUTE_MS;
+  const SELL_WATCH_MAX_ITEMS = 40;
+  const SELL_WATCH_ALERT_COOLDOWN_MS = 30 * ONE_MINUTE_MS;
+  const PORTFOLIO_REFINE_DEFAULT = 30;
+  const FOREIGN_COUNTRIES = Object.freeze([
+    "Mexico", "Cayman Islands", "Canada", "Hawaii", "United Kingdom", "Argentina", "Switzerland", "Japan", "China", "UAE", "South Africa"
+  ]);
+  const CITY_SHOP_STEPS = Object.freeze({
+    bigalgunshop: "Big Al's Gun Shop", bitsnbobs: "Bits 'n' Bobs", candy: "Sally's Sweet Shop", clothes: "TC Clothing",
+    cyberforce: "Cyber Force", docks: "Docks", jewelry: "Jewelry Store", nikeh: "Nikeh Sports", pawnshop: "Pawn Shop",
+    pharmacy: "Pharmacy", postoffice: "Post Office", printstore: "Print Shop", recycling: "Recycling Center", super: "Super Store"
+  });
   // Torn PDA replaces this literal with the player's key at load time. When it
   // is untouched (desktop Tampermonkey), the stored key is used instead.
   const PDA_API_KEY_PLACEHOLDER = "###PDA-APIKEY###";
@@ -78,6 +98,12 @@
     auctionSalesPrefix: "marketEdge.auctionSales.v1.",
     historyPrefix: "marketEdge.history.v1.",
     snapshotPrefix: "marketEdge.snapshot.v3.",
+    pricingRules: "marketEdge.pricingRules.v1",
+    sellWatch: "marketEdge.sellWatch.v1",
+    inventory: "marketEdge.inventory.v1",
+    itemDetails: "marketEdge.itemDetails.v1",
+    cityShops: "marketEdge.cityShops.v1",
+    foreignCatalog: "marketEdge.foreignCatalog.v1",
     itemMetaPrefix: "marketEdge.itemMeta.v2."
   });
 
@@ -104,6 +130,11 @@
     historyRetentionDays: 14,
     scanMaxVisibleItems: 30,
     travelCapacity: 0,
+    shopRunQuantity: 100,
+    undercutAlerts: true,
+    portfolioRefineRequests: PORTFOLIO_REFINE_DEFAULT,
+    auctionEvidenceEnabled: true,
+    browseOverlayEnabled: true,
     developerMode: false
   });
 
@@ -123,6 +154,17 @@
       items: Object.freeze([260, 263, 264, 267, 271, 272, 276, 277, 282, 385, 617])
     })
   });
+
+  // Contraband museum pieces (Patch #413) are matched by name because their
+  // item ids are not fixed in this source. Singles pay points on their own;
+  // the arrowhead set needs six distinct pieces.
+  const MUSEUM_SINGLES_BY_NAME = Object.freeze({
+    "meteorite fragment": 15,
+    "patagonian fossil": 20
+  });
+  const MUSEUM_NAME_SETS = Object.freeze([
+    Object.freeze({ key: "arrowhead", label: "Arrowhead set", pattern: /arrowhead/i, size: 6, points: 25 })
+  ]);
 
   // Weapon/armor bonus names as Torn labels them. Used to recognise bonus
   // icons in an expanded item-details panel; unknown names are ignored.

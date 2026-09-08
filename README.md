@@ -14,9 +14,9 @@ Torn Market Edge is **decision support, not trading automation**. It never buys,
 
 ## Current status
 
-**v0.3.0 beta**
+**v0.4.0**
 
-The current release adds official-API cold-start valuation, the full Item Market 2.0 fee model, an own-listings panel, museum set economics, weapon/armor comparables, an API-only watchlist and Torn PDA support. It should still be treated as a public beta while Torn DOM integration is validated across more pages and devices.
+The current release adds a repricing workbench with per-item pricing rules and undercut alerts, a DOM-free portfolio panel with per-copy equipment pricing by uid, city shop runs and a travel plan from official shop data, Auction House transaction evidence with per-copy bid guidance and end-timing, and an Item Market browse-grid overlay. Torn DOM integration is still validated page by page, so treat new surfaces as beta.
 
 ## Supported surfaces
 
@@ -26,6 +26,9 @@ The current release adds official-API cold-start valuation, the full Item Market
 - Auction House
 - Foreign shops while travelling
 - Inventory
+- Item Market browse grid (category and search cards)
+- Torn city shops (shops.php, Big Al's)
+- Panels that need no page at all: Portfolio, City shop runs, Travel plan
 
 The commodity valuation model is intended for fungible/stackable items. Weapons and armor are valued separately through comparable groups (rarity + bonus set, quality matched) and ended Auction House sales; treat that as a floor check rather than a full valuation.
 
@@ -41,6 +44,14 @@ The commodity valuation model is intended for fungible/stackable items. Weapons 
 - ROI, expected profit, capital and confidence calculations
 - Weapon/armor comparables with Auction House sales evidence
 - Your Item Market listings versus the live floor (undercut detection)
+- Repricing workbench: `^` fill and "Fill all" into Torn's price fields on your Item Market manage view and your Bazaar, with persistent per-item pricing rules (undercut floor, hold anchor, never fill, minimum price); saving stays manual
+- Undercut alerts for your own Item Market and Bazaar prices, polled through the official order book
+- Portfolio panel from the official inventory endpoint: sellable value per route, untradable and equipped flags, order-book refinement, and weapon/armor copies priced by uid without opening item details
+- City shop runs from the official city shop endpoint (stock and price) and inline profit on city shop pages
+- Travel plan from official foreign shop prices, ranked by profit per trip at your capacity
+- Sell-to-shop exit route and museum pieces recognised by name (Meteorite Fragment, Patagonian Fossil, Arrowhead set)
+- Auction House: ended-sales median as evidence and cap for stackable bids, per-copy maximum bid for weapons and armor, and a best end-time window from ended sales
+- Item Market browse-grid overlay versus Torn's official market value with no per-item requests
 - Watchlist with in-page alerts, polled only while a Torn tab is visible
 - Local price-history observations
 - `cache_timestamp`/`cache_delay` aware caching
@@ -59,7 +70,7 @@ The commodity valuation model is intended for fungible/stackable items. Weapons 
 
 ### Greasy Fork
 
-Greasy Fork publication is being prepared. Once published, Greasy Fork will be the recommended installation and update channel.
+Greasy Fork is the recommended installation and update channel. It is synced automatically from this repository's `main` branch.
 
 ### Development / direct install
 
@@ -81,8 +92,9 @@ Market Edge works inside Torn PDA. Add the script from the raw GitHub URL or Gre
 
 ### API key access levels
 
-- **Public**: Item Market analysis, Bazaar, Auction House, travel, inventory, museum sets, equipment comparables, watchlist.
-- **Limited**: everything above plus the **Your Item Market listings** panel (`/user/itemmarket`).
+- **Public**: Item Market analysis, Bazaar, Auction House, travel, inventory rows, museum sets, equipment comparables, watchlist, city shop runs, travel plan, browse-grid overlay.
+- **Minimal**: everything above plus the **Portfolio** panel (`/user/inventory`).
+- **Limited**: everything above plus the **Your Item Market listings** panel and workbench (`/user/itemmarket`).
 
 A custom key that includes `user -> itemmarket` also works for the listings panel.
 
@@ -138,6 +150,11 @@ Current settings include:
 - maximum tolerated volatility;
 - scan size;
 - travel capacity;
+- city shop run quantity;
+- portfolio refine budget;
+- ended-auction evidence on/off;
+- browse-grid overlay on/off;
+- undercut alerts on/off;
 - local history retention;
 - watchlist on/off, polling interval and watched items;
 - developer diagnostics.
@@ -159,11 +176,17 @@ The engine separates:
 
 For weapons and armor the engine instead groups listings by rarity and bonus set, matches quality softly, and caps the comparable median with ended Auction House sales from the last 30 days. To price a copy you own, open its item details on the Bazaar add form or inventory: the card that appears prices that exact quality and bonus roll and can fill the Bazaar form with `^`. Equipment rows on inventory and your own Bazaar make no market requests until you do that.
 
+Where no order book has been fetched (portfolio quick pass, shop runs, travel plan, browse grid), the exit comes from Torn's official market value with an extra 2% haircut on top of your safety haircut. Ended Auction House sales are the only official transaction record; on the Auction House they cap the maximum rational bid for stackable items.
+
 Displayed profit values are estimates, not guarantees. Market liquidity and future prices are uncertain.
 
-## Watchlist and Torn's rules
+## Watchlist, undercut alerts and Torn's rules
 
 The watchlist polls only the official Item Market API, only while a Torn tab is visible, at a user-configured interval of at least 30 seconds, and respects Torn's global cache delay. Alerts are an in-page toast and a title marker. Market Edge never buys, so acting on an alert remains a manual decision.
+
+Undercut alerts use the same loop for prices you have listed: opening **My listings** or your Bazaar records them locally, and a toast warns when the Item Market floor drops below one of them.
+
+The repricing workbench writes values into Torn's own price fields and nothing else. Torn's save, update and add buttons are never pressed by the script.
 
 ## Reporting bugs
 

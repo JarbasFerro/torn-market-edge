@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.3.14
+// @version      0.4.0
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.3.14",
+    version: "0.4.0",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -63,6 +63,26 @@
   const WATCHLIST_MAX_ITEMS = 25;
   const WATCHLIST_ALERT_COOLDOWN_MS = 10 * ONE_MINUTE_MS;
   const OWN_LISTINGS_MAX = 25;
+  // v0.4.0 surfaces: portfolio, shop runs, travel planner, auction guidance.
+  const INVENTORY_TTL_MS = 60 * ONE_MINUTE_MS;
+  const INVENTORY_PAGE_LIMIT = 250;
+  const INVENTORY_MAX_PAGES = 8;
+  const ITEM_DETAILS_BATCH = 25;
+  const ITEM_DETAILS_MAX_CACHED = 400;
+  const CITY_SHOPS_TTL_MS = 5 * ONE_MINUTE_MS;
+  const FOREIGN_CATALOG_TTL_MS = 6 * 60 * ONE_MINUTE_MS;
+  const AUCTION_LISTING_TTL_MS = 5 * ONE_MINUTE_MS;
+  const SELL_WATCH_MAX_ITEMS = 40;
+  const SELL_WATCH_ALERT_COOLDOWN_MS = 30 * ONE_MINUTE_MS;
+  const PORTFOLIO_REFINE_DEFAULT = 30;
+  const FOREIGN_COUNTRIES = Object.freeze([
+    "Mexico", "Cayman Islands", "Canada", "Hawaii", "United Kingdom", "Argentina", "Switzerland", "Japan", "China", "UAE", "South Africa"
+  ]);
+  const CITY_SHOP_STEPS = Object.freeze({
+    bigalgunshop: "Big Al's Gun Shop", bitsnbobs: "Bits 'n' Bobs", candy: "Sally's Sweet Shop", clothes: "TC Clothing",
+    cyberforce: "Cyber Force", docks: "Docks", jewelry: "Jewelry Store", nikeh: "Nikeh Sports", pawnshop: "Pawn Shop",
+    pharmacy: "Pharmacy", postoffice: "Post Office", printstore: "Print Shop", recycling: "Recycling Center", super: "Super Store"
+  });
   // Torn PDA replaces this literal with the player's key at load time. When it
   // is untouched (desktop Tampermonkey), the stored key is used instead.
   const PDA_API_KEY_PLACEHOLDER = "###PDA-APIKEY###";
@@ -78,6 +98,12 @@
     auctionSalesPrefix: "marketEdge.auctionSales.v1.",
     historyPrefix: "marketEdge.history.v1.",
     snapshotPrefix: "marketEdge.snapshot.v3.",
+    pricingRules: "marketEdge.pricingRules.v1",
+    sellWatch: "marketEdge.sellWatch.v1",
+    inventory: "marketEdge.inventory.v1",
+    itemDetails: "marketEdge.itemDetails.v1",
+    cityShops: "marketEdge.cityShops.v1",
+    foreignCatalog: "marketEdge.foreignCatalog.v1",
     itemMetaPrefix: "marketEdge.itemMeta.v2."
   });
 
@@ -104,6 +130,11 @@
     historyRetentionDays: 14,
     scanMaxVisibleItems: 30,
     travelCapacity: 0,
+    shopRunQuantity: 100,
+    undercutAlerts: true,
+    portfolioRefineRequests: PORTFOLIO_REFINE_DEFAULT,
+    auctionEvidenceEnabled: true,
+    browseOverlayEnabled: true,
     developerMode: false
   });
 
@@ -123,6 +154,17 @@
       items: Object.freeze([260, 263, 264, 267, 271, 272, 276, 277, 282, 385, 617])
     })
   });
+
+  // Contraband museum pieces (Patch #413) are matched by name because their
+  // item ids are not fixed in this source. Singles pay points on their own;
+  // the arrowhead set needs six distinct pieces.
+  const MUSEUM_SINGLES_BY_NAME = Object.freeze({
+    "meteorite fragment": 15,
+    "patagonian fossil": 20
+  });
+  const MUSEUM_NAME_SETS = Object.freeze([
+    Object.freeze({ key: "arrowhead", label: "Arrowhead set", pattern: /arrowhead/i, size: 6, points: 25 })
+  ]);
 
   // Weapon/armor bonus names as Torn labels them. Used to recognise bonus
   // icons in an expanded item-details panel; unknown names are ignored.
@@ -550,11 +592,17 @@
       : null;
     const museumGross = museum ? museum.suggestedPrice * qty : Number.NEGATIVE_INFINITY;
     const museumNet = museum && settings.museumSetsEnabled !== false ? museumGross : Number.NEGATIVE_INFINITY;
+    // NPC shops buy instantly at a fixed price (no fee, no waiting). It is a
+    // legitimate exit for contraband and for items whose market has sunk
+    // below the shop's offer.
+    const shopSellPrice = Number.isFinite(extras?.shopSell) && extras.shopSell > 0 ? Math.floor(extras.shopSell) : null;
+    const shopGross = shopSellPrice ? shopSellPrice * qty : Number.NEGATIVE_INFINITY;
 
     const candidates = [
       { route: "Bazaar", net: bazaarNet },
       { route: "Item Market", net: itemMarketNet },
-      { route: "Museum set", net: museumNet }
+      { route: "Museum set", net: museumNet },
+      { route: "Sell to shop", net: shopGross }
     ].filter((candidate) => Number.isFinite(candidate.net));
     candidates.sort((a, b) => b.net - a.net);
     const bestRoute = candidates[0]?.route || "Item Market";
@@ -589,6 +637,13 @@
         net: museumGross,
         fee: 0,
         label: museum.label
+      } : null,
+      shop: shopSellPrice ? {
+        suggestedPrice: shopSellPrice,
+        gross: shopGross,
+        net: shopGross,
+        fee: 0,
+        label: extras.shopLabel || "Sell to shop"
       } : null,
       bestRoute,
       bestNet,
@@ -704,7 +759,7 @@
     return { best: eligible[0] || all[0] || null, all, unsupported: false };
   }
 
-  function evaluateDirectBuy({ buyPrice, quantity = 1, snapshot, historyStats, settings, nowMs = Date.now(), forceYellow = false, museum = null }) {
+  function evaluateDirectBuy({ buyPrice, quantity = 1, snapshot, historyStats, settings, nowMs = Date.now(), forceYellow = false, museum = null, shopSell = null }) {
     const unitPrice = Math.max(1, asInt(buyPrice));
     const reference = chooseReference(snapshot, historyStats);
     if (!unitPrice || !reference.value || !snapshot?.supportedCommodity) return null;
@@ -718,7 +773,7 @@
     const capitalRequired = unitPrice * qty;
     const exit = calculateExit({ snapshot, historyStats, settings });
     if (!exit) return null;
-    const routes = routeEconomics(exit, qty, settings, { museum });
+    const routes = routeEconomics(exit, qty, settings, { museum, shopSell });
     const expectedProfit = routes.bestNet - capitalRequired;
     const roi = expectedProfit / capitalRequired;
     const discount = 1 - unitPrice / reference.value;
@@ -753,26 +808,61 @@
     };
   }
 
-  function maxRationalBid({ snapshot, historyStats, settings, quantity = 1, museum = null }) {
+  function maxRationalBid({ snapshot, historyStats, settings, quantity = 1, museum = null, shopSell = null, salesMedian = null }) {
     if (!snapshot?.supportedCommodity) return null;
     const qty = Math.max(1, asInt(quantity, 1));
     const exit = calculateExit({ snapshot, historyStats, settings });
     if (!exit) return null;
-    const routes = routeEconomics(exit, qty, settings, { museum });
+    const routes = routeEconomics(exit, qty, settings, { museum, shopSell });
     const reference = chooseReference(snapshot, historyStats).value;
     const maxByRoi = Math.floor((routes.bestNet / qty) / (1 + settings.minimumROI));
     const maxByProfit = Math.floor((routes.bestNet - settings.minimumProfit) / qty);
     const maxByDiscount = reference ? Math.floor(reference * (1 - settings.minimumDiscount)) : Number.POSITIVE_INFINITY;
-    return Math.max(0, Math.min(maxByRoi, maxByProfit, maxByDiscount));
+    // Ended auctions are actual transactions: a rational bid does not exceed
+    // what winners have recently paid for the same stackable item.
+    const maxBySales = Number.isFinite(salesMedian) && salesMedian > 0 ? Math.floor(salesMedian) : Number.POSITIVE_INFINITY;
+    return Math.max(0, Math.min(maxByRoi, maxByProfit, maxByDiscount, maxBySales));
   }
 
-  function estimateInventoryExit({ quantity, snapshot, historyStats, settings, museum = null }) {
+  function estimateInventoryExit({ quantity, snapshot, historyStats, settings, museum = null, shopSell = null }) {
     const qty = Math.max(1, asInt(quantity, 1));
     if (!snapshot?.supportedCommodity) return null;
     const exit = calculateExit({ snapshot, historyStats, settings });
     if (!exit) return null;
-    const routes = routeEconomics(exit, qty, settings, { museum });
+    const routes = routeEconomics(exit, qty, settings, { museum, shopSell });
     return { quantity: qty, exit, routes, reference: chooseReference(snapshot, historyStats) };
+  }
+
+  // Exit model from Torn's official market value alone. Used where no order
+  // book has been fetched yet (portfolio quick pass, shop runs, travel plan,
+  // browse grid). It is deliberately more conservative than calculateExit:
+  // the market value is a daily average of purchases, not a live floor.
+  function officialExit(marketPrice, settings) {
+    const value = asInt(marketPrice, 0);
+    if (value <= 0) return null;
+    const haircut = clamp(settings.safetyHaircut + 0.02, 0, 0.10);
+    const conservativeExitPrice = Math.max(1, Math.floor(value * (1 - haircut)));
+    return {
+      exitAnchor: value,
+      haircut,
+      coldStart: true,
+      official: true,
+      officialAgreement: { available: false, agrees: false, ratio: null },
+      conservativeExitPrice,
+      itemMarketSuggestedPrice: Math.max(1, conservativeExitPrice - Math.max(0, asInt(settings.itemMarketUndercut))),
+      bazaarSuggestedPrice: Math.max(1, Math.floor(conservativeExitPrice * (1 - settings.bazaarDiscount)))
+    };
+  }
+
+  // Resolve the best available exit for an item: the live order book when a
+  // snapshot exists (commodities), otherwise the official market value.
+  function bestAvailableExit({ snapshot = null, historyStats = null, marketPrice = 0, settings }) {
+    if (snapshot?.supportedCommodity) {
+      const exit = calculateExit({ snapshot, historyStats, settings });
+      if (exit) return { exit, source: "order book" };
+    }
+    const exit = officialExit(marketPrice || snapshot?.averagePrice || 0, settings);
+    return exit ? { exit, source: "official market value" } : { exit: null, source: "unavailable" };
   }
 
   function formatMoney(value, exact = false) {
@@ -1404,6 +1494,403 @@
     return keyAccessRank(info) >= required;
   }
 
+
+  // ---------------------------------------------------------------------------
+  // v0.4.0 pure helpers: inventory portfolio, item details by uid, city and
+  // foreign shops, auction guidance, browse-grid overlay, pricing rules and
+  // sell-side (undercut) watch. All DOM-free and covered by unit tests.
+  // ---------------------------------------------------------------------------
+
+  function normalizeInventory(payload) {
+    const rows = Array.isArray(payload?.inventory?.items) ? payload.inventory.items : (Array.isArray(payload?.inventory) ? payload.inventory : []);
+    return rows
+      .map((row) => ({
+        itemId: asInt(row?.id ?? row?.item_id, 0),
+        name: String(row?.name || `Item ${row?.id || ""}`).trim(),
+        amount: Math.max(0, asInt(row?.amount ?? row?.quantity, 1)),
+        equipped: row?.equipped === true,
+        factionOwned: row?.faction_owned === true,
+        uid: row?.uid == null ? null : asInt(row.uid, 0) || null
+      }))
+      .filter((row) => row.itemId > 0 && row.amount > 0);
+  }
+
+  function normalizeItemDetailsRow(row) {
+    if (!row || typeof row !== "object") return null;
+    const stats = row.stats && typeof row.stats === "object" ? row.stats : {};
+    const bonuses = Array.isArray(row.bonuses) ? row.bonuses : [];
+    const quality = Number(stats.quality);
+    return {
+      uid: asInt(row.uid, 0) || null,
+      itemId: asInt(row.id ?? row.item_id, 0) || null,
+      name: row.name ? String(row.name) : "",
+      type: row.type ? String(row.type) : "",
+      subType: row.sub_type == null ? null : String(row.sub_type),
+      quality: Number.isFinite(quality) ? quality : null,
+      damage: Number.isFinite(Number(stats.damage)) ? Number(stats.damage) : null,
+      accuracy: Number.isFinite(Number(stats.accuracy)) ? Number(stats.accuracy) : null,
+      armor: Number.isFinite(Number(stats.armor)) ? Number(stats.armor) : null,
+      bonuses: bonuses.map((bonus) => ({
+        title: String(bonus?.title || "").trim(),
+        value: Number.isFinite(Number(bonus?.value)) ? Number(bonus.value) : null
+      })).filter((bonus) => bonus.title),
+      rarity: row.rarity ? String(row.rarity).toLowerCase() : null
+    };
+  }
+
+  // /torn/{uids}/itemdetails returns an array (current) or, for a single uid,
+  // the deprecated single-object shape until 2027-01-01. Both are accepted.
+  function normalizeItemDetails(payload) {
+    const raw = payload?.itemdetails ?? payload;
+    const rows = Array.isArray(raw) ? raw : (raw && typeof raw === "object" ? [raw] : []);
+    return rows.map(normalizeItemDetailsRow).filter((row) => row && row.uid);
+  }
+
+  function copyLabelFor(copy) {
+    if (!copy) return "";
+    const bonus = (copy.bonuses || []).map((entry) => entry.title).filter(Boolean).join("+");
+    const rarity = copy.rarity ? copy.rarity.toUpperCase() : "";
+    const quality = Number.isFinite(copy.quality) ? `Q ${copy.quality.toFixed(1)}%` : "";
+    return [quality, rarity, bonus || (Number.isFinite(copy.quality) ? "plain" : "")].filter(Boolean).join(" ");
+  }
+
+  function normalizeCityShops(payload) {
+    const shops = Array.isArray(payload?.cityshops) ? payload.cityshops : [];
+    return shops.map((shop) => ({
+      shopId: asInt(shop?.id, 0),
+      name: String(shop?.name || `Shop ${shop?.id || ""}`),
+      items: (Array.isArray(shop?.items) ? shop.items : []).map((item) => ({
+        itemId: asInt(item?.id, 0),
+        name: String(item?.name || `Item ${item?.id || ""}`),
+        price: asInt(item?.price, 0),
+        stock: Math.max(0, asInt(item?.stock?.current, 0)),
+        defaultStock: Math.max(0, asInt(item?.stock?.default, 0))
+      })).filter((item) => item.itemId > 0 && item.price > 0)
+    })).filter((shop) => shop.items.length);
+  }
+
+  // Highest price a Torn NPC shop pays for the item (instant, fee-free exit).
+  function shopSellFloor(meta) {
+    const shops = Array.isArray(meta?.shops) ? meta.shops : [];
+    let best = 0;
+    let label = "";
+    shops.forEach((shop) => {
+      if (shop.country && shop.country !== "Torn") return;
+      if (shop.sellPrice > best) {
+        best = shop.sellPrice;
+        label = shop.name ? `Sell to ${shop.name}` : "Sell to shop";
+      }
+    });
+    return best > 0 ? { price: best, label } : null;
+  }
+
+  // Foreign shop offers from item metadata (official buy prices per country;
+  // stock is not part of the official API).
+  function foreignOffers(metaList) {
+    const offers = [];
+    (metaList || []).forEach((meta) => {
+      if (!meta || !Array.isArray(meta.shops)) return;
+      meta.shops.forEach((shop) => {
+        if (!shop.country || shop.country === "Torn" || !(shop.buyPrice > 0)) return;
+        offers.push({
+          itemId: meta.id,
+          name: meta.name,
+          type: meta.type,
+          country: shop.country,
+          shop: shop.name,
+          buyPrice: shop.buyPrice,
+          marketPrice: asInt(meta.marketPrice, 0),
+          isTradable: meta.isTradable !== false
+        });
+      });
+    });
+    return offers;
+  }
+
+  // Profit for buying `quantity` units at `buyPrice` and exiting through the
+  // best route. `exit` comes from bestAvailableExit(); extras carry the
+  // museum and shop-sell routes.
+  function evaluateBuyAtPrice({ buyPrice, quantity = 1, exit, settings, museum = null, shopSell = null }) {
+    const unit = asInt(buyPrice, 0);
+    const qty = Math.max(1, asInt(quantity, 1));
+    if (!unit || !exit) return null;
+    const routes = routeEconomics(exit, qty, settings, { museum, shopSell: shopSell?.price ?? shopSell, shopLabel: shopSell?.label });
+    const capital = unit * qty;
+    const profit = routes.bestNet - capital;
+    return {
+      quantity: qty,
+      capitalRequired: capital,
+      expectedProfit: profit,
+      profitPerUnit: Math.floor(profit / qty),
+      roi: capital > 0 ? profit / capital : 0,
+      routes,
+      exit
+    };
+  }
+
+  // City shop run: how much one restock-limited purchase at the NPC price is
+  // worth after fees. Quantity is capped by current stock.
+  function evaluateShopRun({ shopItem, exit, settings, museum = null, shopSell = null, quantity = null }) {
+    if (!shopItem || !exit) return null;
+    const requested = Math.max(1, asInt(quantity ?? settings.shopRunQuantity, 100));
+    const qty = Math.max(1, Math.min(requested, shopItem.stock > 0 ? shopItem.stock : requested));
+    const evaluation = evaluateBuyAtPrice({ buyPrice: shopItem.price, quantity: qty, exit, settings, museum, shopSell });
+    if (!evaluation) return null;
+    return {
+      ...evaluation,
+      itemId: shopItem.itemId,
+      name: shopItem.name,
+      buyPrice: shopItem.price,
+      stock: shopItem.stock,
+      outOfStock: shopItem.stock <= 0,
+      state: evaluation.profitPerUnit <= 0 ? "GREY" : (evaluation.roi >= settings.minimumROI ? "GREEN" : "YELLOW")
+    };
+  }
+
+  // Travel plan: profit per unit and per trip for a foreign offer, and the
+  // cash needed to fill the capacity.
+  function evaluateForeignOffer({ offer, exit, settings, capacity = 0, museum = null, shopSell = null }) {
+    if (!offer || !exit) return null;
+    const qty = capacity > 0 ? capacity : 1;
+    const evaluation = evaluateBuyAtPrice({ buyPrice: offer.buyPrice, quantity: qty, exit, settings, museum, shopSell });
+    if (!evaluation) return null;
+    return {
+      ...evaluation,
+      itemId: offer.itemId,
+      name: offer.name,
+      country: offer.country,
+      shop: offer.shop,
+      buyPrice: offer.buyPrice,
+      perTrip: capacity > 0 ? evaluation.expectedProfit : null,
+      cashNeeded: capacity > 0 ? offer.buyPrice * capacity : offer.buyPrice,
+      state: evaluation.profitPerUnit <= 0 ? "GREY" : (evaluation.roi >= settings.minimumROI ? "GREEN" : "YELLOW")
+    };
+  }
+
+  function rankTravelPlan(evaluations, { perCountry = 3 } = {}) {
+    const byCountry = new Map();
+    (evaluations || []).forEach((row) => {
+      if (!row || !(row.profitPerUnit > 0)) return;
+      if (!byCountry.has(row.country)) byCountry.set(row.country, []);
+      byCountry.get(row.country).push(row);
+    });
+    const countries = Array.from(byCountry.entries()).map(([country, rows]) => {
+      rows.sort((a, b) => b.profitPerUnit - a.profitPerUnit);
+      return { country, best: rows[0], rows: rows.slice(0, perCountry) };
+    });
+    countries.sort((a, b) => b.best.profitPerUnit - a.best.profitPerUnit);
+    return countries;
+  }
+
+  // Museum pieces recognised by name (contraband singles and the arrowhead
+  // set). Returns a valuation shaped like museumValuation().
+  function museumByName({ meta, pointValue, allMetas = [], settings = {} }) {
+    if (!meta?.name || !(pointValue > 0) || settings.museumSetsEnabled === false) return null;
+    const lower = String(meta.name).toLowerCase().trim();
+    const singlePoints = MUSEUM_SINGLES_BY_NAME[lower];
+    if (singlePoints) {
+      const implied = singlePoints * pointValue;
+      return { label: `Museum piece (${singlePoints} pts)`, points: singlePoints, pointValue, othersCost: 0, setValue: implied, impliedValue: implied, complete: true, single: true };
+    }
+    for (const set of MUSEUM_NAME_SETS) {
+      if (!set.pattern.test(meta.name)) continue;
+      const members = allMetas.filter((other) => other && set.pattern.test(other.name));
+      const distinct = new Map(members.map((other) => [other.id, other]));
+      if (distinct.size < set.size) return { label: set.label, points: set.points, pointValue, complete: false, impliedValue: null };
+      const othersCost = Array.from(distinct.values()).filter((other) => other.id !== meta.id).slice(0, set.size - 1).reduce((sum, other) => sum + asInt(other.marketPrice, 0), 0);
+      const setValue = set.points * pointValue;
+      return { label: set.label, points: set.points, pointValue, othersCost, setValue, impliedValue: setValue - othersCost, complete: true };
+    }
+    return null;
+  }
+
+  // Ended auction timing: when do sales of this item close at the best price?
+  // Buckets are 6-hour windows in Torn City Time (UTC). Ratios are relative
+  // to the overall median so equipment groups and commodities compare alike.
+  function auctionTimingStats(sales, { minCount = 3 } = {}) {
+    const rows = (sales || []).filter((sale) => Number.isFinite(sale?.price) && sale.price > 0 && asInt(sale?.timestamp, 0) > 0);
+    if (!rows.length) return { buckets: [], best: null, overallMedian: null, total: 0 };
+    const overallMedian = median(rows.map((sale) => sale.price));
+    const buckets = [
+      { key: "00-06", label: "00:00-06:00 TCT", start: 0 },
+      { key: "06-12", label: "06:00-12:00 TCT", start: 6 },
+      { key: "12-18", label: "12:00-18:00 TCT", start: 12 },
+      { key: "18-24", label: "18:00-24:00 TCT", start: 18 }
+    ].map((bucket) => ({ ...bucket, prices: [] }));
+    rows.forEach((sale) => {
+      const hour = new Date(sale.timestamp * 1000).getUTCHours();
+      const bucket = buckets[Math.min(3, Math.floor(hour / 6))];
+      bucket.prices.push(sale.price);
+    });
+    const result = buckets.map((bucket) => {
+      const value = median(bucket.prices);
+      return {
+        key: bucket.key,
+        label: bucket.label,
+        count: bucket.prices.length,
+        median: Number.isFinite(value) ? Math.round(value) : null,
+        ratio: Number.isFinite(value) && overallMedian > 0 ? value / overallMedian : null
+      };
+    });
+    const eligible = result.filter((bucket) => bucket.count >= minCount && Number.isFinite(bucket.ratio));
+    eligible.sort((a, b) => b.ratio - a.ratio || b.count - a.count);
+    return { buckets: result, best: eligible[0] || null, worst: eligible.length > 1 ? eligible[eligible.length - 1] : null, overallMedian: Math.round(overallMedian), total: rows.length };
+  }
+
+  function stackableSalesSummary(sales, nowMs = Date.now()) {
+    const rows = (sales || []).filter((sale) => sale?.stackable && Number.isFinite(sale.price) && sale.price > 0 && nowMs - asInt(sale.timestamp, 0) * 1000 <= AUCTION_SALES_WINDOW_MS);
+    if (!rows.length) return { count: 0, median: null, low: null, high: null };
+    const prices = rows.map((sale) => sale.price);
+    return { count: rows.length, median: Math.round(median(prices)), low: Math.min(...prices), high: Math.max(...prices) };
+  }
+
+  function normalizeAuctionListing(payload) {
+    const raw = payload?.auctionhouselisting ?? payload;
+    if (!raw || typeof raw !== "object") return null;
+    const item = raw.item && typeof raw.item === "object" ? raw.item : {};
+    const copy = item.stats || item.bonuses ? normalizeItemDetailsRow({ ...item, uid: item.uid ?? 0 }) : null;
+    return {
+      listingId: asInt(raw.id, 0),
+      itemId: asInt(item.id, 0),
+      name: String(item.name || ""),
+      type: String(item.type || ""),
+      price: asInt(raw.price, 0),
+      bids: asInt(raw.bids, 0),
+      timestamp: asInt(raw.timestamp, 0),
+      copy
+    };
+  }
+
+  // Maximum rational bid for a specific weapon/armor copy: the net proceeds
+  // of reselling that copy at its comparable-based price, less the required
+  // ROI. Uses priceOwnedEquipment() so the same comparables drive sell and
+  // buy sides.
+  function equipmentBidGuidance({ snapshot, copy, auctionSales = [], settings, currentBid = 0 }) {
+    if (!snapshot?.equipment || !copy) return null;
+    const pricing = priceOwnedEquipment({ snapshot, copy, auctionSales, settings });
+    if (!pricing) return null;
+    const bestNet = Math.max(asInt(pricing.bazaarSuggested, 0), asInt(pricing.itemMarketNet, 0));
+    if (bestNet <= 0) return null;
+    const maxBid = Math.max(0, Math.floor(bestNet / (1 + settings.minimumROI)));
+    const bid = Math.max(0, asInt(currentBid, 0));
+    return {
+      maxBid,
+      headroom: maxBid - bid,
+      bestNet,
+      pricing,
+      label: copyLabelFor(copy),
+      state: maxBid - bid > 0 ? (pricing.thinEvidence ? "YELLOW" : "GREEN") : "GREY"
+    };
+  }
+
+  // Browse-grid overlay: discount of the displayed cheapest price against
+  // Torn's official market value. No order book is fetched for the grid.
+  function evaluateBrowseCard({ price, marketPrice, settings }) {
+    const unit = asInt(price, 0);
+    const value = asInt(marketPrice, 0);
+    if (!unit || !value) return null;
+    const discount = 1 - unit / value;
+    const exit = officialExit(value, settings);
+    const routes = exit ? routeEconomics(exit, 1, settings) : null;
+    const netPerUnit = routes ? routes.bestNetPerUnit : null;
+    const profit = Number.isFinite(netPerUnit) ? netPerUnit - unit : null;
+    let state = "GREY";
+    let label = "FAIR";
+    if (discount < 0) label = "ABOVE MV";
+    else if (profit > 0 && discount >= Math.max(0.10, settings.minimumDiscount * 2)) { state = "GREEN"; label = "STRONG"; }
+    else if (profit > 0 && discount >= settings.minimumDiscount) { state = "YELLOW"; label = "CONSIDER"; }
+    return { discount, profitPerUnit: profit, bestRoute: routes?.bestRoute || null, state, label, marketPrice: value };
+  }
+
+  // Per-item pricing rules for the repricing workbench.
+  const PRICING_MODES = Object.freeze(["undercut", "anchor", "hold"]);
+
+  function normalizePricingRules(raw) {
+    const rules = {};
+    if (!raw || typeof raw !== "object") return rules;
+    Object.entries(raw).forEach(([key, value]) => {
+      const itemId = asInt(key, 0);
+      if (!itemId || !value || typeof value !== "object") return;
+      const mode = PRICING_MODES.includes(value.mode) ? value.mode : "undercut";
+      const minPrice = Math.max(0, asInt(value.minPrice, 0));
+      if (mode === "undercut" && !minPrice) return;
+      rules[itemId] = { mode, minPrice };
+    });
+    return rules;
+  }
+
+  // Resolve the price to fill for one listing given the rule and the two
+  // candidate suggestions. Returns null price when the rule says hold or when
+  // the floor-based suggestion would breach the item's minimum.
+  function applyPricingRule({ rule = null, floorSuggestion = null, anchorSuggestion = null }) {
+    const mode = rule?.mode || "undercut";
+    const minPrice = Math.max(0, asInt(rule?.minPrice, 0));
+    if (mode === "hold") return { price: null, mode, reason: "held by rule" };
+    let price = mode === "anchor" ? anchorSuggestion : floorSuggestion;
+    if (!Number.isFinite(price) || price <= 0) price = Number.isFinite(anchorSuggestion) && anchorSuggestion > 0 ? anchorSuggestion : null;
+    if (!Number.isFinite(price) || price <= 0) return { price: null, mode, reason: "no suggestion" };
+    if (minPrice && price < minPrice) return { price: minPrice, mode, reason: "raised to minimum", clamped: true };
+    return { price: Math.floor(price), mode, reason: "" };
+  }
+
+  // Sell-side watch: the player's own listed prices, alerted when the Item
+  // Market floor drops below them.
+  function normalizeSellWatch(raw) {
+    if (!Array.isArray(raw)) return [];
+    const seen = new Set();
+    const rows = [];
+    raw.forEach((entry) => {
+      const itemId = asInt(entry?.itemId, 0);
+      const price = asInt(entry?.price, 0);
+      const venue = entry?.venue === "Bazaar" ? "Bazaar" : "IM";
+      if (!itemId || price <= 0) return;
+      const key = `${venue}:${itemId}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      rows.push({
+        itemId,
+        venue,
+        name: String(entry?.name || `Item ${itemId}`),
+        price,
+        amount: Math.max(1, asInt(entry?.amount, 1)),
+        recordedAt: asInt(entry?.recordedAt, 0),
+        lastAlertAt: asInt(entry?.lastAlertAt, 0),
+        lastFloor: asInt(entry?.lastFloor, 0) || null,
+        lastCheckedAt: asInt(entry?.lastCheckedAt, 0)
+      });
+    });
+    return rows.slice(0, SELL_WATCH_MAX_ITEMS);
+  }
+
+  function evaluateSellWatch(entry, snapshot, nowMs = Date.now()) {
+    const floor = asInt(snapshot?.lowestPrice, 0);
+    if (!floor) return { undercut: false, shouldAlert: false, floor: null, cheaperQuantity: 0 };
+    const cheaper = (snapshot.listings || []).filter((row) => row.price < entry.price);
+    const cheaperQuantity = cheaper.reduce((sum, row) => sum + row.quantity, 0);
+    const undercut = floor < entry.price;
+    const lastAlertMs = asInt(entry.lastAlertAt, 0) * 1000;
+    const inCooldown = lastAlertMs && nowMs - lastAlertMs < SELL_WATCH_ALERT_COOLDOWN_MS;
+    const furtherDrop = entry.lastFloor && floor < entry.lastFloor * 0.98;
+    return { undercut, shouldAlert: undercut && (!inCooldown || furtherDrop), floor, cheaperQuantity, gap: entry.price - floor };
+  }
+
+  // Portfolio aggregation: one row per item id (commodities) or per copy
+  // (equipment), each with a unit value, route and net total.
+  function summarizePortfolio(rows) {
+    const valued = rows.filter((row) => Number.isFinite(row.unitNet) && row.unitNet > 0);
+    const total = valued.reduce((sum, row) => sum + row.unitNet * row.amount, 0);
+    const byRoute = {};
+    valued.forEach((row) => { byRoute[row.route] = (byRoute[row.route] || 0) + row.unitNet * row.amount; });
+    return {
+      total,
+      valuedRows: valued.length,
+      unvaluedRows: rows.length - valued.length,
+      untradable: rows.filter((row) => row.untradable).length,
+      equipped: rows.filter((row) => row.equipped).length,
+      byRoute
+    };
+  }
+
   const TEST_EXPORTS = Object.freeze({
     APP,
     DEFAULTS,
@@ -1450,7 +1937,30 @@
     keySupports,
     formatMoney,
     parseMoney,
-    parseQuantity
+    parseQuantity,
+    officialExit,
+    bestAvailableExit,
+    normalizeInventory,
+    normalizeItemDetails,
+    copyLabelFor,
+    normalizeCityShops,
+    shopSellFloor,
+    foreignOffers,
+    evaluateBuyAtPrice,
+    evaluateShopRun,
+    evaluateForeignOffer,
+    rankTravelPlan,
+    museumByName,
+    auctionTimingStats,
+    stackableSalesSummary,
+    normalizeAuctionListing,
+    equipmentBidGuidance,
+    evaluateBrowseCard,
+    normalizePricingRules,
+    applyPricingRule,
+    normalizeSellWatch,
+    evaluateSellWatch,
+    summarizePortfolio
   });
 
   global.__MARKET_EDGE_TEST__ = TEST_EXPORTS;
@@ -1670,6 +2180,74 @@
     static saveItemMeta(meta) {
       if (!meta?.id) return;
       Store.set(`${STORAGE_KEYS.itemMetaPrefix}${asInt(meta.id)}`, { savedAt: Date.now(), meta });
+    }
+
+    static pricingRules() {
+      return normalizePricingRules(Store.get(STORAGE_KEYS.pricingRules, {}));
+    }
+
+    static savePricingRule(itemId, rule) {
+      const rules = Store.pricingRules();
+      const id = asInt(itemId, 0);
+      if (!id) return rules;
+      if (!rule) delete rules[id];
+      else rules[id] = rule;
+      Store.set(STORAGE_KEYS.pricingRules, normalizePricingRules(rules));
+      return Store.pricingRules();
+    }
+
+    static sellWatch() {
+      return normalizeSellWatch(Store.get(STORAGE_KEYS.sellWatch, []));
+    }
+
+    static saveSellWatch(entries) {
+      Store.set(STORAGE_KEYS.sellWatch, normalizeSellWatch(entries));
+    }
+
+    static inventory() {
+      const raw = Store.get(STORAGE_KEYS.inventory, null);
+      if (!raw || typeof raw !== "object" || !raw.savedAt || !Array.isArray(raw.items)) return null;
+      return raw;
+    }
+
+    static saveInventory(items) {
+      Store.set(STORAGE_KEYS.inventory, { savedAt: Date.now(), items });
+    }
+
+    static itemDetailsCache() {
+      const raw = Store.get(STORAGE_KEYS.itemDetails, {});
+      return raw && typeof raw === "object" ? raw : {};
+    }
+
+    static saveItemDetails(rows) {
+      const cache = Store.itemDetailsCache();
+      rows.forEach((row) => { if (row?.uid) cache[row.uid] = { ...row, savedAt: Date.now() }; });
+      const keys = Object.keys(cache);
+      if (keys.length > ITEM_DETAILS_MAX_CACHED) {
+        keys.sort((a, b) => asInt(cache[a].savedAt) - asInt(cache[b].savedAt));
+        keys.slice(0, keys.length - ITEM_DETAILS_MAX_CACHED).forEach((key) => { delete cache[key]; });
+      }
+      Store.set(STORAGE_KEYS.itemDetails, cache);
+    }
+
+    static cityShops() {
+      const raw = Store.get(STORAGE_KEYS.cityShops, null);
+      if (!raw || typeof raw !== "object" || !raw.savedAt || !Array.isArray(raw.shops)) return null;
+      return raw;
+    }
+
+    static saveCityShops(shops) {
+      Store.set(STORAGE_KEYS.cityShops, { savedAt: Date.now(), shops });
+    }
+
+    static foreignCatalog() {
+      const raw = Store.get(STORAGE_KEYS.foreignCatalog, null);
+      if (!raw || typeof raw !== "object" || !raw.savedAt || !Array.isArray(raw.items)) return null;
+      return raw;
+    }
+
+    static saveForeignCatalog(items) {
+      Store.set(STORAGE_KEYS.foreignCatalog, { savedAt: Date.now(), items });
     }
 
     static history(itemId) {
@@ -1934,6 +2512,31 @@
       // Requires a Limited access key. Callers translate error code 16.
       return this.request("/user/itemmarket", { cacheMs: 20000, priority });
     }
+
+    async inventoryPage({ offset = 0, cat = "", priority = 120 } = {}) {
+      // Minimal access key; Torn caches this selection for one hour.
+      const category = cat ? `&cat=${encodeURIComponent(cat)}` : "";
+      return this.request(`/user/inventory?limit=${INVENTORY_PAGE_LIMIT}&offset=${Math.max(0, asInt(offset))}${category}`, { cacheMs: INVENTORY_TTL_MS, priority });
+    }
+
+    async itemDetails(uids, { priority = 110 } = {}) {
+      const ids = Array.from(new Set(uids.map((uid) => asInt(uid)).filter(Boolean))).slice(0, ITEM_DETAILS_BATCH);
+      if (!ids.length) return { itemdetails: [] };
+      return this.request(`/torn/${ids.join(",")}/itemdetails`, { cacheMs: ONE_DAY_MS, priority });
+    }
+
+    async cityShops({ priority = 100 } = {}) {
+      return this.request("/torn/cityshops", { cacheMs: CITY_SHOPS_TTL_MS, priority });
+    }
+
+    async itemCatalog(cat = "All", { priority = 30 } = {}) {
+      const category = cat && cat !== "All" ? `?cat=${encodeURIComponent(cat)}` : "";
+      return this.request(`/torn/items${category}`, { cacheMs: FOREIGN_CATALOG_TTL_MS, priority });
+    }
+
+    async auctionListing(listingId, { priority = 80 } = {}) {
+      return this.request(`/market/${asInt(listingId)}/auctionhouselisting`, { cacheMs: AUCTION_LISTING_TTL_MS, priority });
+    }
   }
 
   const api = new TornApi();
@@ -2008,7 +2611,7 @@
   // Museum context: one batched metadata request per set (daily) plus the
   // points market (every five minutes) gives set-implied values for every
   // plushie/flower without touching per-item order books.
-  async function loadMuseumContext(itemIds, { priority = 60 } = {}) {
+  async function loadMuseumContext(itemIds, { priority = 60, metadata = null } = {}) {
     const result = new Map();
     if (settings.museumSetsEnabled === false) return result;
     const sets = new Map();
@@ -2016,22 +2619,32 @@
       const set = museumSetFor(itemId);
       if (set) sets.set(set.key, set);
     });
-    if (!sets.size) return result;
+    // Name-matched museum pieces (contraband singles, arrowhead set) need the
+    // caller's metadata; without it they are simply not recognised here.
+    const namedMetas = metadata instanceof Map
+      ? itemIds.map((itemId) => metadata.get(asInt(itemId))).filter((meta) => meta && (MUSEUM_SINGLES_BY_NAME[String(meta.name).toLowerCase().trim()] || MUSEUM_NAME_SETS.some((set) => set.pattern.test(meta.name))))
+      : [];
+    if (!sets.size && !namedMetas.length) return result;
 
     const points = await loadPointsMarket({ priority });
     const pointValue = asInt(points?.cheapest, 0);
     if (!pointValue) return result;
+    namedMetas.forEach((meta) => {
+      const valuation = museumByName({ meta, pointValue, allMetas: Array.from(metadata.values()), settings });
+      if (valuation) result.set(meta.id, valuation);
+    });
+    if (!sets.size) return result;
 
     const memberIds = Array.from(sets.values()).flatMap((set) => set.items);
-    let metadata = new Map();
+    let memberMetadata = new Map();
     try {
-      metadata = await loadItemMetadataBatch(memberIds, { maxAgeMs: SET_META_TTL_MS, priority });
+      memberMetadata = await loadItemMetadataBatch(memberIds, { maxAgeMs: SET_META_TTL_MS, priority });
     } catch (error) {
       log("Museum set metadata unavailable", error.message);
       return result;
     }
     const memberPrices = {};
-    metadata.forEach((meta, id) => { memberPrices[id] = asInt(meta?.marketPrice, 0); });
+    memberMetadata.forEach((meta, id) => { memberPrices[id] = asInt(meta?.marketPrice, 0); });
 
     itemIds.forEach((itemId) => {
       if (!museumSetFor(itemId)) return;
@@ -2053,6 +2666,100 @@
       log("Auction sales unavailable", itemId, error.message);
       return cached?.sales || [];
     }
+  }
+
+  // Whole inventory through the official API (Minimal key). Paged in 250s;
+  // a key that cannot read the selection surfaces its Torn error.
+  async function loadInventory({ force = false, priority = 120 } = {}) {
+    const cached = Store.inventory();
+    if (!force && cached && Date.now() - asInt(cached.savedAt) < INVENTORY_TTL_MS) return cached.items;
+    if (force) {
+      Array.from(api.memoryCache.keys()).filter((key) => key.startsWith("/user/inventory")).forEach((key) => api.memoryCache.delete(key));
+    }
+    const items = [];
+    let offset = 0;
+    for (let page = 0; page < INVENTORY_MAX_PAGES; page += 1) {
+      const payload = await api.inventoryPage({ offset, priority });
+      const rows = normalizeInventory(payload);
+      items.push(...rows);
+      const total = asInt(payload?._metadata?.total, 0);
+      offset += INVENTORY_PAGE_LIMIT;
+      if (!rows.length || rows.length < INVENTORY_PAGE_LIMIT || (total && offset >= total)) break;
+    }
+    Store.saveInventory(items);
+    return items;
+  }
+
+  // Stats, bonuses and rarity for owned copies, by uid, 25 per request.
+  async function loadItemDetails(uids, { priority = 110 } = {}) {
+    const wanted = Array.from(new Set(uids.map((uid) => asInt(uid)).filter(Boolean)));
+    const cache = Store.itemDetailsCache();
+    const result = new Map();
+    const missing = [];
+    wanted.forEach((uid) => {
+      const row = cache[uid];
+      if (row && Date.now() - asInt(row.savedAt) < ITEM_META_TTL_MS) result.set(uid, row);
+      else missing.push(uid);
+    });
+    for (let index = 0; index < missing.length; index += ITEM_DETAILS_BATCH) {
+      const batch = missing.slice(index, index + ITEM_DETAILS_BATCH);
+      try {
+        const payload = await api.itemDetails(batch, { priority });
+        const rows = normalizeItemDetails(payload);
+        Store.saveItemDetails(rows);
+        rows.forEach((row) => result.set(row.uid, row));
+      } catch (error) {
+        log("Item details batch failed", batch.length, error.message);
+        if (error?.tornCode === 2 || error?.tornCode === 16) throw error;
+      }
+    }
+    return result;
+  }
+
+  async function loadCityShops({ force = false, priority = 100 } = {}) {
+    const cached = Store.cityShops();
+    if (!force && cached && Date.now() - asInt(cached.savedAt) < CITY_SHOPS_TTL_MS) return cached.shops;
+    if (force) api.memoryCache.delete("/torn/cityshops");
+    const payload = await api.cityShops({ priority });
+    const shops = normalizeCityShops(payload);
+    Store.saveCityShops(shops);
+    return shops;
+  }
+
+  // Compact catalog of every item sold by a shop (Torn or abroad) or bought
+  // back by a Torn shop, from one daily /torn/items request. Only the fields
+  // the planner needs are persisted.
+  const FOREIGN_FALLBACK_CATEGORIES = Object.freeze(["Drug", "Flower", "Plushie", "Temporary", "Alcohol", "Other", "Clothing", "Jewelry", "Melee", "Primary", "Secondary", "Armor", "Defensive"]);
+
+  async function loadForeignCatalog({ force = false, priority = 30 } = {}) {
+    const cached = Store.foreignCatalog();
+    if (!force && cached && Date.now() - asInt(cached.savedAt) < FOREIGN_CATALOG_TTL_MS) return cached.items;
+    const reduce = (payload) => (Array.isArray(payload?.items) ? payload.items : [])
+      .map(normalizeItemMeta)
+      .filter((meta) => meta && meta.shops.length)
+      .map((meta) => ({ id: meta.id, name: meta.name, type: meta.type, isTradable: meta.isTradable, marketPrice: meta.marketPrice, shops: meta.shops }));
+    let items = [];
+    try {
+      items = reduce(await api.itemCatalog("All", { priority }));
+    } catch (error) {
+      log("Item catalog (All) failed", error.message);
+    }
+    if (!items.length) {
+      for (const category of FOREIGN_FALLBACK_CATEGORIES) {
+        try {
+          items.push(...reduce(await api.itemCatalog(category, { priority })));
+        } catch (error) {
+          log("Item catalog category failed", category, error.message);
+        }
+      }
+    }
+    if (items.length) Store.saveForeignCatalog(items);
+    return items.length ? items : (cached?.items || []);
+  }
+
+  async function loadAuctionListing(listingId, { priority = 80 } = {}) {
+    const payload = await api.auctionListing(listingId, { priority });
+    return normalizeAuctionListing(payload);
   }
 
   function snapshotCacheState(snapshot, nowMs = Date.now()) {
@@ -2126,7 +2833,16 @@
     if (path.endsWith("/amarket.php") || path.endsWith("amarket.php") || sid.includes("auction")) return "auction";
     if (sid === "travel" || path.endsWith("travelagency.php")) return "travel";
     if (path.endsWith("/item.php") || path.endsWith("item.php")) return "inventory";
+    if (path.endsWith("shops.php") || path.endsWith("bigalgunshop.php")) return "cityshop";
     return "other";
+  }
+
+  // Which Torn city shop the current page shows, when identifiable.
+  function currentCityShopName() {
+    const url = new URL(location.href);
+    if (url.pathname.toLowerCase().endsWith("bigalgunshop.php")) return CITY_SHOP_STEPS.bigalgunshop;
+    const step = String(url.searchParams.get("step") || "").toLowerCase();
+    return CITY_SHOP_STEPS[step] || "";
   }
 
   function getItemIdFromLocation() {
@@ -2780,9 +3496,12 @@
     }
 
     // Only the rows nearest the viewport get the expensive text/input
-    // inspection; long categories would otherwise thrash layout.
+    // inspection; long categories would otherwise thrash layout. Rows that
+    // carry Torn's "Price per unit" label are existing listings (manage
+    // view), never add rows.
     const limit = clamp(settings.scanMaxVisibleItems, 1, 50);
     const nearest = candidatePairs
+      .filter(({ card }) => !/price per unit\s*:/i.test(card.textContent || ""))
       .map((pair) => ({ pair, priority: viewportPriority({ card: pair.card }) }))
       .sort((a, b) => b.priority - a.priority)
       .slice(0, limit * 2)
@@ -3047,6 +3766,34 @@
       .slice(0, clamp(settings.scanMaxVisibleItems, 1, 50));
   }
 
+  // Auction listing id from a row, when Torn exposes it (attributes, ids or
+  // links). It must differ from the item id; without it equipment rows fall
+  // back to the row's own text for the copy's stats.
+  function auctionListingIdFrom(li, itemId) {
+    if (!li) return null;
+    const candidates = [];
+    ["data-listing-id", "data-listingid", "data-auction-id", "data-auctionid", "data-aid", "data-id", "id"].forEach((attr) => {
+      const raw = li.getAttribute?.(attr);
+      if (raw) candidates.push(raw);
+    });
+    li.querySelectorAll("a[href*='ID='],a[href*='id='],input[type='hidden'][name*='id' i],[data-listing-id],[data-auction-id],[data-aid]").forEach((node) => {
+      const href = node.getAttribute("href") || "";
+      const match = href.match(/(?:auctionID|auctionId|aID|listingID|listingId|ID)=(\d+)/i);
+      if (match) candidates.push(match[1]);
+      ["data-listing-id", "data-auction-id", "data-aid", "value"].forEach((attr) => {
+        const raw = node.getAttribute(attr);
+        if (raw) candidates.push(raw);
+      });
+    });
+    for (const raw of candidates) {
+      const digits = String(raw).match(/\d{3,}/);
+      if (!digits) continue;
+      const value = asInt(digits[0], 0);
+      if (value && value !== itemId) return value;
+    }
+    return null;
+  }
+
   function collectAuctionItems() {
     const rows = [];
     document.querySelectorAll("div.items-list-wrap > ul.items-list > li").forEach((li) => {
@@ -3057,9 +3804,56 @@
       const name = (li.querySelector("span.title .item-name")?.textContent || hover?.querySelector("button.view-info")?.getAttribute("aria-label") || `Item ${itemId}`).trim();
       const bidText = (li.querySelector("div.c-bid-wrap")?.textContent || li.querySelector("div.mob-wrap .top-bid-mob-wrap")?.textContent || "").trim();
       const price = /^none$|bid:\s*none/i.test(bidText) ? 0 : asInt(String(bidText).replace(/[^0-9]/g, ""), 0);
-      rows.push({ itemId, name, price, quantity: 1, card: li, domTextLength: (li.innerText || "").length });
+      const text = li.innerText || "";
+      // Torn prints the copy's quality and bonuses inside the row on the
+      // Auction House; when present they price the exact copy without a
+      // listing request.
+      const copyHint = QUALITY_PATTERN.test(text) ? parseEquipmentDetailsText(text, detailsPanelHints(li)) : null;
+      rows.push({ itemId, name, price, quantity: 1, card: li, listingId: auctionListingIdFrom(li, itemId), copyHint, domTextLength: text.length });
     });
     return rows.sort((a, b) => viewportPriority(b) - viewportPriority(a)).slice(0, clamp(settings.scanMaxVisibleItems, 1, 50));
+  }
+
+  // Editable price field in a row on Torn's "manage listings" style views
+  // (own Item Market listings). Prefers price-labelled inputs and rejects
+  // quantity/remove fields; a numeric value is required.
+  function findGenericPriceInput(card) {
+    if (!card) return null;
+    let best = null;
+    card.querySelectorAll("input").forEach((input) => {
+      if (!(input instanceof HTMLInputElement)) return;
+      if (input.closest("#market-edge-root,.me-inline-analysis")) return;
+      if (/^(checkbox|radio|hidden|submit|button)$/i.test(input.type || "")) return;
+      const metadata = `${input.name || ""} ${input.id || ""} ${input.className || ""} ${input.getAttribute("aria-label") || ""} ${input.getAttribute("placeholder") || ""}`;
+      if (/amount|qty|quantity|remove|search/i.test(metadata)) return;
+      let score = /price|cost|money/i.test(metadata) ? 100 : 0;
+      const value = parseIntegerField(input.value);
+      if (value > 0) score += 20;
+      if (!score) return;
+      if (!best || score > best.score) best = { input, score, value };
+    });
+    return best?.input || null;
+  }
+
+  // Rows of the player's own Item Market listings as Torn renders them, each
+  // with its price input when one exists. Used by the repricing workbench to
+  // fill (never submit) Torn's fields.
+  function collectOwnListingRows() {
+    const rows = [];
+    const seen = new Set();
+    document.querySelectorAll(itemIdentitySelector()).forEach((node) => {
+      if (node.closest("#market-edge-root,.me-inline-analysis")) return;
+      const itemId = itemIdFromElement(node);
+      if (!itemId) return;
+      let card = node.closest("li,tr,[role='row'],[class*='row'],[class*='item___'],[class*='listing']") || findCompactCard(node, false);
+      for (let depth = 0; card && depth < 4 && !card.querySelector("input"); depth += 1) card = card.parentElement;
+      if (!card || seen.has(card) || card === document.body) return;
+      const priceInput = findGenericPriceInput(card);
+      if (!priceInput) return;
+      seen.add(card);
+      rows.push({ itemId, card, priceInput, price: parseIntegerField(priceInput.value) || 0 });
+    });
+    return rows;
   }
 
   function parseLiveItemMarketListings() {
@@ -3251,6 +4045,11 @@
     .me-toast { background:rgba(28,28,30,.97); border:1px solid rgba(74,165,100,.6); border-radius:6px; padding:8px 10px; color:#eee; font:12px/1.35 Arial,sans-serif; box-shadow:0 8px 24px rgba(0,0,0,.45); }
     .me-toast a { color:#7fd193; font-weight:700; }
     .me-toast .me-toast-close { float:right; margin-left:8px; cursor:pointer; color:#aaa; font-weight:700; }
+    .me-workbench-cell { white-space:nowrap; }
+    .me-workbench-cell .me-inline-input { width:78px; font-size:10px; padding:2px 3px; margin-left:3px; }
+    .me-workbench-cell .me-rule-mode { width:96px; }
+    .me-workbench-cell .me-listing-fill { padding:2px 6px; margin-left:3px; }
+    .me-inline-analysis .me-manage-fill { margin-left:4px; }
     .me-watch-row { display:flex; align-items:center; gap:6px; font-size:11px; padding:3px 0; border-bottom:1px solid rgba(255,255,255,.06); }
     .me-watch-row .me-watch-name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .me-watch-row .me-watch-remove { cursor:pointer; color:#e27a7a; font-weight:700; padding:0 4px; }
@@ -3408,6 +4207,10 @@
           <label>Max MAD volatility (%)</label><input data-setting="maxVolatility" data-percent="1" type="number" min="0" max="100" step="0.1" value="${current.maxVolatility * 100}">
           <label>Max visible items / scan</label><input data-setting="scanMaxVisibleItems" type="number" min="1" max="50" step="1" value="${current.scanMaxVisibleItems}">
           <label>Travel capacity (0 = per-item only)</label><input data-setting="travelCapacity" type="number" min="0" max="1000" step="1" value="${current.travelCapacity}">
+          <label>City shop run quantity (units per run)</label><input data-setting="shopRunQuantity" type="number" min="1" max="10000" step="1" value="${current.shopRunQuantity}">
+          <label>Portfolio refine budget (requests per press)</label><input data-setting="portfolioRefineRequests" type="number" min="1" max="60" step="1" value="${current.portfolioRefineRequests}">
+          <label>Use ended Auction House sales as evidence</label><input data-setting="auctionEvidenceEnabled" type="checkbox" ${current.auctionEvidenceEnabled !== false ? "checked" : ""}>
+          <label>Item Market browse-grid overlay (vs market value)</label><input data-setting="browseOverlayEnabled" type="checkbox" ${current.browseOverlayEnabled !== false ? "checked" : ""}>
           <label>History retention (days)</label><input data-setting="historyRetentionDays" type="number" min="1" max="90" step="1" value="${current.historyRetentionDays}">
           <label>Developer diagnostics in console</label><input data-setting="developerMode" type="checkbox" ${current.developerMode ? "checked" : ""}>
         </div>
@@ -3416,6 +4219,7 @@
         <div class="me-form-grid">
           <label>Watchlist alerts enabled</label><input data-setting="watchlistEnabled" type="checkbox" ${current.watchlistEnabled ? "checked" : ""}>
           <label>Check interval (seconds, min ${WATCHLIST_MIN_INTERVAL_SEC})</label><input data-setting="watchlistIntervalSeconds" type="number" min="${WATCHLIST_MIN_INTERVAL_SEC}" max="3600" step="5" value="${current.watchlistIntervalSeconds}">
+          <label>Undercut alerts for my own listings</label><input data-setting="undercutAlerts" type="checkbox" ${current.undercutAlerts !== false ? "checked" : ""}>
         </div>
         <div id="me-watchlist-rows"></div>
         <div class="me-section-title">Diagnostics</div>
@@ -3427,7 +4231,7 @@
           <input id="me-watch-target" class="me-inline-input" type="number" min="1" placeholder="Alert at or below $">
           <button class="me-btn" id="me-watch-add" type="button">Add to watchlist</button>
         </div>
-        <div class="me-form-help">The API key stays in userscript storage and is sent only to api.torn.com. Market Edge never includes it in diagnostics or exports. Fees modelled: Item Market 5% sales tax, optional 10% anonymous-listing fee, Auction House 3%. Bazaar and trades have no fee. Own Item Market listings need a Limited access key; everything else works with a Public key.${ENV.isPda ? " Torn PDA detected: the PDA API key is used automatically when no key is entered." : ""}</div>
+        <div class="me-form-help">The API key stays in userscript storage and is sent only to api.torn.com. Market Edge never includes it in diagnostics or exports. Fees modelled: Item Market 5% sales tax, optional 10% anonymous-listing fee, Auction House 3%. Bazaar and trades have no fee. Own Item Market listings need a Limited access key, the portfolio needs a Minimal access key; everything else works with a Public key.${ENV.isPda ? " Torn PDA detected: the PDA API key is used automatically when no key is entered." : ""}</div>
         <div class="me-modal-actions"><button class="me-btn" id="me-cancel-settings" type="button">Cancel</button><button class="me-btn" id="me-save-settings" type="button">Save</button></div>
       </div>`;
     document.body.appendChild(backdrop);
@@ -3674,9 +4478,7 @@
     const button = block?.querySelector?.(".me-bazaar-fill-btn");
     if (!button || !visible.priceInput) return block;
 
-    button.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
+    const apply = () => {
       if (!visible.priceInput?.isConnected) return;
       const priceFilled = setBazaarInputValue(visible.priceInput, target);
       const maxAvailable = Math.max(1, asInt(visible.maxAvailable || visible.quantity, 1));
@@ -3695,6 +4497,14 @@
         ? `Filled ${maxAvailable} units at ${targetText}`
         : `Price filled with ${targetText}; quantity field was not detected`;
       setTimeout(() => block?.classList?.remove("me-applied"), 700);
+    };
+    // "Fill all" from the menu reuses the same handler without synthesising
+    // a click on any element.
+    button.meFill = apply;
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      apply();
     });
     return block;
   }
@@ -3924,12 +4734,40 @@
       );
     }
 
+    if (result.browse) {
+      const data = result.browse;
+      const discount = `${data.discount >= 0 ? "-" : "+"}${Math.abs(data.discount * 100).toFixed(1)}%`;
+      const title = `Displayed price versus Torn's official market value ${formatMoney(data.marketPrice, true)}.${Number.isFinite(data.profitPerUnit) ? ` Estimated net per unit after fees via ${data.bestRoute}: ${formatMoney(data.profitPerUnit, true)}.` : ""} Open the item for order-book analysis.`;
+      return renderInlineHtml(visible,
+        `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="${escapeHtml(title)}">${discount} vs MV</span><span class="me-inline-status">${data.label}</span>${stale}`,
+        data.state
+      );
+    }
+
+    if (result.auctionEquipment) {
+      const data = result.auctionEquipment;
+      const headroomText = data.headroom > 0 ? `+${formatMoney(data.headroom)}` : (Number.isFinite(data.headroom) ? formatMoney(data.headroom) : "-");
+      const title = [
+        `Max rational bid for this copy (${data.label}): ${formatMoney(data.maxBid, true)}`,
+        `Resale net used: ${formatMoney(data.bestNet, true)} (Bazaar ${formatMoney(data.pricing.bazaarSuggested, true)}, Item Market net ${formatMoney(data.pricing.itemMarketNet, true)})`,
+        data.pricing.comparableCount ? `${data.pricing.comparableCount} comparable listings` : "No comparable listings",
+        data.pricing.salesCount ? `${data.pricing.salesCount} ended Auction House sales of this group` : "No ended sales of this group in 30 days",
+        data.pricing.thinEvidence ? "Thin evidence: treat as a floor check" : ""
+      ].filter(Boolean).join("\n");
+      return renderInlineHtml(visible,
+        `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="${escapeHtml(title)}">Max ${formatMoney(data.maxBid)}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${headroomText}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${escapeHtml(data.label)}</span><span class="me-inline-status">${data.headroom > 0 ? "CONSIDER" : "PASS"}</span>${stale}`,
+        data.state
+      );
+    }
+
     if (surface === "auction") {
       const data = result.auction;
       const state = data?.headroom > 0 ? "YELLOW" : "GREY";
       const headroomText = data?.headroom > 0 ? `+${formatMoney(data.headroom)}` : "-";
+      const sales = data?.salesSummary;
+      const salesHtml = sales?.count ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Median of ${sales.count} ended Auction House sales in 30 days (range ${formatMoney(sales.low, true)} - ${formatMoney(sales.high, true)})">sold ${formatMoney(sales.median)}</span>` : "";
       return renderInlineHtml(visible,
-        `<span class="me-inline-brand">ME</span><span class="me-inline-primary">Max ${formatMoney(data?.maxBid)}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${headroomText}</span><span class="me-inline-status">${data?.headroom > 0 ? "CONSIDER" : "PASS"}</span>${stale}`,
+        `<span class="me-inline-brand">ME</span><span class="me-inline-primary">Max ${formatMoney(data?.maxBid)}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${headroomText}</span>${salesHtml}<span class="me-inline-status">${data?.headroom > 0 ? "CONSIDER" : "PASS"}</span>${stale}`,
         state
       );
     }
@@ -3938,10 +4776,35 @@
       const data = result.ownBazaar;
       const state = data?.delta > 0 ? "YELLOW" : "GREY";
       const deltaText = Number.isFinite(data?.delta) ? `${data.delta >= 0 ? "+" : ""}${formatMoney(data.delta)}` : "-";
+      const fill = data?.fill || null;
+      const fillPrice = fill?.price || null;
+      const ruleLabel = data?.rule ? ` (rule: ${data.rule.mode}${data.rule.minPrice ? `, min ${formatMoney(data.rule.minPrice)}` : ""})` : "";
+      const fillHtml = visible.priceInput && fillPrice
+        ? `<button class="me-bazaar-fill-btn me-manage-fill" type="button" title="Fill Torn's price field with ${escapeHtml(formatMoney(fillPrice, true))}${escapeHtml(ruleLabel)}. Saving stays manual.">^</button>`
+        : (fill?.reason === "held by rule" ? `<span class="me-inline-secondary" title="Pricing rule: hold">hold</span>` : "");
+      const floorHtml = data?.floor ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Cheapest Item Market listing">floor ${formatMoney(data.floor)}</span>` : "";
       const block = renderInlineHtml(visible,
-        `<span class="me-inline-brand">ME</span><span class="me-inline-primary">Target ${formatMoney(data?.target)}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${deltaText}</span><span class="me-inline-status">${data?.delta > 0 ? "LOW" : "OK"}</span>${stale}`,
+        `<span class="me-inline-brand">ME</span><span class="me-inline-primary">Target ${formatMoney(data?.target)}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${deltaText}</span>${floorHtml}${fillHtml}<span class="me-inline-status">${data?.delta > 0 ? "LOW" : "OK"}</span>${stale}`,
         state
       );
+      const manageButton = block?.querySelector?.(".me-manage-fill");
+      if (manageButton) {
+        const applyManage = () => {
+          if (!visible.priceInput?.isConnected || !fillPrice) return;
+          if (setBazaarInputValue(visible.priceInput, fillPrice)) {
+            visible.price = fillPrice;
+            data.delta = data.target - fillPrice;
+            block.classList.add("me-applied");
+            setTimeout(() => block?.classList?.remove("me-applied"), 700);
+          }
+        };
+        manageButton.meFill = applyManage;
+        manageButton.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          applyManage();
+        });
+      }
       if (visible.priceInput && !visible.priceInput.dataset.mePriceListener) {
         visible.priceInput.dataset.mePriceListener = "1";
         visible.priceInput.addEventListener("input", () => {
@@ -3962,6 +4825,16 @@
     const state = direct.classification.state;
     const roi = `${direct.roi >= 0 ? "+" : ""}${(direct.roi * 100).toFixed(1)}%`;
     const profit = `${direct.expectedProfit >= 0 ? "+" : ""}${formatMoney(direct.expectedProfit)}`;
+
+    if (surface === "cityshop") {
+      const qty = Math.max(1, asInt(result.quantityUsed || 1, 1));
+      const perUnit = Math.trunc(direct.expectedProfit / qty);
+      const route = direct.routes?.bestRoute || "";
+      return renderInlineHtml(visible,
+        `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="Expected net profit per unit after fees via ${escapeHtml(route)}">${perUnit >= 0 ? "+" : ""}${formatMoney(perUnit)} ea</span><span class="me-inline-sep">|</span><span class="me-inline-secondary" title="For ${qty} units">${profit} / ${qty}</span><span class="me-inline-status">${CLASS_META[state].label}</span>${stale}`,
+        state
+      );
+    }
 
     if (surface === "travel") {
       const qty = Math.max(1, asInt(result.quantityUsed || visible.quantity, 1));
@@ -3999,12 +4872,31 @@
     return `<div class="me-actions">
       <button class="me-btn me-open-listings" type="button" title="Compare your Item Market listings with the live floor (Limited key)">My listings</button>
       <button class="me-btn me-open-watchlist" type="button" title="Watched items and alert targets">Watchlist</button>
+      <button class="me-btn me-open-portfolio" type="button" title="Value your whole inventory through the official API (Minimal key)">Portfolio</button>
+      <button class="me-btn me-open-shops" type="button" title="City shop stock priced against the market">Shops</button>
+      <button class="me-btn me-open-travel" type="button" title="Foreign shop prices ranked by profit per trip">Travel</button>
     </div>`;
   }
 
   function bindPanelToolbar() {
     ui.body?.querySelector(".me-open-listings")?.addEventListener("click", () => renderOwnListingsPanel());
     ui.body?.querySelector(".me-open-watchlist")?.addEventListener("click", () => renderWatchlistPanel());
+    ui.body?.querySelector(".me-open-portfolio")?.addEventListener("click", () => renderPortfolioPanel());
+    ui.body?.querySelector(".me-open-shops")?.addEventListener("click", () => renderShopRunsPanel());
+    ui.body?.querySelector(".me-open-travel")?.addEventListener("click", () => renderTravelPlanPanel());
+  }
+
+  // Ended-auction timing section shared by the Item Market panels: when do
+  // sales of this item close at the best prices (Torn City Time)?
+  function auctionTimingHtml(sales, { stackableOnly = false } = {}) {
+    const rows = stackableOnly ? (sales || []).filter((sale) => sale.stackable) : (sales || []);
+    const timing = auctionTimingStats(rows);
+    if (!timing.total) return "";
+    const bucketRows = timing.buckets.map((bucket) => `<div class="me-diag-row${timing.best && bucket.key === timing.best.key ? " pass" : ""}">${escapeHtml(bucket.label)}: ${bucket.count ? `${formatMoney(bucket.median)} x${bucket.count}${Number.isFinite(bucket.ratio) ? ` (${bucket.ratio >= 1 ? "+" : ""}${((bucket.ratio - 1) * 100).toFixed(1)}%)` : ""}` : "no sales"}</div>`).join("");
+    const summary = timing.best
+      ? `Best window to end an auction: ${timing.best.label} (${timing.best.count} sales, ${((timing.best.ratio - 1) * 100).toFixed(1)}% above the overall median)${timing.worst && timing.worst.key !== timing.best.key ? `; cheapest wins closed ${timing.worst.label}` : ""}.`
+      : `Not enough ended sales per window yet (${timing.total} in total).`;
+    return `<details class="me-diag"><summary>Auction timing: ${timing.total} ended sales, median ${formatMoney(timing.overallMedian)}</summary><div class="me-diag-row">${escapeHtml(summary)}</div>${bucketRows}</details>`;
   }
 
   function itemMarketLink(itemId, name = "") {
@@ -4093,6 +4985,7 @@
       </div>` : `<div class="me-note">No listing is priced meaningfully below its comparable group.</div>`}
       ${equipmentRowsHtml(analysis)}
       ${groupsHtml ? `<details class="me-diag"><summary>Comparable groups</summary>${groupsHtml}</details>` : ""}
+      ${auctionTimingHtml(auctionSales)}
       ${watchControlsHtml(snapshot, null)}
       ${panelToolbarHtml()}
       <div class="me-note">Equipment is grouped by rarity and bonus set, quality matched within 10 points when enough listings exist. Ended Auction House sales are the only official transaction evidence. Rare rolls trade on intangibles; treat this as a floor check, not a valuation.</div>
@@ -4108,8 +5001,9 @@
     }
     const itemId = getItemIdFromLocation();
     if (!itemId) {
-      setPanel(`<div class="me-kicker">Item Market</div><div class="me-note">Open a specific item to analyze its order book.</div>${panelToolbarHtml()}`);
+      setPanel(`<div class="me-kicker">Item Market</div><div class="me-note">Open a specific item to analyze its order book.${settings.browseOverlayEnabled !== false ? " Browse cards are compared with Torn's official market value as they appear." : ""}</div>${panelToolbarHtml()}`);
       bindPanelToolbar();
+      if (settings.browseOverlayEnabled !== false) scanBrowseGrid({ force: false });
       return;
     }
     if (!Store.apiKey()) {
@@ -4130,12 +5024,24 @@
       }
 
       const liveRows = parseLiveItemMarketListings();
-      const museumContext = await loadMuseumContext([itemId], { priority: 190 });
+      let itemMeta = null;
+      try {
+        itemMeta = (await loadItemMetadataBatch([itemId], { priority: 190 })).get(itemId) || null;
+      } catch (error) {
+        log("Item metadata unavailable", error.message);
+      }
+      const museumContext = await loadMuseumContext([itemId], { priority: 190, metadata: new Map(itemMeta ? [[itemId, itemMeta]] : []) });
       const museum = museumContext.get(itemId) || null;
+      const shopSell = shopSellFloor(itemMeta);
+      // Ended auctions are the only official transaction evidence for
+      // stackable items; one request, cached ten minutes.
+      const auctionSales = settings.auctionEvidenceEnabled !== false ? await loadAuctionSales(itemId, { priority: 170 }) : [];
+      const salesSummary = stackableSalesSummary(auctionSales);
+      if (detectSurface() !== "itemmarket" || getItemIdFromLocation() !== itemId) return;
 
       // The official Torn API is the authoritative valuation source. The live
       // DOM is used only to confirm/highlight what the player currently sees.
-      const evaluated = evaluatePrefixes(snapshot, historyStats, settings, Date.now(), { museum });
+      const evaluated = evaluatePrefixes(snapshot, historyStats, settings, Date.now(), { museum, shopSell: shopSell?.price, shopLabel: shopSell?.label });
       const best = evaluated.best;
       const compareCount = Math.max(2, best?.prefixCount || Math.min(5, snapshot.listings.length));
       const liveMatchesApi = liveRows.length >= compareCount && snapshot.listings.length >= compareCount &&
@@ -4169,6 +5075,12 @@
       const museumRows = museum && museum.complete
         ? [[`${museum.label} implied value`, `<span title="${museum.points} points x ${formatMoney(museum.pointValue, true)} minus ${formatMoney(museum.othersCost, true)} for the other pieces">${formatMoney(museum.impliedValue)}</span>`, museum.impliedValue > (reference.value || 0) ? "me-good" : ""]]
         : [];
+      const evidenceRows = [];
+      if (salesSummary.count) {
+        const agreesWithSales = reference.value ? Math.abs(salesSummary.median - reference.value) / reference.value : null;
+        evidenceRows.push(["AH sold median (30d)", `<span title="${salesSummary.count} ended auctions, range ${formatMoney(salesSummary.low, true)} - ${formatMoney(salesSummary.high, true)}">${formatMoney(salesSummary.median)} x${salesSummary.count}</span>`, Number.isFinite(agreesWithSales) && agreesWithSales <= 0.10 ? "me-good" : ""]);
+      }
+      if (shopSell) evidenceRows.push([escapeHtml(shopSell.label), formatMoney(shopSell.price)]);
 
       setPanel(`
         <div class="me-kicker">Item Market - ${escapeHtml(liveConfirmation)}</div>
@@ -4182,7 +5094,8 @@
           ["24h MAD volatility", Number.isFinite(historyStats.oneDay.volatility) ? `${(historyStats.oneDay.volatility * 100).toFixed(2)}%` : "-"],
           ["API age", `${formatAge(fresh.ageSeconds)} - ${fresh.label}`],
           ["Observations (24h)", String(historyStats.oneDay.count)],
-          ...museumRows
+          ...museumRows,
+          ...evidenceRows
         ])}
         ${sourceWarning}
         <div class="me-rule"></div>
@@ -4196,12 +5109,14 @@
           ["Item Market target", formatMoney(best.routes.itemMarket.suggestedPrice)],
           [`IM net after ${feeLabel}`, formatMoney(Math.floor(best.routes.itemMarket.net / best.quantityBought))],
           ["Auction net after 3%", `<span title="Informational: auctions are never chosen as the best route">${formatMoney(Math.floor(best.routes.auction.net / best.quantityBought))}</span>`],
-          ...(best.routes.museum ? [[`${best.routes.museum.label} target`, formatMoney(best.routes.museum.suggestedPrice)]] : [])
+          ...(best.routes.museum ? [[`${best.routes.museum.label} target`, formatMoney(best.routes.museum.suggestedPrice)]] : []),
+          ...(best.routes.shop ? [[escapeHtml(best.routes.shop.label), formatMoney(best.routes.shop.suggestedPrice)]] : [])
         ]) : `<div class="me-note">No affordable prefix with positive expected profit.</div>`}
         <div class="me-rule"></div>
         ${decisionHtml(best)}
         ${diagnosticsHtml(best)}
         ${coldStartNote}
+        ${auctionTimingHtml(auctionSales, { stackableOnly: true })}
         ${watchControlsHtml(snapshot, best)}
         ${panelToolbarHtml()}
         <div class="me-note">Facts: official API asks, Torn daily average and the ${feeLabel} Item Market fee. The visible page is used only for confirmation/highlighting. Local data: observed anchors. Exit, profit and confidence are estimates - not guarantees.</div>
@@ -4237,7 +5152,9 @@
     return 200 - index;
   }
 
-  function resultForSurface(surface, visible, snapshot, historyStats, ownBazaar, renderMeta = {}, museum = null) {
+  function resultForSurface(surface, visible, snapshot, historyStats, ownBazaar, renderMeta = {}, museum = null, extras = {}) {
+    const shopSell = extras?.shopSell || null;
+    const salesSummary = extras?.salesSummary || null;
     if (!snapshot?.supportedCommodity) {
       if (settings.equipmentEnabled !== false && snapshot?.equipment && snapshot.equipmentSummary) {
         // Buy-side surfaces get plain/bonus floors. Sell-side rows are priced
@@ -4248,29 +5165,37 @@
     }
 
     if (surface === "inventory") {
-      const estimate = estimateInventoryExit({ quantity: visible.quantity, snapshot, historyStats, settings, museum });
+      const estimate = estimateInventoryExit({ quantity: visible.quantity, snapshot, historyStats, settings, museum, shopSell });
       return { visible, snapshot, historyStats, inventory: estimate, renderMeta };
     }
 
     if (surface === "auction") {
-      const maxBid = maxRationalBid({ snapshot, historyStats, settings, quantity: visible.quantity, museum });
+      const salesMedian = salesSummary?.median || null;
+      const maxBid = maxRationalBid({ snapshot, historyStats, settings, quantity: visible.quantity, museum, shopSell, salesMedian });
       const headroom = Number.isFinite(maxBid) ? maxBid - visible.price : null;
       const direct = visible.price > 0
-        ? evaluateDirectBuy({ buyPrice: visible.price, quantity: visible.quantity, snapshot, historyStats, settings, forceYellow: true, museum })
+        ? evaluateDirectBuy({ buyPrice: visible.price, quantity: visible.quantity, snapshot, historyStats, settings, forceYellow: true, museum, shopSell })
         : null;
-      return { visible, snapshot, historyStats, auction: { maxBid, headroom, direct }, renderMeta };
+      return { visible, snapshot, historyStats, auction: { maxBid, headroom, direct, salesSummary }, renderMeta };
     }
 
     if (surface === "bazaar" && ownBazaar) {
-      const estimate = estimateInventoryExit({ quantity: visible.quantity, snapshot, historyStats, settings, museum });
+      const estimate = estimateInventoryExit({ quantity: visible.quantity, snapshot, historyStats, settings, museum, shopSell });
       const target = estimate?.routes?.bazaar?.suggestedPrice;
       const delta = Number.isFinite(target) ? target - visible.price : null;
-      return { visible, snapshot, historyStats, ownBazaar: { target, delta, estimate }, renderMeta };
+      // Repricing workbench: the floor-based suggestion (floor minus undercut,
+      // Bazaar is fee-free so no discount) and the anchor-based target go
+      // through the item's pricing rule.
+      const floorSuggestion = snapshot.lowestPrice ? Math.max(1, snapshot.lowestPrice - Math.max(0, asInt(settings.itemMarketUndercut))) : null;
+      const rule = Store.pricingRules()[visible.itemId] || null;
+      const fill = applyPricingRule({ rule, floorSuggestion, anchorSuggestion: target });
+      return { visible, snapshot, historyStats, ownBazaar: { target, delta, estimate, fill, rule, floor: snapshot.lowestPrice }, renderMeta };
     }
 
     let quantity = visible.quantity;
     if (surface === "travel" && settings.travelCapacity > 0) quantity = Math.min(quantity, settings.travelCapacity);
     if (surface === "travel" && settings.travelCapacity === 0) quantity = 1;
+    if (surface === "cityshop") quantity = Math.max(1, asInt(settings.shopRunQuantity, 100));
     const direct = evaluateDirectBuy({
       buyPrice: visible.price,
       quantity,
@@ -4278,7 +5203,8 @@
       historyStats,
       settings,
       forceYellow: surface === "auction",
-      museum
+      museum,
+      shopSell
     });
     return {
       visible,
@@ -4391,11 +5317,16 @@
     // Museum context is one cheap batch shared by every plushie/flower row.
     let museumContext = new Map();
     try {
-      museumContext = await loadMuseumContext(items.map((item) => item.itemId), { priority: 140 });
+      museumContext = await loadMuseumContext(items.map((item) => item.itemId), { priority: 140, metadata });
     } catch (error) {
       log("Museum context unavailable", error.message);
     }
     if (detectSurface() !== surface || document.visibilityState !== "visible") return;
+
+    // Own Bazaar listings feed the sell-side (undercut) watch.
+    if (surface === "bazaar" && ownBazaar && !bazaarAddRouteActive()) {
+      recordSellWatch(items.filter((visible) => visible.price > 0 && !visible.bazaarAdd).map((visible) => ({ itemId: visible.itemId, name: visible.name, price: visible.price, amount: visible.quantity, venue: "Bazaar" })), "Bazaar", { prune: items.length < clamp(settings.scanMaxVisibleItems, 1, 50) });
+    }
 
     const tasks = items.map(async (visible, index) => {
       const priority = viewportPriority(visible, index);
@@ -4415,6 +5346,14 @@
           return;
         }
         const museum = museumContext.get(visible.itemId) || null;
+        const extras = { shopSell: shopSellFloor(meta), salesSummary: null };
+        if (surface === "auction" && settings.auctionEvidenceEnabled !== false && meta && metadataSupportsCommodity(meta)) {
+          try {
+            extras.salesSummary = stackableSalesSummary(await loadAuctionSales(visible.itemId, { priority: priority - 5 }));
+          } catch (error) {
+            log("Auction sales unavailable", visible.itemId, error.message);
+          }
+        }
 
         const bundle = await loadSnapshot(visible.itemId, {
           limit: API_LIST_LIMIT,
@@ -4430,7 +5369,8 @@
               cached.historyStats,
               ownBazaar,
               { stale: Boolean(cached.refreshing), cacheAgeSeconds: cached.cacheState?.ageSeconds },
-              museum
+              museum,
+              extras
             );
             renderInlineResult(surface, result, ownBazaar);
           }
@@ -4446,8 +5386,13 @@
         const result = resultForSurface(surface, visible, bundle.snapshot, bundle.historyStats, ownBazaar, {
           stale: false,
           cacheAgeSeconds: bundle.cacheState?.ageSeconds
-        }, museum);
+        }, museum, extras);
         renderInlineResult(surface, result, ownBazaar);
+        // Auction House equipment: price the exact copy (row stats or the
+        // listing endpoint) and derive a maximum rational bid.
+        if (surface === "auction" && bundle.snapshot?.equipment && settings.equipmentEnabled !== false) {
+          await annotateAuctionEquipment(visible, queueGroup, priority);
+        }
       } catch (error) {
         if (error?.marketEdgeCanceled) return;
         if (!renderedCached && visible.card?.isConnected) renderInlineError(visible, error.message);
@@ -4462,6 +5407,513 @@
 
     await Promise.allSettled(tasks);
     await scanExpandedEquipment(surface, ownBazaar);
+  }
+
+  // ---------------------------------------------------------------------------
+  // v0.4.0: Auction House equipment bids, browse-grid overlay, portfolio,
+  // shop runs, travel plan, repricing workbench and sell-side watch
+  // ---------------------------------------------------------------------------
+
+  async function annotateAuctionEquipment(visible, queueGroup, priority = 0) {
+    if (!visible?.card?.isConnected) return;
+    let copy = visible.copyHint || null;
+    let listing = null;
+    if (!copy && visible.listingId) {
+      try {
+        listing = await loadAuctionListing(visible.listingId, { priority });
+        if (listing?.itemId && listing.itemId !== visible.itemId) listing = null;
+        copy = listing?.copy || null;
+      } catch (error) {
+        log("Auction listing details unavailable", visible.listingId, error.message);
+      }
+    }
+    if (!copy || !visible.card?.isConnected || detectSurface() !== "auction") return;
+    try {
+      const [bundle, auctionSales] = await Promise.all([
+        loadSnapshot(visible.itemId, { limit: API_DEEP_LIMIT, priority, queueGroup }),
+        loadAuctionSales(visible.itemId, { priority })
+      ]);
+      if (!visible.card?.isConnected || detectSurface() !== "auction") return;
+      const guidance = equipmentBidGuidance({ snapshot: bundle.snapshot, copy, auctionSales, settings, currentBid: listing?.price || visible.price });
+      if (!guidance) return;
+      renderInlineResult("auction", { visible, snapshot: bundle.snapshot, auctionEquipment: guidance, renderMeta: { stale: false } }, false);
+    } catch (error) {
+      if (!error?.marketEdgeCanceled) log("Auction equipment guidance failed", visible.itemId, error.message);
+    }
+  }
+
+  // Item Market browse grid: every visible card compared with Torn's official
+  // market value from one batched metadata request. No order books.
+  let browseScanRunning = false;
+
+  async function scanBrowseGrid({ force = false } = {}) {
+    if (browseScanRunning || document.visibilityState !== "visible" || !Store.apiKey()) return;
+    if (detectSurface() !== "itemmarket" || getItemIdFromLocation()) return;
+    browseScanRunning = true;
+    try {
+      const items = collectVisibleItems({ requireMoney: true }).filter((visible) => {
+        if (!visible.card?.isConnected) return false;
+        const existing = visible.card.querySelector?.(`.me-inline-analysis[data-me-item-id="${visible.itemId}"]`);
+        if (force && existing) existing.remove();
+        return force || existing?.dataset?.meComplete !== "1";
+      });
+      if (!items.length) return;
+      const metadata = await loadItemMetadataBatch(items.map((item) => item.itemId), { priority: 130 });
+      if (detectSurface() !== "itemmarket" || getItemIdFromLocation()) return;
+      items.forEach((visible) => {
+        if (!visible.card?.isConnected) return;
+        const meta = metadata.get(visible.itemId);
+        if (!meta || !metadataSupportsCommodity(meta)) {
+          renderInlineHtml(visible, "", "GREY", "me-hidden");
+          return;
+        }
+        const browse = evaluateBrowseCard({ price: visible.price, marketPrice: meta.marketPrice, settings });
+        if (!browse) {
+          renderInlineHtml(visible, "", "GREY", "me-hidden");
+          return;
+        }
+        renderInlineResult("itemmarket", { visible, browse, renderMeta: { stale: false } }, false);
+      });
+    } catch (error) {
+      log("Browse grid overlay failed", error.message);
+    } finally {
+      browseScanRunning = false;
+    }
+  }
+
+  // Sell-side watch bookkeeping: remember the player's own listed prices per
+  // venue so the watch loop can warn when the Item Market floor undercuts them.
+  function recordSellWatch(entries, venue, { prune = true } = {}) {
+    if (settings.undercutAlerts === false || !Array.isArray(entries) || !entries.length) return;
+    const now = Math.floor(Date.now() / 1000);
+    const current = Store.sellWatch();
+    const byKey = new Map(current.map((entry) => [`${entry.venue}:${entry.itemId}`, entry]));
+    const seen = new Set();
+    entries.forEach((entry) => {
+      const itemId = asInt(entry.itemId, 0);
+      const price = asInt(entry.price, 0);
+      if (!itemId || price <= 0) return;
+      const key = `${venue}:${itemId}`;
+      seen.add(key);
+      const previous = byKey.get(key);
+      byKey.set(key, {
+        itemId,
+        venue,
+        name: entry.name || previous?.name || `Item ${itemId}`,
+        price,
+        amount: Math.max(1, asInt(entry.amount, 1)),
+        recordedAt: now,
+        // A new price resets the alert state; the same price keeps it.
+        lastAlertAt: previous && previous.price === price ? previous.lastAlertAt : 0,
+        lastFloor: previous && previous.price === price ? previous.lastFloor : null,
+        lastCheckedAt: previous?.lastCheckedAt || 0
+      });
+    });
+    // Listings of this venue that are no longer present were sold or removed,
+    // unless the caller only saw part of the page.
+    const next = Array.from(byKey.values()).filter((entry) => !prune || entry.venue !== venue || seen.has(`${entry.venue}:${entry.itemId}`));
+    Store.saveSellWatch(next);
+  }
+
+  async function sellWatchTick() {
+    if (settings.undercutAlerts === false) return;
+    const entries = Store.sellWatch();
+    if (!entries.length || !Store.apiKey()) return;
+    for (const entry of entries) {
+      if (document.visibilityState !== "visible") break;
+      try {
+        const bundle = await loadSnapshot(entry.itemId, { limit: API_LIST_LIMIT, priority: -60, queueGroup: "watch" });
+        const outcome = evaluateSellWatch(entry, bundle.snapshot);
+        entry.lastCheckedAt = Math.floor(Date.now() / 1000);
+        if (outcome.shouldAlert) {
+          entry.lastAlertAt = Math.floor(Date.now() / 1000);
+          showToast(`Undercut: <strong>${escapeHtml(entry.name)}</strong> on your ${entry.venue === "IM" ? "Item Market" : "Bazaar"} at ${formatMoney(entry.price)}; the Item Market floor is now ${formatMoney(outcome.floor)} (${outcome.cheaperQuantity.toLocaleString("en-US")} units cheaper). <a href="${itemMarketLink(entry.itemId, entry.name)}">Open market</a>`);
+        }
+        entry.lastFloor = outcome.floor;
+      } catch (error) {
+        if (!error?.marketEdgeCanceled) log("Sell watch check failed", entry.itemId, error.message);
+      }
+    }
+    Store.saveSellWatch(entries);
+  }
+
+  // Fill every visible Bazaar row (add form or manage view) that carries a
+  // Market Edge suggestion. Fields only: Torn's save/add buttons stay manual.
+  function fillAllVisiblePrices() {
+    let filled = 0;
+    document.querySelectorAll(".me-inline-analysis .me-bazaar-fill-btn").forEach((button) => {
+      if (!(button instanceof HTMLElement) || !button.isConnected || typeof button.meFill !== "function") return;
+      button.meFill();
+      filled += 1;
+    });
+    if (filled) showToast(`Filled ${filled} price field${filled === 1 ? "" : "s"}. Review them, then use Torn's own button to save.`, { timeoutMs: 8000 });
+    else showToast("No Market Edge price suggestions with a fill control are visible on this page.", { timeoutMs: 6000 });
+    return filled;
+  }
+
+  // Portfolio: every owned item through the official API, valued without
+  // reading the page. Quick pass from market values, then order-book
+  // refinement for the most valuable commodities and uid-based pricing for
+  // equipment copies.
+  const portfolioState = { rows: [], refining: false, refinedIds: new Set(), pricedUids: new Set(), loadedAt: 0 };
+
+  function portfolioRowHtml(row) {
+    const unit = Number.isFinite(row.unitNet) && row.unitNet > 0 ? formatMoney(row.unitNet) : "-";
+    const total = Number.isFinite(row.unitNet) && row.unitNet > 0 ? formatMoney(row.unitNet * row.amount) : "-";
+    const flags = [
+      row.untradable ? `<span class="me-pill GREY" title="Not tradable">untradable</span>` : "",
+      row.equipped ? `<span class="me-pill GREY" title="Currently equipped">equipped</span>` : "",
+      row.source === "order book" ? `<span class="me-pill GREEN" title="Valued from the live order book">book</span>` : (row.source === "comparables" ? `<span class="me-pill GREEN" title="Priced from comparable listings and ended auctions">comps</span>` : ""),
+      row.museum ? `<span class="me-pill YELLOW" title="${escapeHtml(row.museum)}">museum</span>` : ""
+    ].filter(Boolean).join(" ");
+    const name = `<a href="${itemMarketLink(row.itemId, row.name)}" style="color:inherit">${escapeHtml(row.name)}</a>${row.copyLabel ? ` <span class="me-inline-secondary">${escapeHtml(row.copyLabel)}</span>` : ""}`;
+    return `<tr title="${escapeHtml(row.note || "")}"><td>${name} ${flags}</td><td>${row.amount.toLocaleString("en-US")}</td><td>${unit}</td><td>${escapeHtml(row.route || "-")}</td><td>${total}</td></tr>`;
+  }
+
+  function portfolioHtml(rows, { status = "" } = {}) {
+    const summary = summarizePortfolio(rows);
+    const sorted = rows.slice().sort((a, b) => ((b.unitNet || 0) * b.amount) - ((a.unitNet || 0) * a.amount));
+    const routeRows = Object.entries(summary.byRoute).sort((a, b) => b[1] - a[1]).map(([route, value]) => [route, formatMoney(value)]);
+    return `
+      <div class="me-kicker">Portfolio (official inventory)</div>
+      ${metricRows([
+        ["Sellable value (net)", `<span title="${formatMoney(summary.total, true)}">${formatMoney(summary.total)}</span>`],
+        ["Rows valued / pending", `${summary.valuedRows} / ${summary.unvaluedRows}`],
+        ["Untradable / equipped", `${summary.untradable} / ${summary.equipped}`],
+        ...routeRows
+      ])}
+      ${status ? `<div class="me-note me-learning">${escapeHtml(status)}</div>` : ""}
+      <table class="me-table">
+        <thead><tr><th>Item</th><th>Qty</th><th>Unit net</th><th>Route</th><th>Total</th></tr></thead>
+        <tbody>${sorted.slice(0, 80).map(portfolioRowHtml).join("")}</tbody>
+      </table>
+      ${sorted.length > 80 ? `<div class="me-note">Showing the 80 most valuable rows of ${sorted.length}.</div>` : ""}
+      <div class="me-actions">
+        <button class="me-btn me-portfolio-refine" type="button" title="Fetch order books for the most valuable commodities and price equipment copies by uid">Refine (${Math.max(1, asInt(settings.portfolioRefineRequests, PORTFOLIO_REFINE_DEFAULT))} requests)</button>
+        <button class="me-btn me-portfolio-reload" type="button">Reload inventory</button>
+      </div>
+      ${panelToolbarHtml()}
+      <div class="me-note">Quick values come from Torn's official market value with a ${((clamp(settings.safetyHaircut + 0.02, 0, 0.10)) * 100).toFixed(1)}% haircut and the fee model. Refine replaces them with order-book exits (commodities) and comparable pricing per copy (weapons/armor, via each copy's uid). Torn caches the inventory selection for one hour. Nothing is listed or sold.</div>`;
+  }
+
+  async function buildPortfolioRows(items) {
+    const ids = Array.from(new Set(items.map((item) => item.itemId)));
+    let metadata = new Map();
+    for (let index = 0; index < ids.length; index += 100) {
+      try {
+        const batch = await loadItemMetadataBatch(ids.slice(index, index + 100), { priority: 120 });
+        batch.forEach((meta, id) => metadata.set(id, meta));
+      } catch (error) {
+        log("Portfolio metadata batch failed", error.message);
+      }
+    }
+    let museumContext = new Map();
+    try {
+      museumContext = await loadMuseumContext(ids, { priority: 100, metadata });
+    } catch (error) {
+      log("Portfolio museum context unavailable", error.message);
+    }
+    const rows = [];
+    const stackable = new Map();
+    items.forEach((item) => {
+      const meta = metadata.get(item.itemId) || null;
+      const equipment = meta ? !metadataSupportsCommodity(meta) : Boolean(item.uid);
+      if (equipment) {
+        rows.push({
+          key: `uid:${item.uid || item.itemId}:${rows.length}`,
+          itemId: item.itemId,
+          uid: item.uid,
+          name: item.name || meta?.name || `Item ${item.itemId}`,
+          amount: item.amount,
+          equipped: item.equipped,
+          untradable: meta ? meta.isTradable === false : false,
+          equipment: true,
+          unitNet: asInt(meta?.marketPrice, 0) ? officialExit(meta.marketPrice, settings).bazaarSuggestedPrice : null,
+          route: asInt(meta?.marketPrice, 0) ? "Bazaar (plain est.)" : "-",
+          source: "official",
+          note: "Plain-copy estimate until refined by uid."
+        });
+        return;
+      }
+      const existing = stackable.get(item.itemId);
+      if (existing) {
+        existing.amount += item.amount;
+        existing.equipped = existing.equipped || item.equipped;
+        return;
+      }
+      const museum = museumContext.get(item.itemId) || null;
+      const shopSell = shopSellFloor(meta);
+      const exit = officialExit(meta?.marketPrice, settings);
+      const routes = exit ? routeEconomics(exit, 1, settings, { museum, shopSell: shopSell?.price, shopLabel: shopSell?.label }) : null;
+      const row = {
+        key: `item:${item.itemId}`,
+        itemId: item.itemId,
+        name: item.name || meta?.name || `Item ${item.itemId}`,
+        amount: item.amount,
+        equipped: item.equipped,
+        untradable: meta ? meta.isTradable === false : false,
+        equipment: false,
+        marketPrice: asInt(meta?.marketPrice, 0),
+        museum: museum?.complete ? `${museum.label}: implied ${formatMoney(museum.impliedValue, true)}` : "",
+        shopSell,
+        museumValuation: museum,
+        unitNet: routes ? routes.bestNetPerUnit : null,
+        route: routes ? routes.bestRoute : "-",
+        source: "official",
+        note: routes ? `Quick value from Torn market value ${formatMoney(meta?.marketPrice, true)}` : "No official market value"
+      };
+      stackable.set(item.itemId, row);
+      rows.push(row);
+    });
+    return rows;
+  }
+
+  async function refinePortfolio(render) {
+    if (portfolioState.refining) return;
+    portfolioState.refining = true;
+    const budget = Math.max(1, asInt(settings.portfolioRefineRequests, PORTFOLIO_REFINE_DEFAULT));
+    let used = 0;
+    try {
+      // Commodities first, most valuable rows first.
+      const commodities = portfolioState.rows
+        .filter((row) => !row.equipment && !row.untradable && !portfolioState.refinedIds.has(row.itemId) && (row.unitNet || 0) * row.amount > 0)
+        .sort((a, b) => ((b.unitNet || 0) * b.amount) - ((a.unitNet || 0) * a.amount));
+      for (const row of commodities) {
+        if (used >= budget) break;
+        try {
+          const bundle = await loadSnapshot(row.itemId, { limit: API_LIST_LIMIT, priority: 90, queueGroup: "portfolio" });
+          used += bundle.source === "api" ? 1 : 0;
+          const estimate = estimateInventoryExit({ quantity: row.amount, snapshot: bundle.snapshot, historyStats: bundle.historyStats, settings, museum: row.museumValuation, shopSell: row.shopSell?.price });
+          if (estimate) {
+            row.unitNet = estimate.routes.bestNetPerUnit;
+            row.route = estimate.routes.bestRoute;
+            row.source = "order book";
+            row.note = `Order book: floor ${formatMoney(bundle.snapshot.lowestPrice, true)}, anchor ${formatMoney(bundle.snapshot.calculatedMarketAnchor, true)}`;
+          }
+          portfolioState.refinedIds.add(row.itemId);
+        } catch (error) {
+          if (error?.marketEdgeCanceled) return;
+          log("Portfolio refine failed", row.itemId, error.message);
+        }
+        render(`Refining... ${used}/${budget} requests used`);
+      }
+      // Equipment copies by uid: details in batches of 25, then one deep
+      // order book and one sales request per item type.
+      const copies = portfolioState.rows.filter((row) => row.equipment && row.uid && !portfolioState.pricedUids.has(row.uid) && !row.untradable);
+      if (copies.length && used < budget) {
+        const details = await loadItemDetails(copies.map((row) => row.uid), { priority: 85 });
+        used += Math.ceil(copies.length / ITEM_DETAILS_BATCH);
+        const byItem = new Map();
+        copies.forEach((row) => {
+          if (!byItem.has(row.itemId)) byItem.set(row.itemId, []);
+          byItem.get(row.itemId).push(row);
+        });
+        for (const [itemId, group] of byItem.entries()) {
+          if (used >= budget) break;
+          try {
+            const [bundle, auctionSales] = await Promise.all([
+              loadSnapshot(itemId, { limit: API_DEEP_LIMIT, priority: 80, queueGroup: "portfolio" }),
+              loadAuctionSales(itemId, { priority: 80 })
+            ]);
+            used += 2;
+            group.forEach((row) => {
+              const copy = details.get(row.uid);
+              if (!copy) return;
+              const pricing = priceOwnedEquipment({ snapshot: bundle.snapshot, copy, auctionSales, settings });
+              portfolioState.pricedUids.add(row.uid);
+              if (!pricing) return;
+              const bazaar = asInt(pricing.bazaarSuggested, 0);
+              const im = asInt(pricing.itemMarketNet, 0);
+              row.unitNet = Math.max(bazaar, im);
+              row.route = bazaar >= im ? "Bazaar" : "Item Market";
+              row.source = "comparables";
+              row.copyLabel = copyLabelFor(copy);
+              row.note = `${pricing.comparableCount || 0} comparable listings, ${pricing.salesCount || 0} ended auctions${pricing.thinEvidence ? "; thin evidence" : ""}`;
+            });
+          } catch (error) {
+            if (error?.marketEdgeCanceled) return;
+            log("Portfolio equipment refine failed", itemId, error.message);
+          }
+          render(`Refining equipment... ${Math.min(used, budget)}/${budget} requests used`);
+        }
+      }
+    } finally {
+      portfolioState.refining = false;
+      render(used >= budget ? `Refine budget reached (${budget}). Press Refine again for more.` : "");
+    }
+  }
+
+  async function renderPortfolioPanel({ reload = false } = {}) {
+    ui.pinned = true;
+    ensureUi();
+    ui.currentPanel = "portfolio";
+    if (!Store.apiKey()) {
+      errorPanel("Add a Torn API key to value your inventory.");
+      return;
+    }
+    const keyInfo = Store.keyInfo()?.info || null;
+    const allowed = keySupports(keyInfo, { section: "user", selection: "inventory", minimumType: "Minimal Access" });
+    if (allowed === false) {
+      setPanel(`<div class="me-kicker">Portfolio</div><div class="me-error">This panel needs at least a Minimal access API key (user -> inventory). The current key is ${escapeHtml(keyInfo?.access?.type || "lower access")}.</div>${panelToolbarHtml()}`);
+      bindPanelToolbar();
+      return;
+    }
+    const render = (status = "") => {
+      if (!ui.root?.isConnected || ui.currentPanel !== "portfolio") return;
+      setPanel(portfolioHtml(portfolioState.rows, { status }), "PORTFOLIO");
+      ui.body.querySelector(".me-portfolio-refine")?.addEventListener("click", () => refinePortfolio(render));
+      ui.body.querySelector(".me-portfolio-reload")?.addEventListener("click", () => renderPortfolioPanel({ reload: true }));
+      bindPanelToolbar();
+    };
+    setPanel(`<div class="me-kicker">Portfolio</div><div class="me-note">Loading your inventory through the official API...</div>`, "API");
+    try {
+      const items = await loadInventory({ force: reload, priority: 150 });
+      if (!items.length) {
+        setPanel(`<div class="me-kicker">Portfolio</div><div class="me-note">Torn returned no inventory items for this key.</div>${panelToolbarHtml()}`);
+        bindPanelToolbar();
+        return;
+      }
+      portfolioState.rows = await buildPortfolioRows(items);
+      portfolioState.refinedIds = new Set();
+      portfolioState.pricedUids = new Set();
+      portfolioState.loadedAt = Date.now();
+      render("Quick values ready. Refine for order-book and per-copy pricing.");
+    } catch (error) {
+      errorPanel(describeApiError(error, { feature: "The portfolio panel" }).replace("Limited access", "Minimal access"));
+      bindPanelToolbar();
+    }
+  }
+
+  // City shop runs: official stock and prices against market exits.
+  async function renderShopRunsPanel({ reload = false } = {}) {
+    ui.pinned = true;
+    ensureUi();
+    ui.currentPanel = "shops";
+    if (!Store.apiKey()) {
+      errorPanel("Add a Torn API key to price city shop stock.");
+      return;
+    }
+    setPanel(`<div class="me-kicker">City shop runs</div><div class="me-note">Loading shop stock...</div>`, "API");
+    try {
+      const shops = await loadCityShops({ force: reload, priority: 150 });
+      const currentShop = detectSurface() === "cityshop" ? currentCityShopName() : "";
+      const scoped = currentShop ? shops.filter((shop) => shop.name === currentShop) : shops;
+      const shopItems = (scoped.length ? scoped : shops).flatMap((shop) => shop.items.map((item) => ({ ...item, shopName: shop.name })));
+      const ids = Array.from(new Set(shopItems.map((item) => item.itemId)));
+      const metadata = new Map();
+      for (let index = 0; index < ids.length; index += 100) {
+        try {
+          (await loadItemMetadataBatch(ids.slice(index, index + 100), { priority: 140 })).forEach((meta, id) => metadata.set(id, meta));
+        } catch (error) {
+          log("Shop metadata batch failed", error.message);
+        }
+      }
+      let museumContext = new Map();
+      try {
+        museumContext = await loadMuseumContext(ids, { priority: 120, metadata });
+      } catch (error) {
+        log("Shop museum context unavailable", error.message);
+      }
+      const evaluations = shopItems.map((shopItem) => {
+        const meta = metadata.get(shopItem.itemId) || null;
+        if (!meta || !metadataSupportsCommodity(meta) || meta.isTradable === false) return null;
+        const { exit } = bestAvailableExit({ snapshot: Store.snapshot(shopItem.itemId), historyStats: null, marketPrice: meta.marketPrice, settings });
+        const evaluation = evaluateShopRun({ shopItem, exit, settings, museum: museumContext.get(shopItem.itemId) || null, shopSell: shopSellFloor(meta) });
+        return evaluation ? { ...evaluation, shopName: shopItem.shopName } : null;
+      }).filter(Boolean).sort((a, b) => b.expectedProfit - a.expectedProfit);
+      const profitable = evaluations.filter((row) => row.profitPerUnit > 0);
+      const rows = (profitable.length ? profitable : evaluations.slice(0, 15)).slice(0, 40);
+      const qty = Math.max(1, asInt(settings.shopRunQuantity, 100));
+      setPanel(`
+        <div class="me-kicker">City shop runs${currentShop ? ` - ${escapeHtml(currentShop)}` : ""}</div>
+        ${metricRows([
+          ["Shops / items scanned", `${(scoped.length ? scoped : shops).length} / ${shopItems.length}`],
+          ["Profitable after fees", String(profitable.length)],
+          ["Quantity per run", `${qty} (capped by stock)`]
+        ])}
+        <table class="me-table">
+          <thead><tr><th>Item</th><th>Shop</th><th>Buy</th><th>Stock</th><th>Net/unit</th><th>Run</th></tr></thead>
+          <tbody>${rows.map((row) => `<tr class="${row.state}" title="Exit via ${escapeHtml(row.routes.bestRoute)}; ROI ${(row.roi * 100).toFixed(1)}%; capital ${formatMoney(row.capitalRequired, true)}">
+            <td><a href="${itemMarketLink(row.itemId, row.name)}" style="color:inherit">${escapeHtml(row.name)}</a></td>
+            <td>${escapeHtml(row.shopName)}</td>
+            <td>${formatMoney(row.buyPrice)}</td>
+            <td class="${row.outOfStock ? "me-bad" : ""}">${row.stock.toLocaleString("en-US")}</td>
+            <td class="${row.profitPerUnit > 0 ? "me-good" : "me-bad"}">${row.profitPerUnit >= 0 ? "+" : ""}${formatMoney(row.profitPerUnit)}</td>
+            <td>${row.expectedProfit >= 0 ? "+" : ""}${formatMoney(row.expectedProfit)} x${row.quantity}</td>
+          </tr>`).join("")}</tbody>
+        </table>
+        <div class="me-actions"><button class="me-btn me-shops-reload" type="button">Refresh stock</button></div>
+        ${panelToolbarHtml()}
+        <div class="me-note">Stock and prices come from the official city shop endpoint (cached five minutes). Exits use the live order book when Market Edge has seen the item recently, otherwise Torn's market value with an extra haircut. Museum and sell-to-shop routes are included. Buying stays manual.</div>
+      `, "SHOPS");
+      ui.body.querySelector(".me-shops-reload")?.addEventListener("click", () => renderShopRunsPanel({ reload: true }));
+      bindPanelToolbar();
+    } catch (error) {
+      errorPanel(describeApiError(error, { feature: "The shop runs panel" }));
+      bindPanelToolbar();
+    }
+  }
+
+  // Travel plan: official foreign shop prices ranked by profit per trip.
+  async function renderTravelPlanPanel({ reload = false } = {}) {
+    ui.pinned = true;
+    ensureUi();
+    ui.currentPanel = "travel";
+    if (!Store.apiKey()) {
+      errorPanel("Add a Torn API key to plan a trip.");
+      return;
+    }
+    setPanel(`<div class="me-kicker">Travel plan</div><div class="me-note">Loading foreign shop prices (one catalog request, cached six hours)...</div>`, "API");
+    try {
+      const catalog = await loadForeignCatalog({ force: reload, priority: 150 });
+      const offers = foreignOffers(catalog).filter((offer) => offer.isTradable);
+      if (!offers.length) {
+        setPanel(`<div class="me-kicker">Travel plan</div><div class="me-note">No foreign shop prices were returned by the item catalog.</div>${panelToolbarHtml()}`);
+        bindPanelToolbar();
+        return;
+      }
+      const metaById = new Map(catalog.map((meta) => [meta.id, meta]));
+      let museumContext = new Map();
+      try {
+        museumContext = await loadMuseumContext(Array.from(new Set(offers.map((offer) => offer.itemId))), { priority: 120, metadata: metaById });
+      } catch (error) {
+        log("Travel museum context unavailable", error.message);
+      }
+      const capacity = Math.max(0, asInt(settings.travelCapacity, 0));
+      const evaluations = offers.map((offer) => {
+        const meta = metaById.get(offer.itemId);
+        if (meta && isEquipmentType(meta.type)) return null;
+        const { exit } = bestAvailableExit({ snapshot: Store.snapshot(offer.itemId), historyStats: null, marketPrice: offer.marketPrice, settings });
+        return evaluateForeignOffer({ offer, exit, settings, capacity, museum: museumContext.get(offer.itemId) || null, shopSell: shopSellFloor(meta) });
+      }).filter(Boolean);
+      const plan = rankTravelPlan(evaluations, { perCountry: 4 });
+      const countryHtml = plan.map((entry) => `
+        <div class="me-kicker" style="margin-top:8px">${escapeHtml(entry.country)} - best ${escapeHtml(entry.best.name)} ${entry.best.profitPerUnit >= 0 ? "+" : ""}${formatMoney(entry.best.profitPerUnit)} ea${capacity ? `, ${formatMoney(entry.best.perTrip)} per trip` : ""}</div>
+        <table class="me-table"><tbody>${entry.rows.map((row) => `<tr class="${row.state}" title="Exit via ${escapeHtml(row.routes.bestRoute)}; ROI ${(row.roi * 100).toFixed(1)}%${capacity ? `; cash needed ${formatMoney(row.cashNeeded, true)}` : ""}">
+          <td><a href="${itemMarketLink(row.itemId, row.name)}" style="color:inherit">${escapeHtml(row.name)}</a></td>
+          <td>${escapeHtml(row.shop || "")}</td>
+          <td>${formatMoney(row.buyPrice)}</td>
+          <td class="${row.profitPerUnit > 0 ? "me-good" : ""}">${row.profitPerUnit >= 0 ? "+" : ""}${formatMoney(row.profitPerUnit)} ea</td>
+          ${capacity ? `<td>${formatMoney(row.perTrip)}</td>` : ""}
+        </tr>`).join("")}</tbody></table>`).join("");
+      setPanel(`
+        <div class="me-kicker">Travel plan (official prices)</div>
+        ${metricRows([
+          ["Countries with profitable stock", String(plan.length)],
+          ["Capacity used", capacity ? `${capacity} items per trip` : "not set (per-item only)"],
+          ["Offers evaluated", String(evaluations.length)]
+        ])}
+        ${countryHtml || `<div class="me-note">No foreign offer beats the market after fees right now.</div>`}
+        <div class="me-actions"><button class="me-btn me-travel-reload" type="button">Refresh catalog</button></div>
+        ${panelToolbarHtml()}
+        <div class="me-note">Prices are Torn's official shop prices per country; the official API has no foreign stock, so an item may be sold out or repriced abroad (Patch #413 varies drug and contraband prices). Set your travel capacity in settings for per-trip totals. Exits use recent order books when available, otherwise Torn's market value with an extra haircut.</div>
+      `, "TRAVEL");
+      ui.body.querySelector(".me-travel-reload")?.addEventListener("click", () => renderTravelPlanPanel({ reload: true }));
+      bindPanelToolbar();
+    } catch (error) {
+      errorPanel(describeApiError(error, { feature: "The travel plan" }));
+      bindPanelToolbar();
+    }
   }
 
   function describeNode(node) {
@@ -4689,20 +6141,37 @@
     const stateClass = evaluation.status === "UNDERCUT" ? "RED" : evaluation.status === "CLOSE" ? "YELLOW" : evaluation.status === "CHEAPEST" ? "GREEN" : "GREY";
     const floor = evaluation.floor ? formatMoney(evaluation.floor) : "-";
     const ahead = evaluation.status === "CHEAPEST" ? "0" : `${evaluation.cheaperQuantity.toLocaleString("en-US")}`;
-    const suggestion = evaluation.suggestedPrice ? formatMoney(evaluation.suggestedPrice) : "-";
     const versus = Number.isFinite(evaluation.versusAverage) ? `${evaluation.versusAverage >= 0 ? "+" : ""}${(evaluation.versusAverage * 100).toFixed(1)}%` : "-";
     const title = [
       `Net after ${evaluation.feeBps / 100}% fees: ${formatMoney(evaluation.net, true)}`,
       `Versus Torn daily average: ${versus}`,
       evaluation.note
     ].filter(Boolean).join("\n");
-    return `<tr class="${stateClass}" title="${escapeHtml(title)}">
+    // Repricing workbench: the item's rule decides which suggestion is filled.
+    const rule = Store.pricingRules()[listing.itemId] || null;
+    const fill = applyPricingRule({ rule, floorSuggestion: evaluation.suggestedPrice, anchorSuggestion: evaluation.anchorPrice || null });
+    const fillText = fill.price ? formatMoney(fill.price) : (fill.reason === "held by rule" ? "hold" : "-");
+    const fillTitle = fill.price
+      ? `Fill Torn's price field for this listing with ${formatMoney(fill.price, true)} (${fill.mode}${fill.clamped ? ", raised to your minimum" : ""}). Saving stays manual.`
+      : `No fill: ${fill.reason}`;
+    const alreadyThere = fill.price && fill.price === listing.price;
+    return `<tr class="${stateClass}" data-listing-id="${listing.listingId}" data-item-id="${listing.itemId}" title="${escapeHtml(title)}">
       <td>${name}${anonymous}</td>
       <td>${listing.amount}</td>
       <td>${formatMoney(listing.price)}</td>
       <td title="Cheapest listing on the Item Market">${floor}</td>
       <td title="Units listed cheaper than yours">${ahead}</td>
-      <td><span class="me-pill ${stateClass}">${evaluation.status}</span>${evaluation.suggestedPrice ? ` <span class="me-inline-secondary" title="Floor minus your configured undercut">${suggestion}</span>` : ""}</td>
+      <td><span class="me-pill ${stateClass}">${evaluation.status}</span></td>
+      <td class="me-workbench-cell">
+        <span class="me-inline-secondary" title="${escapeHtml(fillTitle)}">${fillText}</span>
+        ${fill.price && !alreadyThere ? `<button class="me-btn me-listing-fill" type="button" data-price="${fill.price}" title="${escapeHtml(fillTitle)}">^</button>` : ""}
+        <select class="me-inline-input me-rule-mode" title="Pricing rule for this item">
+          <option value="undercut" ${(rule?.mode || "undercut") === "undercut" ? "selected" : ""}>undercut floor</option>
+          <option value="anchor" ${rule?.mode === "anchor" ? "selected" : ""}>hold anchor</option>
+          <option value="hold" ${rule?.mode === "hold" ? "selected" : ""}>never fill</option>
+        </select>
+        <input class="me-inline-input me-rule-min" type="number" min="0" placeholder="min $" title="Never fill below this price" value="${rule?.minPrice || ""}">
+      </td>
     </tr>`;
   }
 
@@ -4722,12 +6191,60 @@
         ["Cheapest / close / undercut", `${cheapest} / ${close} / ${undercut}`]
       ])}
       <table class="me-table">
-        <thead><tr><th>Item</th><th>Qty</th><th>Yours</th><th>Floor</th><th>Ahead</th><th>Status</th></tr></thead>
+        <thead><tr><th>Item</th><th>Qty</th><th>Yours</th><th>Floor</th><th>Ahead</th><th>Status</th><th>Fill / rule</th></tr></thead>
         <tbody>${listings.map((listing) => ownListingRowHtml(listing, evaluations.get(listing.listingId))).join("")}</tbody>
       </table>
-      <div class="me-actions"><button class="me-btn me-refresh-listings" type="button">Refresh</button></div>
+      <div class="me-actions">
+        <button class="me-btn me-refresh-listings" type="button">Refresh</button>
+        <button class="me-btn me-fill-all-listings" type="button" title="Fill every matching price field Torn shows on this page (fields only; saving stays manual)">Fill all on page</button>
+      </div>
+      <div class="me-note me-workbench-status"></div>
       ${panelToolbarHtml()}
-      <div class="me-note">Floor comes from the official Item Market order book. "Ahead" counts units listed below your price. Suggested prices are floor minus your configured undercut; they are never applied automatically. Anonymous listings pay 15% total in fees${settings.anonymousFeeWaived ? " (waived by your company perk)" : ""}.</div>`;
+      <div class="me-note">Floor comes from the official Item Market order book. "Ahead" counts units listed below your price. Fill values are floor minus your configured undercut (or the anchor target, per the item's rule) and are written into Torn's price fields only when you press ^ or "Fill all"; Torn's save button stays manual. Rules persist per item. Anonymous listings pay 15% total in fees${settings.anonymousFeeWaived ? " (waived by your company perk)" : ""}. ${settings.undercutAlerts !== false ? "These listings are watched for undercuts while a Torn tab is visible." : ""}</div>`;
+  }
+
+  // Fill Torn's price field for one own listing when the page shows it.
+  function fillOwnListingOnPage(itemId, price) {
+    const rows = collectOwnListingRows().filter((row) => row.itemId === asInt(itemId));
+    if (!rows.length) return { filled: 0, reason: "This listing's price field is not on the current page (open your listings in Torn's manage view)." };
+    let filled = 0;
+    rows.forEach((row) => { if (setBazaarInputValue(row.priceInput, price)) filled += 1; });
+    return { filled, reason: filled ? "" : "Torn's price field rejected the value." };
+  }
+
+  function bindOwnListingsWorkbench(listings, evaluations, rerender) {
+    const body = ui.body;
+    if (!body) return;
+    const status = body.querySelector(".me-workbench-status");
+    const setStatus = (text) => { if (status) status.textContent = text; };
+    body.querySelectorAll(".me-listing-fill").forEach((button) => {
+      button.addEventListener("click", () => {
+        const row = button.closest("tr");
+        const outcome = fillOwnListingOnPage(row?.dataset?.itemId, asInt(button.dataset.price, 0));
+        setStatus(outcome.filled ? `Filled ${outcome.filled} field(s) with ${formatMoney(asInt(button.dataset.price, 0), true)}. Save in Torn when ready.` : outcome.reason);
+      });
+    });
+    body.querySelector(".me-fill-all-listings")?.addEventListener("click", () => {
+      let filled = 0;
+      let missing = 0;
+      body.querySelectorAll(".me-listing-fill").forEach((button) => {
+        const row = button.closest("tr");
+        const outcome = fillOwnListingOnPage(row?.dataset?.itemId, asInt(button.dataset.price, 0));
+        if (outcome.filled) filled += outcome.filled;
+        else missing += 1;
+      });
+      setStatus(`Filled ${filled} field(s)${missing ? `; ${missing} listing(s) not found on this page` : ""}. Save in Torn when ready.`);
+    });
+    const saveRule = (row) => {
+      const itemId = asInt(row?.dataset?.itemId, 0);
+      if (!itemId) return;
+      const mode = row.querySelector(".me-rule-mode")?.value || "undercut";
+      const minPrice = asInt(row.querySelector(".me-rule-min")?.value, 0);
+      Store.savePricingRule(itemId, mode === "undercut" && !minPrice ? null : { mode, minPrice });
+      rerender();
+    };
+    body.querySelectorAll(".me-rule-mode").forEach((select) => select.addEventListener("change", () => saveRule(select.closest("tr"))));
+    body.querySelectorAll(".me-rule-min").forEach((input) => input.addEventListener("change", () => saveRule(input.closest("tr"))));
   }
 
   async function renderOwnListingsPanel({ force = false } = {}) {
@@ -4755,8 +6272,11 @@
         if (!ui.root?.isConnected) return;
         setPanel(ownListingsHtml(listings, evaluations), "LISTINGS");
         ui.body.querySelector(".me-refresh-listings")?.addEventListener("click", () => renderOwnListingsPanel({ force: true }));
+        bindOwnListingsWorkbench(listings, evaluations, render);
         bindPanelToolbar();
       };
+      // Own Item Market prices feed the sell-side (undercut) watch.
+      recordSellWatch(listings.filter((listing) => !listing.equipment).map((listing) => ({ itemId: listing.itemId, name: listing.name, price: listing.price, amount: listing.amount, venue: "IM" })), "IM", { prune: listings.length < OWN_LISTINGS_MAX });
       if (!listings.length) {
         setPanel(`<div class="me-kicker">Your Item Market listings</div><div class="me-note">No active Item Market listings were returned for this key.</div>${panelToolbarHtml()}`);
         bindPanelToolbar();
@@ -4772,7 +6292,10 @@
         }
         try {
           const bundle = await loadSnapshot(listing.itemId, { limit: API_LIST_LIMIT, priority: 150 - index, queueGroup: "listings" });
-          evaluations.set(listing.listingId, evaluateOwnListing(listing, bundle.snapshot, settings));
+          const evaluation = evaluateOwnListing(listing, bundle.snapshot, settings);
+          const exit = calculateExit({ snapshot: bundle.snapshot, historyStats: bundle.historyStats, settings });
+          evaluation.anchorPrice = exit?.itemMarketSuggestedPrice || null;
+          evaluations.set(listing.listingId, evaluation);
         } catch (error) {
           evaluations.set(listing.listingId, { status: "ERROR", floor: null, cheaperQuantity: 0, net: 0, feeBps: ITEM_MARKET_FEE_BPS, note: error.message, suggestedPrice: null, versusAverage: null });
         }
@@ -4831,7 +6354,8 @@
     if (!settings.watchlistEnabled || watchRunning) return;
     if (document.visibilityState !== "visible") return;
     const entries = Store.watchlist();
-    if (!entries.length || !Store.apiKey()) return;
+    if (!Store.apiKey()) return;
+    if (!entries.length && (settings.undercutAlerts === false || !Store.sellWatch().length)) return;
     const intervalMs = Math.max(WATCHLIST_MIN_INTERVAL_SEC, asInt(settings.watchlistIntervalSeconds, DEFAULTS.watchlistIntervalSeconds)) * 1000;
     if (!force && Date.now() - watchLastPollAt < intervalMs) return;
     watchLastPollAt = Date.now();
@@ -4854,6 +6378,7 @@
       }
       Store.saveWatchlist(entries);
       if (ui.currentPanel === "watchlist" && ui.root?.isConnected) renderWatchlistPanel({ refresh: false });
+      await sellWatchTick();
     } finally {
       watchRunning = false;
     }
@@ -4886,9 +6411,22 @@
         <span class="me-watch-remove" role="button" title="Remove">X</span>
       </div>`;
     }).join("");
+    const sellEntries = Store.sellWatch();
+    const sellRows = sellEntries.map((entry) => {
+      const undercut = entry.lastFloor && entry.lastFloor < entry.price;
+      return `<div class="me-watch-row" data-sell-key="${entry.venue}:${entry.itemId}">
+        <span class="me-watch-name"><a href="${itemMarketLink(entry.itemId, entry.name)}" style="color:inherit">${escapeHtml(entry.name)}</a> <span class="me-inline-secondary">${entry.venue}</span></span>
+        <span title="Your listed price">${formatMoney(entry.price)}</span>
+        <span class="${undercut ? "me-bad" : "me-inline-secondary"}" title="Last observed Item Market floor">${entry.lastFloor ? formatMoney(entry.lastFloor) : "-"}</span>
+        <span class="me-inline-secondary" title="Last checked">${entry.lastCheckedAt ? formatAge(Math.floor(Date.now() / 1000 - entry.lastCheckedAt)) : "never"}</span>
+        <span class="me-watch-remove me-sell-remove" role="button" title="Stop watching">X</span>
+      </div>`;
+    }).join("");
     setPanel(`
       <div class="me-kicker">Watchlist ${settings.watchlistEnabled ? `- every ${intervalSec}s while visible` : "- disabled in settings"}</div>
       ${entries.length ? rows : `<div class="me-note">No watched items. Open an Item Market item and press Watch, or add an item ID in settings.</div>`}
+      <div class="me-kicker" style="margin-top:8px">Your listings (undercut alerts${settings.undercutAlerts === false ? " - disabled in settings" : ""})</div>
+      ${sellEntries.length ? sellRows : `<div class="me-note">Open "My listings" or your Bazaar to record your listed prices; you are then warned when the Item Market floor drops below them.</div>`}
       <div class="me-actions"><button class="me-btn me-watch-check" type="button">Check now</button></div>
       ${panelToolbarHtml()}
       <div class="me-note">Polling only happens while a Torn tab is visible, uses the official Item Market API, and respects Torn's cache delay. Alerts are in-page only. Market Edge never buys.</div>
@@ -4897,6 +6435,13 @@
       button.addEventListener("click", () => {
         const itemId = asInt(button.closest(".me-watch-row")?.dataset?.itemId, 0);
         Store.saveWatchlist(Store.watchlist().filter((entry) => entry.itemId !== itemId));
+        renderWatchlistPanel();
+      });
+    });
+    ui.body.querySelectorAll(".me-sell-remove").forEach((button) => {
+      button.addEventListener("click", () => {
+        const key = String(button.closest(".me-watch-row")?.dataset?.sellKey || "");
+        Store.saveSellWatch(Store.sellWatch().filter((entry) => `${entry.venue}:${entry.itemId}` !== key));
         renderWatchlistPanel();
       });
     });
@@ -4938,6 +6483,10 @@
         <button class="me-btn" data-action="analyze" type="button">Analyze page</button>
         <button class="me-btn" data-action="listings" type="button">My listings</button>
         <button class="me-btn" data-action="watchlist" type="button">Watchlist</button>
+        <button class="me-btn" data-action="portfolio" type="button">Portfolio</button>
+        <button class="me-btn" data-action="shops" type="button">Shops</button>
+        <button class="me-btn" data-action="travel" type="button">Travel</button>
+        <button class="me-btn" data-action="fill" type="button">Fill all prices</button>
       </div>`;
       menu.querySelectorAll("[data-action]").forEach((button) => {
         button.addEventListener("click", () => {
@@ -4947,6 +6496,10 @@
           else if (action === "analyze") analyzeCurrentPage();
           else if (action === "listings") renderOwnListingsPanel();
           else if (action === "watchlist") renderWatchlistPanel();
+          else if (action === "portfolio") renderPortfolioPanel();
+          else if (action === "shops") renderShopRunsPanel();
+          else if (action === "travel") renderTravelPlanPanel();
+          else if (action === "fill") fillAllVisiblePrices();
         });
       });
       document.body.appendChild(menu);
@@ -4977,8 +6530,10 @@
     refreshTimer = setTimeout(() => refresh(force), 160);
   }
 
+  const LIST_SURFACES = Object.freeze(["bazaar", "auction", "travel", "inventory", "cityshop"]);
+
   function listSurfaceSignature(surface) {
-    if (!["bazaar", "auction", "travel", "inventory"].includes(surface)) return "";
+    if (!LIST_SURFACES.includes(surface)) return "";
     const entries = new Set();
     const marker = surface === "inventory" ? inventoryListMarker() : null;
     if (surface === "bazaar") {
@@ -5019,7 +6574,12 @@
     signatureTimer = setTimeout(() => {
       if (document.visibilityState !== "visible") return;
       const surface = detectSurface();
-      if (!["bazaar", "auction", "travel", "inventory"].includes(surface)) return;
+      if (surface === "itemmarket" && !getItemIdFromLocation() && settings.browseOverlayEnabled !== false) {
+        // Browse grid: new cards appear on scroll/category change.
+        scanBrowseGrid({ force: false });
+        return;
+      }
+      if (!LIST_SURFACES.includes(surface)) return;
       const startedAt = Date.now();
       const signature = listSurfaceSignature(surface);
       // Adapt the quiet period to how long the check itself took, so a slow
@@ -5041,7 +6601,7 @@
     const locationKey = `${surface}|${location.pathname}|${location.search}|${location.hash}`;
     const locationChanged = locationKey !== lastLocationKey || ui.currentSurface !== surface;
     if (!force && !locationChanged) {
-      if (["bazaar", "auction", "travel", "inventory"].includes(surface)) scheduleSignatureCheck(false);
+      if (LIST_SURFACES.includes(surface)) scheduleSignatureCheck(false);
       return;
     }
 
@@ -5066,6 +6626,8 @@
     } else {
       genericIntro(surface, { clear: true });
       scheduleSignatureCheck(false);
+      // City shop pages also get the shop-runs panel, scoped to that shop.
+      if (surface === "cityshop" && Store.apiKey()) setTimeout(() => { if (detectSurface() === "cityshop") renderShopRunsPanel(); }, 400);
     }
   }
 
@@ -5137,7 +6699,7 @@
   function analyzeCurrentPage() {
     const surface = detectSurface();
     if (surface === "itemmarket") renderItemMarket();
-    else if (["bazaar", "auction", "travel", "inventory"].includes(surface)) scanVisibleSurface(surface, { force: true });
+    else if (LIST_SURFACES.includes(surface)) scanVisibleSurface(surface, { force: true });
   }
 
   function registerMenu() {
@@ -5147,6 +6709,10 @@
         GM_registerMenuCommand("Market Edge analyze current page", analyzeCurrentPage);
         GM_registerMenuCommand("Market Edge my Item Market listings", () => renderOwnListingsPanel());
         GM_registerMenuCommand("Market Edge watchlist", () => renderWatchlistPanel());
+        GM_registerMenuCommand("Market Edge portfolio", () => renderPortfolioPanel());
+        GM_registerMenuCommand("Market Edge city shop runs", () => renderShopRunsPanel());
+        GM_registerMenuCommand("Market Edge travel plan", () => renderTravelPlanPanel());
+        GM_registerMenuCommand("Market Edge fill all visible prices", () => fillAllVisiblePrices());
         return;
       } catch {
         // fall through to the on-page launcher
@@ -5192,6 +6758,22 @@
       addWatchItem,
       ensureLauncher,
       showToast,
+      renderPortfolioPanel,
+      renderShopRunsPanel,
+      renderTravelPlanPanel,
+      scanBrowseGrid,
+      annotateAuctionEquipment,
+      recordSellWatch,
+      sellWatchTick,
+      fillAllVisiblePrices,
+      collectOwnListingRows,
+      fillOwnListingOnPage,
+      loadInventory,
+      loadItemDetails,
+      loadCityShops,
+      loadForeignCatalog,
+      currentCityShopName,
+      reloadSettings: () => { settings = Store.settings(); },
       ui
     });
   } else {

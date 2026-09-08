@@ -6,6 +6,31 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-08
+
+### Added
+
+- **Repricing workbench.** Your own Item Market listings panel now carries a per-listing fill control (`^`) and a "Fill all on page" action that write the suggested price into Torn's price fields on the manage view; saving stays manual. Each item can have a persistent pricing rule: undercut the floor (default), hold the anchor target, or never fill, plus a minimum price that is never breached. Your own Bazaar listings get the same `^` fill next to the target, with the Item Market floor shown, and a "Fill all visible prices" entry in the userscript menu and PDA launcher fills every visible suggestion (add form and manage rows).
+- **Undercut alerts.** Opening "My listings" or your Bazaar records your listed prices; the watch loop then polls the official order book at the watchlist interval and raises an in-page toast when the Item Market floor drops below one of your prices (30-minute cooldown, re-alert on a further 2% drop). The watchlist panel lists them with a remove control; a setting turns the feature off.
+- **Portfolio panel** (Minimal access key). Reads your whole inventory through the official `/user/inventory` endpoint, values every row from Torn's market value with the fee model, and shows totals per route with untradable and equipped flags. "Refine" spends a configurable request budget on live order books for the most valuable commodities and prices each weapon/armor copy from its uid via `/torn/{uids}/itemdetails` and the comparables engine, without expanding any details panel on the page.
+- **City shop runs.** The official `/torn/cityshops` endpoint (stock and price per NPC shop) is priced against the best exit after fees, capped by current stock and your run quantity, and ranked. The panel opens automatically on Torn city shop pages, scoped to that shop, and shop rows on those pages get inline profit per unit.
+- **Travel plan.** Foreign shop prices per country now come from the official item catalog and are ranked by profit per unit and per trip at your travel capacity. The official API has no foreign stock, and the panel says so.
+- **Sell-to-shop route.** The highest NPC shop sell price is now an exit candidate everywhere (contraband, sunk markets), and Torn city shop sell prices are read from the new `value.shops` array.
+- **Museum pieces by name.** Meteorite Fragment (15 points), Patagonian Fossil (20 points) and a six-piece Arrowhead set (25 points) are valued through the points market like plushie and flower sets.
+- **Auction House upgrade.** Stackable items on the Auction House show the median of ended sales next to the maximum rational bid, and recent winning bids cap that bid. Weapon and armor rows are priced as the exact copy (from the row's stats or the public per-listing endpoint) and get a maximum bid derived from comparables and ended sales. The Item Market panels show an auction timing section: which six-hour Torn City Time window closes sales at the best price.
+- **Item Market browse grid overlay.** Category and search cards are compared with Torn's official market value from one batched metadata request (no order books): discount, STRONG / CONSIDER / FAIR / ABOVE MV.
+- New settings: city shop run quantity, portfolio refine budget, auction evidence toggle, browse overlay toggle, undercut alerts toggle.
+
+### Changed
+
+- The toolbar under every panel now opens Portfolio, Shops and Travel as well as My listings and Watchlist; the userscript menu and the PDA launcher gained the same entries.
+- Item Market panels show the ended-auction sold median and the sell-to-shop price as evidence rows.
+- Bazaar rows that carry Torn's "Price per unit" label are never treated as add-form rows.
+
+### Privacy
+
+- New official endpoints: `/user/inventory` (portfolio, Minimal key), `/torn/{uids}/itemdetails`, `/torn/cityshops`, `/torn/items` (catalog), `/market/{id}/auctionhouselisting`. Everything still goes only to `api.torn.com`. New local storage: pricing rules, recorded own prices for undercut alerts, a compact inventory snapshot, per-uid item details, city shop stock and the shop catalog. See PRIVACY.md.
+
 ## [0.3.14] - 2026-09-08
 
 ### Fixed

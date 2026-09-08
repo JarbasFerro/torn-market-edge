@@ -49,9 +49,7 @@
     const button = block?.querySelector?.(".me-bazaar-fill-btn");
     if (!button || !visible.priceInput) return block;
 
-    button.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
+    const apply = () => {
       if (!visible.priceInput?.isConnected) return;
       const priceFilled = setBazaarInputValue(visible.priceInput, target);
       const maxAvailable = Math.max(1, asInt(visible.maxAvailable || visible.quantity, 1));
@@ -70,6 +68,14 @@
         ? `Filled ${maxAvailable} units at ${targetText}`
         : `Price filled with ${targetText}; quantity field was not detected`;
       setTimeout(() => block?.classList?.remove("me-applied"), 700);
+    };
+    // "Fill all" from the menu reuses the same handler without synthesising
+    // a click on any element.
+    button.meFill = apply;
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      apply();
     });
     return block;
   }
@@ -299,12 +305,40 @@
       );
     }
 
+    if (result.browse) {
+      const data = result.browse;
+      const discount = `${data.discount >= 0 ? "-" : "+"}${Math.abs(data.discount * 100).toFixed(1)}%`;
+      const title = `Displayed price versus Torn's official market value ${formatMoney(data.marketPrice, true)}.${Number.isFinite(data.profitPerUnit) ? ` Estimated net per unit after fees via ${data.bestRoute}: ${formatMoney(data.profitPerUnit, true)}.` : ""} Open the item for order-book analysis.`;
+      return renderInlineHtml(visible,
+        `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="${escapeHtml(title)}">${discount} vs MV</span><span class="me-inline-status">${data.label}</span>${stale}`,
+        data.state
+      );
+    }
+
+    if (result.auctionEquipment) {
+      const data = result.auctionEquipment;
+      const headroomText = data.headroom > 0 ? `+${formatMoney(data.headroom)}` : (Number.isFinite(data.headroom) ? formatMoney(data.headroom) : "-");
+      const title = [
+        `Max rational bid for this copy (${data.label}): ${formatMoney(data.maxBid, true)}`,
+        `Resale net used: ${formatMoney(data.bestNet, true)} (Bazaar ${formatMoney(data.pricing.bazaarSuggested, true)}, Item Market net ${formatMoney(data.pricing.itemMarketNet, true)})`,
+        data.pricing.comparableCount ? `${data.pricing.comparableCount} comparable listings` : "No comparable listings",
+        data.pricing.salesCount ? `${data.pricing.salesCount} ended Auction House sales of this group` : "No ended sales of this group in 30 days",
+        data.pricing.thinEvidence ? "Thin evidence: treat as a floor check" : ""
+      ].filter(Boolean).join("\n");
+      return renderInlineHtml(visible,
+        `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="${escapeHtml(title)}">Max ${formatMoney(data.maxBid)}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${headroomText}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${escapeHtml(data.label)}</span><span class="me-inline-status">${data.headroom > 0 ? "CONSIDER" : "PASS"}</span>${stale}`,
+        data.state
+      );
+    }
+
     if (surface === "auction") {
       const data = result.auction;
       const state = data?.headroom > 0 ? "YELLOW" : "GREY";
       const headroomText = data?.headroom > 0 ? `+${formatMoney(data.headroom)}` : "-";
+      const sales = data?.salesSummary;
+      const salesHtml = sales?.count ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Median of ${sales.count} ended Auction House sales in 30 days (range ${formatMoney(sales.low, true)} - ${formatMoney(sales.high, true)})">sold ${formatMoney(sales.median)}</span>` : "";
       return renderInlineHtml(visible,
-        `<span class="me-inline-brand">ME</span><span class="me-inline-primary">Max ${formatMoney(data?.maxBid)}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${headroomText}</span><span class="me-inline-status">${data?.headroom > 0 ? "CONSIDER" : "PASS"}</span>${stale}`,
+        `<span class="me-inline-brand">ME</span><span class="me-inline-primary">Max ${formatMoney(data?.maxBid)}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${headroomText}</span>${salesHtml}<span class="me-inline-status">${data?.headroom > 0 ? "CONSIDER" : "PASS"}</span>${stale}`,
         state
       );
     }
@@ -313,10 +347,35 @@
       const data = result.ownBazaar;
       const state = data?.delta > 0 ? "YELLOW" : "GREY";
       const deltaText = Number.isFinite(data?.delta) ? `${data.delta >= 0 ? "+" : ""}${formatMoney(data.delta)}` : "-";
+      const fill = data?.fill || null;
+      const fillPrice = fill?.price || null;
+      const ruleLabel = data?.rule ? ` (rule: ${data.rule.mode}${data.rule.minPrice ? `, min ${formatMoney(data.rule.minPrice)}` : ""})` : "";
+      const fillHtml = visible.priceInput && fillPrice
+        ? `<button class="me-bazaar-fill-btn me-manage-fill" type="button" title="Fill Torn's price field with ${escapeHtml(formatMoney(fillPrice, true))}${escapeHtml(ruleLabel)}. Saving stays manual.">^</button>`
+        : (fill?.reason === "held by rule" ? `<span class="me-inline-secondary" title="Pricing rule: hold">hold</span>` : "");
+      const floorHtml = data?.floor ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Cheapest Item Market listing">floor ${formatMoney(data.floor)}</span>` : "";
       const block = renderInlineHtml(visible,
-        `<span class="me-inline-brand">ME</span><span class="me-inline-primary">Target ${formatMoney(data?.target)}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${deltaText}</span><span class="me-inline-status">${data?.delta > 0 ? "LOW" : "OK"}</span>${stale}`,
+        `<span class="me-inline-brand">ME</span><span class="me-inline-primary">Target ${formatMoney(data?.target)}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${deltaText}</span>${floorHtml}${fillHtml}<span class="me-inline-status">${data?.delta > 0 ? "LOW" : "OK"}</span>${stale}`,
         state
       );
+      const manageButton = block?.querySelector?.(".me-manage-fill");
+      if (manageButton) {
+        const applyManage = () => {
+          if (!visible.priceInput?.isConnected || !fillPrice) return;
+          if (setBazaarInputValue(visible.priceInput, fillPrice)) {
+            visible.price = fillPrice;
+            data.delta = data.target - fillPrice;
+            block.classList.add("me-applied");
+            setTimeout(() => block?.classList?.remove("me-applied"), 700);
+          }
+        };
+        manageButton.meFill = applyManage;
+        manageButton.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          applyManage();
+        });
+      }
       if (visible.priceInput && !visible.priceInput.dataset.mePriceListener) {
         visible.priceInput.dataset.mePriceListener = "1";
         visible.priceInput.addEventListener("input", () => {
@@ -337,6 +396,16 @@
     const state = direct.classification.state;
     const roi = `${direct.roi >= 0 ? "+" : ""}${(direct.roi * 100).toFixed(1)}%`;
     const profit = `${direct.expectedProfit >= 0 ? "+" : ""}${formatMoney(direct.expectedProfit)}`;
+
+    if (surface === "cityshop") {
+      const qty = Math.max(1, asInt(result.quantityUsed || 1, 1));
+      const perUnit = Math.trunc(direct.expectedProfit / qty);
+      const route = direct.routes?.bestRoute || "";
+      return renderInlineHtml(visible,
+        `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="Expected net profit per unit after fees via ${escapeHtml(route)}">${perUnit >= 0 ? "+" : ""}${formatMoney(perUnit)} ea</span><span class="me-inline-sep">|</span><span class="me-inline-secondary" title="For ${qty} units">${profit} / ${qty}</span><span class="me-inline-status">${CLASS_META[state].label}</span>${stale}`,
+        state
+      );
+    }
 
     if (surface === "travel") {
       const qty = Math.max(1, asInt(result.quantityUsed || visible.quantity, 1));
@@ -374,12 +443,31 @@
     return `<div class="me-actions">
       <button class="me-btn me-open-listings" type="button" title="Compare your Item Market listings with the live floor (Limited key)">My listings</button>
       <button class="me-btn me-open-watchlist" type="button" title="Watched items and alert targets">Watchlist</button>
+      <button class="me-btn me-open-portfolio" type="button" title="Value your whole inventory through the official API (Minimal key)">Portfolio</button>
+      <button class="me-btn me-open-shops" type="button" title="City shop stock priced against the market">Shops</button>
+      <button class="me-btn me-open-travel" type="button" title="Foreign shop prices ranked by profit per trip">Travel</button>
     </div>`;
   }
 
   function bindPanelToolbar() {
     ui.body?.querySelector(".me-open-listings")?.addEventListener("click", () => renderOwnListingsPanel());
     ui.body?.querySelector(".me-open-watchlist")?.addEventListener("click", () => renderWatchlistPanel());
+    ui.body?.querySelector(".me-open-portfolio")?.addEventListener("click", () => renderPortfolioPanel());
+    ui.body?.querySelector(".me-open-shops")?.addEventListener("click", () => renderShopRunsPanel());
+    ui.body?.querySelector(".me-open-travel")?.addEventListener("click", () => renderTravelPlanPanel());
+  }
+
+  // Ended-auction timing section shared by the Item Market panels: when do
+  // sales of this item close at the best prices (Torn City Time)?
+  function auctionTimingHtml(sales, { stackableOnly = false } = {}) {
+    const rows = stackableOnly ? (sales || []).filter((sale) => sale.stackable) : (sales || []);
+    const timing = auctionTimingStats(rows);
+    if (!timing.total) return "";
+    const bucketRows = timing.buckets.map((bucket) => `<div class="me-diag-row${timing.best && bucket.key === timing.best.key ? " pass" : ""}">${escapeHtml(bucket.label)}: ${bucket.count ? `${formatMoney(bucket.median)} x${bucket.count}${Number.isFinite(bucket.ratio) ? ` (${bucket.ratio >= 1 ? "+" : ""}${((bucket.ratio - 1) * 100).toFixed(1)}%)` : ""}` : "no sales"}</div>`).join("");
+    const summary = timing.best
+      ? `Best window to end an auction: ${timing.best.label} (${timing.best.count} sales, ${((timing.best.ratio - 1) * 100).toFixed(1)}% above the overall median)${timing.worst && timing.worst.key !== timing.best.key ? `; cheapest wins closed ${timing.worst.label}` : ""}.`
+      : `Not enough ended sales per window yet (${timing.total} in total).`;
+    return `<details class="me-diag"><summary>Auction timing: ${timing.total} ended sales, median ${formatMoney(timing.overallMedian)}</summary><div class="me-diag-row">${escapeHtml(summary)}</div>${bucketRows}</details>`;
   }
 
   function itemMarketLink(itemId, name = "") {
@@ -468,6 +556,7 @@
       </div>` : `<div class="me-note">No listing is priced meaningfully below its comparable group.</div>`}
       ${equipmentRowsHtml(analysis)}
       ${groupsHtml ? `<details class="me-diag"><summary>Comparable groups</summary>${groupsHtml}</details>` : ""}
+      ${auctionTimingHtml(auctionSales)}
       ${watchControlsHtml(snapshot, null)}
       ${panelToolbarHtml()}
       <div class="me-note">Equipment is grouped by rarity and bonus set, quality matched within 10 points when enough listings exist. Ended Auction House sales are the only official transaction evidence. Rare rolls trade on intangibles; treat this as a floor check, not a valuation.</div>
@@ -483,8 +572,9 @@
     }
     const itemId = getItemIdFromLocation();
     if (!itemId) {
-      setPanel(`<div class="me-kicker">Item Market</div><div class="me-note">Open a specific item to analyze its order book.</div>${panelToolbarHtml()}`);
+      setPanel(`<div class="me-kicker">Item Market</div><div class="me-note">Open a specific item to analyze its order book.${settings.browseOverlayEnabled !== false ? " Browse cards are compared with Torn's official market value as they appear." : ""}</div>${panelToolbarHtml()}`);
       bindPanelToolbar();
+      if (settings.browseOverlayEnabled !== false) scanBrowseGrid({ force: false });
       return;
     }
     if (!Store.apiKey()) {
@@ -505,12 +595,24 @@
       }
 
       const liveRows = parseLiveItemMarketListings();
-      const museumContext = await loadMuseumContext([itemId], { priority: 190 });
+      let itemMeta = null;
+      try {
+        itemMeta = (await loadItemMetadataBatch([itemId], { priority: 190 })).get(itemId) || null;
+      } catch (error) {
+        log("Item metadata unavailable", error.message);
+      }
+      const museumContext = await loadMuseumContext([itemId], { priority: 190, metadata: new Map(itemMeta ? [[itemId, itemMeta]] : []) });
       const museum = museumContext.get(itemId) || null;
+      const shopSell = shopSellFloor(itemMeta);
+      // Ended auctions are the only official transaction evidence for
+      // stackable items; one request, cached ten minutes.
+      const auctionSales = settings.auctionEvidenceEnabled !== false ? await loadAuctionSales(itemId, { priority: 170 }) : [];
+      const salesSummary = stackableSalesSummary(auctionSales);
+      if (detectSurface() !== "itemmarket" || getItemIdFromLocation() !== itemId) return;
 
       // The official Torn API is the authoritative valuation source. The live
       // DOM is used only to confirm/highlight what the player currently sees.
-      const evaluated = evaluatePrefixes(snapshot, historyStats, settings, Date.now(), { museum });
+      const evaluated = evaluatePrefixes(snapshot, historyStats, settings, Date.now(), { museum, shopSell: shopSell?.price, shopLabel: shopSell?.label });
       const best = evaluated.best;
       const compareCount = Math.max(2, best?.prefixCount || Math.min(5, snapshot.listings.length));
       const liveMatchesApi = liveRows.length >= compareCount && snapshot.listings.length >= compareCount &&
@@ -544,6 +646,12 @@
       const museumRows = museum && museum.complete
         ? [[`${museum.label} implied value`, `<span title="${museum.points} points x ${formatMoney(museum.pointValue, true)} minus ${formatMoney(museum.othersCost, true)} for the other pieces">${formatMoney(museum.impliedValue)}</span>`, museum.impliedValue > (reference.value || 0) ? "me-good" : ""]]
         : [];
+      const evidenceRows = [];
+      if (salesSummary.count) {
+        const agreesWithSales = reference.value ? Math.abs(salesSummary.median - reference.value) / reference.value : null;
+        evidenceRows.push(["AH sold median (30d)", `<span title="${salesSummary.count} ended auctions, range ${formatMoney(salesSummary.low, true)} - ${formatMoney(salesSummary.high, true)}">${formatMoney(salesSummary.median)} x${salesSummary.count}</span>`, Number.isFinite(agreesWithSales) && agreesWithSales <= 0.10 ? "me-good" : ""]);
+      }
+      if (shopSell) evidenceRows.push([escapeHtml(shopSell.label), formatMoney(shopSell.price)]);
 
       setPanel(`
         <div class="me-kicker">Item Market - ${escapeHtml(liveConfirmation)}</div>
@@ -557,7 +665,8 @@
           ["24h MAD volatility", Number.isFinite(historyStats.oneDay.volatility) ? `${(historyStats.oneDay.volatility * 100).toFixed(2)}%` : "-"],
           ["API age", `${formatAge(fresh.ageSeconds)} - ${fresh.label}`],
           ["Observations (24h)", String(historyStats.oneDay.count)],
-          ...museumRows
+          ...museumRows,
+          ...evidenceRows
         ])}
         ${sourceWarning}
         <div class="me-rule"></div>
@@ -571,12 +680,14 @@
           ["Item Market target", formatMoney(best.routes.itemMarket.suggestedPrice)],
           [`IM net after ${feeLabel}`, formatMoney(Math.floor(best.routes.itemMarket.net / best.quantityBought))],
           ["Auction net after 3%", `<span title="Informational: auctions are never chosen as the best route">${formatMoney(Math.floor(best.routes.auction.net / best.quantityBought))}</span>`],
-          ...(best.routes.museum ? [[`${best.routes.museum.label} target`, formatMoney(best.routes.museum.suggestedPrice)]] : [])
+          ...(best.routes.museum ? [[`${best.routes.museum.label} target`, formatMoney(best.routes.museum.suggestedPrice)]] : []),
+          ...(best.routes.shop ? [[escapeHtml(best.routes.shop.label), formatMoney(best.routes.shop.suggestedPrice)]] : [])
         ]) : `<div class="me-note">No affordable prefix with positive expected profit.</div>`}
         <div class="me-rule"></div>
         ${decisionHtml(best)}
         ${diagnosticsHtml(best)}
         ${coldStartNote}
+        ${auctionTimingHtml(auctionSales, { stackableOnly: true })}
         ${watchControlsHtml(snapshot, best)}
         ${panelToolbarHtml()}
         <div class="me-note">Facts: official API asks, Torn daily average and the ${feeLabel} Item Market fee. The visible page is used only for confirmation/highlighting. Local data: observed anchors. Exit, profit and confidence are estimates - not guarantees.</div>
@@ -612,7 +723,9 @@
     return 200 - index;
   }
 
-  function resultForSurface(surface, visible, snapshot, historyStats, ownBazaar, renderMeta = {}, museum = null) {
+  function resultForSurface(surface, visible, snapshot, historyStats, ownBazaar, renderMeta = {}, museum = null, extras = {}) {
+    const shopSell = extras?.shopSell || null;
+    const salesSummary = extras?.salesSummary || null;
     if (!snapshot?.supportedCommodity) {
       if (settings.equipmentEnabled !== false && snapshot?.equipment && snapshot.equipmentSummary) {
         // Buy-side surfaces get plain/bonus floors. Sell-side rows are priced
@@ -623,29 +736,37 @@
     }
 
     if (surface === "inventory") {
-      const estimate = estimateInventoryExit({ quantity: visible.quantity, snapshot, historyStats, settings, museum });
+      const estimate = estimateInventoryExit({ quantity: visible.quantity, snapshot, historyStats, settings, museum, shopSell });
       return { visible, snapshot, historyStats, inventory: estimate, renderMeta };
     }
 
     if (surface === "auction") {
-      const maxBid = maxRationalBid({ snapshot, historyStats, settings, quantity: visible.quantity, museum });
+      const salesMedian = salesSummary?.median || null;
+      const maxBid = maxRationalBid({ snapshot, historyStats, settings, quantity: visible.quantity, museum, shopSell, salesMedian });
       const headroom = Number.isFinite(maxBid) ? maxBid - visible.price : null;
       const direct = visible.price > 0
-        ? evaluateDirectBuy({ buyPrice: visible.price, quantity: visible.quantity, snapshot, historyStats, settings, forceYellow: true, museum })
+        ? evaluateDirectBuy({ buyPrice: visible.price, quantity: visible.quantity, snapshot, historyStats, settings, forceYellow: true, museum, shopSell })
         : null;
-      return { visible, snapshot, historyStats, auction: { maxBid, headroom, direct }, renderMeta };
+      return { visible, snapshot, historyStats, auction: { maxBid, headroom, direct, salesSummary }, renderMeta };
     }
 
     if (surface === "bazaar" && ownBazaar) {
-      const estimate = estimateInventoryExit({ quantity: visible.quantity, snapshot, historyStats, settings, museum });
+      const estimate = estimateInventoryExit({ quantity: visible.quantity, snapshot, historyStats, settings, museum, shopSell });
       const target = estimate?.routes?.bazaar?.suggestedPrice;
       const delta = Number.isFinite(target) ? target - visible.price : null;
-      return { visible, snapshot, historyStats, ownBazaar: { target, delta, estimate }, renderMeta };
+      // Repricing workbench: the floor-based suggestion (floor minus undercut,
+      // Bazaar is fee-free so no discount) and the anchor-based target go
+      // through the item's pricing rule.
+      const floorSuggestion = snapshot.lowestPrice ? Math.max(1, snapshot.lowestPrice - Math.max(0, asInt(settings.itemMarketUndercut))) : null;
+      const rule = Store.pricingRules()[visible.itemId] || null;
+      const fill = applyPricingRule({ rule, floorSuggestion, anchorSuggestion: target });
+      return { visible, snapshot, historyStats, ownBazaar: { target, delta, estimate, fill, rule, floor: snapshot.lowestPrice }, renderMeta };
     }
 
     let quantity = visible.quantity;
     if (surface === "travel" && settings.travelCapacity > 0) quantity = Math.min(quantity, settings.travelCapacity);
     if (surface === "travel" && settings.travelCapacity === 0) quantity = 1;
+    if (surface === "cityshop") quantity = Math.max(1, asInt(settings.shopRunQuantity, 100));
     const direct = evaluateDirectBuy({
       buyPrice: visible.price,
       quantity,
@@ -653,7 +774,8 @@
       historyStats,
       settings,
       forceYellow: surface === "auction",
-      museum
+      museum,
+      shopSell
     });
     return {
       visible,

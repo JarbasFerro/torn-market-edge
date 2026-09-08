@@ -167,7 +167,7 @@ Settings, market snapshots and derived local history are stored locally in users
 
 ## Current status
 
-**v0.2.0 is a beta release.**
+**v0.4.0 is a beta release.**
 
 Torn is a dynamic SPA and its DOM can change. If an overlay is missing or positioned incorrectly, please report the affected page, device, browser/userscript manager and a screenshot.
 

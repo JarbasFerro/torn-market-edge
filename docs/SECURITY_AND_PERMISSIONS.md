@@ -31,6 +31,7 @@ Used for local persistence of:
 - the current points-market ask;
 - derived local market-history points;
 - cached item metadata;
+- pricing rules, recorded own listing prices, a compact inventory snapshot, per-uid item details, city shop stock and the shop catalog (v0.4.0);
 - small UI state values.
 
 When GM storage is unavailable (some Torn PDA builds), the same values are kept in `localStorage` under a `marketEdge.local.` prefix.
@@ -79,6 +80,8 @@ Market Edge is decision support only. It does not automatically:
 - interact with CAPTCHA.
 
 When page-derived information is needed, Market Edge reads only the Torn page the player has manually opened. DOM processing is suspended while the page is not visible.
+
+The repricing workbench and the Bazaar fill controls only write values into Torn's own input fields after an explicit tap (or the explicit "Fill all" menu action); Torn's save, update and add buttons are never pressed. The only simulated click remains the Bazaar maximum-quantity checkbox inside the user's own fill tap.
 
 The watchlist is API-only: it never loads Torn pages in the background, polls at a user-configured interval of at least 30 seconds only while a Torn tab is visible, and alerts with an in-page toast. Acting on an alert is a manual decision. The regression tests assert that the assembled script contains no `.click()`, `.submit()` or `location.reload` calls.
 

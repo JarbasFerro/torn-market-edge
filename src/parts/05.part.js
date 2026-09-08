@@ -98,6 +98,11 @@
     .me-toast { background:rgba(28,28,30,.97); border:1px solid rgba(74,165,100,.6); border-radius:6px; padding:8px 10px; color:#eee; font:12px/1.35 Arial,sans-serif; box-shadow:0 8px 24px rgba(0,0,0,.45); }
     .me-toast a { color:#7fd193; font-weight:700; }
     .me-toast .me-toast-close { float:right; margin-left:8px; cursor:pointer; color:#aaa; font-weight:700; }
+    .me-workbench-cell { white-space:nowrap; }
+    .me-workbench-cell .me-inline-input { width:78px; font-size:10px; padding:2px 3px; margin-left:3px; }
+    .me-workbench-cell .me-rule-mode { width:96px; }
+    .me-workbench-cell .me-listing-fill { padding:2px 6px; margin-left:3px; }
+    .me-inline-analysis .me-manage-fill { margin-left:4px; }
     .me-watch-row { display:flex; align-items:center; gap:6px; font-size:11px; padding:3px 0; border-bottom:1px solid rgba(255,255,255,.06); }
     .me-watch-row .me-watch-name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .me-watch-row .me-watch-remove { cursor:pointer; color:#e27a7a; font-weight:700; padding:0 4px; }
@@ -255,6 +260,10 @@
           <label>Max MAD volatility (%)</label><input data-setting="maxVolatility" data-percent="1" type="number" min="0" max="100" step="0.1" value="${current.maxVolatility * 100}">
           <label>Max visible items / scan</label><input data-setting="scanMaxVisibleItems" type="number" min="1" max="50" step="1" value="${current.scanMaxVisibleItems}">
           <label>Travel capacity (0 = per-item only)</label><input data-setting="travelCapacity" type="number" min="0" max="1000" step="1" value="${current.travelCapacity}">
+          <label>City shop run quantity (units per run)</label><input data-setting="shopRunQuantity" type="number" min="1" max="10000" step="1" value="${current.shopRunQuantity}">
+          <label>Portfolio refine budget (requests per press)</label><input data-setting="portfolioRefineRequests" type="number" min="1" max="60" step="1" value="${current.portfolioRefineRequests}">
+          <label>Use ended Auction House sales as evidence</label><input data-setting="auctionEvidenceEnabled" type="checkbox" ${current.auctionEvidenceEnabled !== false ? "checked" : ""}>
+          <label>Item Market browse-grid overlay (vs market value)</label><input data-setting="browseOverlayEnabled" type="checkbox" ${current.browseOverlayEnabled !== false ? "checked" : ""}>
           <label>History retention (days)</label><input data-setting="historyRetentionDays" type="number" min="1" max="90" step="1" value="${current.historyRetentionDays}">
           <label>Developer diagnostics in console</label><input data-setting="developerMode" type="checkbox" ${current.developerMode ? "checked" : ""}>
         </div>
@@ -263,6 +272,7 @@
         <div class="me-form-grid">
           <label>Watchlist alerts enabled</label><input data-setting="watchlistEnabled" type="checkbox" ${current.watchlistEnabled ? "checked" : ""}>
           <label>Check interval (seconds, min ${WATCHLIST_MIN_INTERVAL_SEC})</label><input data-setting="watchlistIntervalSeconds" type="number" min="${WATCHLIST_MIN_INTERVAL_SEC}" max="3600" step="5" value="${current.watchlistIntervalSeconds}">
+          <label>Undercut alerts for my own listings</label><input data-setting="undercutAlerts" type="checkbox" ${current.undercutAlerts !== false ? "checked" : ""}>
         </div>
         <div id="me-watchlist-rows"></div>
         <div class="me-section-title">Diagnostics</div>
@@ -274,7 +284,7 @@
           <input id="me-watch-target" class="me-inline-input" type="number" min="1" placeholder="Alert at or below $">
           <button class="me-btn" id="me-watch-add" type="button">Add to watchlist</button>
         </div>
-        <div class="me-form-help">The API key stays in userscript storage and is sent only to api.torn.com. Market Edge never includes it in diagnostics or exports. Fees modelled: Item Market 5% sales tax, optional 10% anonymous-listing fee, Auction House 3%. Bazaar and trades have no fee. Own Item Market listings need a Limited access key; everything else works with a Public key.${ENV.isPda ? " Torn PDA detected: the PDA API key is used automatically when no key is entered." : ""}</div>
+        <div class="me-form-help">The API key stays in userscript storage and is sent only to api.torn.com. Market Edge never includes it in diagnostics or exports. Fees modelled: Item Market 5% sales tax, optional 10% anonymous-listing fee, Auction House 3%. Bazaar and trades have no fee. Own Item Market listings need a Limited access key, the portfolio needs a Minimal access key; everything else works with a Public key.${ENV.isPda ? " Torn PDA detected: the PDA API key is used automatically when no key is entered." : ""}</div>
         <div class="me-modal-actions"><button class="me-btn" id="me-cancel-settings" type="button">Cancel</button><button class="me-btn" id="me-save-settings" type="button">Save</button></div>
       </div>`;
     document.body.appendChild(backdrop);

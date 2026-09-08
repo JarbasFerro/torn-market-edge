@@ -88,11 +88,17 @@
       : null;
     const museumGross = museum ? museum.suggestedPrice * qty : Number.NEGATIVE_INFINITY;
     const museumNet = museum && settings.museumSetsEnabled !== false ? museumGross : Number.NEGATIVE_INFINITY;
+    // NPC shops buy instantly at a fixed price (no fee, no waiting). It is a
+    // legitimate exit for contraband and for items whose market has sunk
+    // below the shop's offer.
+    const shopSellPrice = Number.isFinite(extras?.shopSell) && extras.shopSell > 0 ? Math.floor(extras.shopSell) : null;
+    const shopGross = shopSellPrice ? shopSellPrice * qty : Number.NEGATIVE_INFINITY;
 
     const candidates = [
       { route: "Bazaar", net: bazaarNet },
       { route: "Item Market", net: itemMarketNet },
-      { route: "Museum set", net: museumNet }
+      { route: "Museum set", net: museumNet },
+      { route: "Sell to shop", net: shopGross }
     ].filter((candidate) => Number.isFinite(candidate.net));
     candidates.sort((a, b) => b.net - a.net);
     const bestRoute = candidates[0]?.route || "Item Market";
@@ -127,6 +133,13 @@
         net: museumGross,
         fee: 0,
         label: museum.label
+      } : null,
+      shop: shopSellPrice ? {
+        suggestedPrice: shopSellPrice,
+        gross: shopGross,
+        net: shopGross,
+        fee: 0,
+        label: extras.shopLabel || "Sell to shop"
       } : null,
       bestRoute,
       bestNet,
@@ -242,7 +255,7 @@
     return { best: eligible[0] || all[0] || null, all, unsupported: false };
   }
 
-  function evaluateDirectBuy({ buyPrice, quantity = 1, snapshot, historyStats, settings, nowMs = Date.now(), forceYellow = false, museum = null }) {
+  function evaluateDirectBuy({ buyPrice, quantity = 1, snapshot, historyStats, settings, nowMs = Date.now(), forceYellow = false, museum = null, shopSell = null }) {
     const unitPrice = Math.max(1, asInt(buyPrice));
     const reference = chooseReference(snapshot, historyStats);
     if (!unitPrice || !reference.value || !snapshot?.supportedCommodity) return null;
@@ -256,7 +269,7 @@
     const capitalRequired = unitPrice * qty;
     const exit = calculateExit({ snapshot, historyStats, settings });
     if (!exit) return null;
-    const routes = routeEconomics(exit, qty, settings, { museum });
+    const routes = routeEconomics(exit, qty, settings, { museum, shopSell });
     const expectedProfit = routes.bestNet - capitalRequired;
     const roi = expectedProfit / capitalRequired;
     const discount = 1 - unitPrice / reference.value;
@@ -291,26 +304,61 @@
     };
   }
 
-  function maxRationalBid({ snapshot, historyStats, settings, quantity = 1, museum = null }) {
+  function maxRationalBid({ snapshot, historyStats, settings, quantity = 1, museum = null, shopSell = null, salesMedian = null }) {
     if (!snapshot?.supportedCommodity) return null;
     const qty = Math.max(1, asInt(quantity, 1));
     const exit = calculateExit({ snapshot, historyStats, settings });
     if (!exit) return null;
-    const routes = routeEconomics(exit, qty, settings, { museum });
+    const routes = routeEconomics(exit, qty, settings, { museum, shopSell });
     const reference = chooseReference(snapshot, historyStats).value;
     const maxByRoi = Math.floor((routes.bestNet / qty) / (1 + settings.minimumROI));
     const maxByProfit = Math.floor((routes.bestNet - settings.minimumProfit) / qty);
     const maxByDiscount = reference ? Math.floor(reference * (1 - settings.minimumDiscount)) : Number.POSITIVE_INFINITY;
-    return Math.max(0, Math.min(maxByRoi, maxByProfit, maxByDiscount));
+    // Ended auctions are actual transactions: a rational bid does not exceed
+    // what winners have recently paid for the same stackable item.
+    const maxBySales = Number.isFinite(salesMedian) && salesMedian > 0 ? Math.floor(salesMedian) : Number.POSITIVE_INFINITY;
+    return Math.max(0, Math.min(maxByRoi, maxByProfit, maxByDiscount, maxBySales));
   }
 
-  function estimateInventoryExit({ quantity, snapshot, historyStats, settings, museum = null }) {
+  function estimateInventoryExit({ quantity, snapshot, historyStats, settings, museum = null, shopSell = null }) {
     const qty = Math.max(1, asInt(quantity, 1));
     if (!snapshot?.supportedCommodity) return null;
     const exit = calculateExit({ snapshot, historyStats, settings });
     if (!exit) return null;
-    const routes = routeEconomics(exit, qty, settings, { museum });
+    const routes = routeEconomics(exit, qty, settings, { museum, shopSell });
     return { quantity: qty, exit, routes, reference: chooseReference(snapshot, historyStats) };
+  }
+
+  // Exit model from Torn's official market value alone. Used where no order
+  // book has been fetched yet (portfolio quick pass, shop runs, travel plan,
+  // browse grid). It is deliberately more conservative than calculateExit:
+  // the market value is a daily average of purchases, not a live floor.
+  function officialExit(marketPrice, settings) {
+    const value = asInt(marketPrice, 0);
+    if (value <= 0) return null;
+    const haircut = clamp(settings.safetyHaircut + 0.02, 0, 0.10);
+    const conservativeExitPrice = Math.max(1, Math.floor(value * (1 - haircut)));
+    return {
+      exitAnchor: value,
+      haircut,
+      coldStart: true,
+      official: true,
+      officialAgreement: { available: false, agrees: false, ratio: null },
+      conservativeExitPrice,
+      itemMarketSuggestedPrice: Math.max(1, conservativeExitPrice - Math.max(0, asInt(settings.itemMarketUndercut))),
+      bazaarSuggestedPrice: Math.max(1, Math.floor(conservativeExitPrice * (1 - settings.bazaarDiscount)))
+    };
+  }
+
+  // Resolve the best available exit for an item: the live order book when a
+  // snapshot exists (commodities), otherwise the official market value.
+  function bestAvailableExit({ snapshot = null, historyStats = null, marketPrice = 0, settings }) {
+    if (snapshot?.supportedCommodity) {
+      const exit = calculateExit({ snapshot, historyStats, settings });
+      if (exit) return { exit, source: "order book" };
+    }
+    const exit = officialExit(marketPrice || snapshot?.averagePrice || 0, settings);
+    return exit ? { exit, source: "official market value" } : { exit: null, source: "unavailable" };
   }
 
   function formatMoney(value, exact = false) {

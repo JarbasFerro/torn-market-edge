@@ -17,6 +17,8 @@ Test files:
 - `tests/features-0-3.test.js` - fee model, cold-start valuation, equipment comparables, museum sets, watchlist, own listings, key access and source guards.
 - `tests/dom.test.js` - collectors against saved HTML fixtures in `tests/fixtures/` (Bazaar add form, own Bazaar rows, inventory, Auction House, Item Market), transport selection (GM vs Torn PDA), settings modal.
 - `tests/panels.test.js` - end-to-end panel smoke tests with a stubbed Torn API (Item Market, equipment, own listings, watchlist tick, museum context).
+- `tests/features-0-4.test.js` - v0.4.0 pure functions: inventory and uid details normalisation, official-value exit, sell-to-shop route, city shop runs, foreign offers and travel ranking, museum pieces by name, auction timing, sales-capped bids, equipment bid guidance, browse-grid classification, pricing rules, sell-side watch, portfolio summary.
+- `tests/panels-0-4.test.js` - v0.4.0 panels in jsdom: portfolio (quick pass and refine by uid), key gating, city shop runs scoped to the current shop, travel plan, browse-grid overlay, Auction House commodity and equipment guidance, own listings workbench fill and rules, undercut toast, own Bazaar fill-all.
 
 When Torn changes a page layout, update the matching fixture to the new markup and adjust the collector; the fixtures are the contract.
 
@@ -40,6 +42,11 @@ At minimum, preserve these cases:
 14. **Museum sets** - implied value is set value minus the other pieces; negative or incomplete sets never become a route.
 15. **Watchlist** - alerts trigger at or below target, respect the cooldown and re-alert on a further drop.
 16. **Own listings** - CHEAPEST / CLOSE / UNDERCUT statuses, anonymous fee and flash-sale warnings.
+17. **Pricing rules** - undercut by default, anchor mode, hold, minimum price clamp; fill never submits.
+18. **Undercut watch** - alert when the floor drops below an own price, cooldown, re-alert on a further drop, entries pruned when a listing disappears.
+19. **Shop economics** - runs capped by stock, sell-to-shop route beats a sunk market, foreign offers ranked per country.
+20. **Auction evidence** - ended sales cap the rational bid; equipment max bid stays between the current bid and the plain floor; timing buckets pick the best window.
+21. **Browse grid** - STRONG / CONSIDER / FAIR / ABOVE MV from the official market value with no order-book request.
 
 ## Manual UI regression matrix
 

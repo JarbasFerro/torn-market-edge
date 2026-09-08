@@ -58,6 +58,31 @@
       // Requires a Limited access key. Callers translate error code 16.
       return this.request("/user/itemmarket", { cacheMs: 20000, priority });
     }
+
+    async inventoryPage({ offset = 0, cat = "", priority = 120 } = {}) {
+      // Minimal access key; Torn caches this selection for one hour.
+      const category = cat ? `&cat=${encodeURIComponent(cat)}` : "";
+      return this.request(`/user/inventory?limit=${INVENTORY_PAGE_LIMIT}&offset=${Math.max(0, asInt(offset))}${category}`, { cacheMs: INVENTORY_TTL_MS, priority });
+    }
+
+    async itemDetails(uids, { priority = 110 } = {}) {
+      const ids = Array.from(new Set(uids.map((uid) => asInt(uid)).filter(Boolean))).slice(0, ITEM_DETAILS_BATCH);
+      if (!ids.length) return { itemdetails: [] };
+      return this.request(`/torn/${ids.join(",")}/itemdetails`, { cacheMs: ONE_DAY_MS, priority });
+    }
+
+    async cityShops({ priority = 100 } = {}) {
+      return this.request("/torn/cityshops", { cacheMs: CITY_SHOPS_TTL_MS, priority });
+    }
+
+    async itemCatalog(cat = "All", { priority = 30 } = {}) {
+      const category = cat && cat !== "All" ? `?cat=${encodeURIComponent(cat)}` : "";
+      return this.request(`/torn/items${category}`, { cacheMs: FOREIGN_CATALOG_TTL_MS, priority });
+    }
+
+    async auctionListing(listingId, { priority = 80 } = {}) {
+      return this.request(`/market/${asInt(listingId)}/auctionhouselisting`, { cacheMs: AUCTION_LISTING_TTL_MS, priority });
+    }
   }
 
   const api = new TornApi();
@@ -132,7 +157,7 @@
   // Museum context: one batched metadata request per set (daily) plus the
   // points market (every five minutes) gives set-implied values for every
   // plushie/flower without touching per-item order books.
-  async function loadMuseumContext(itemIds, { priority = 60 } = {}) {
+  async function loadMuseumContext(itemIds, { priority = 60, metadata = null } = {}) {
     const result = new Map();
     if (settings.museumSetsEnabled === false) return result;
     const sets = new Map();
@@ -140,22 +165,32 @@
       const set = museumSetFor(itemId);
       if (set) sets.set(set.key, set);
     });
-    if (!sets.size) return result;
+    // Name-matched museum pieces (contraband singles, arrowhead set) need the
+    // caller's metadata; without it they are simply not recognised here.
+    const namedMetas = metadata instanceof Map
+      ? itemIds.map((itemId) => metadata.get(asInt(itemId))).filter((meta) => meta && (MUSEUM_SINGLES_BY_NAME[String(meta.name).toLowerCase().trim()] || MUSEUM_NAME_SETS.some((set) => set.pattern.test(meta.name))))
+      : [];
+    if (!sets.size && !namedMetas.length) return result;
 
     const points = await loadPointsMarket({ priority });
     const pointValue = asInt(points?.cheapest, 0);
     if (!pointValue) return result;
+    namedMetas.forEach((meta) => {
+      const valuation = museumByName({ meta, pointValue, allMetas: Array.from(metadata.values()), settings });
+      if (valuation) result.set(meta.id, valuation);
+    });
+    if (!sets.size) return result;
 
     const memberIds = Array.from(sets.values()).flatMap((set) => set.items);
-    let metadata = new Map();
+    let memberMetadata = new Map();
     try {
-      metadata = await loadItemMetadataBatch(memberIds, { maxAgeMs: SET_META_TTL_MS, priority });
+      memberMetadata = await loadItemMetadataBatch(memberIds, { maxAgeMs: SET_META_TTL_MS, priority });
     } catch (error) {
       log("Museum set metadata unavailable", error.message);
       return result;
     }
     const memberPrices = {};
-    metadata.forEach((meta, id) => { memberPrices[id] = asInt(meta?.marketPrice, 0); });
+    memberMetadata.forEach((meta, id) => { memberPrices[id] = asInt(meta?.marketPrice, 0); });
 
     itemIds.forEach((itemId) => {
       if (!museumSetFor(itemId)) return;
@@ -177,6 +212,100 @@
       log("Auction sales unavailable", itemId, error.message);
       return cached?.sales || [];
     }
+  }
+
+  // Whole inventory through the official API (Minimal key). Paged in 250s;
+  // a key that cannot read the selection surfaces its Torn error.
+  async function loadInventory({ force = false, priority = 120 } = {}) {
+    const cached = Store.inventory();
+    if (!force && cached && Date.now() - asInt(cached.savedAt) < INVENTORY_TTL_MS) return cached.items;
+    if (force) {
+      Array.from(api.memoryCache.keys()).filter((key) => key.startsWith("/user/inventory")).forEach((key) => api.memoryCache.delete(key));
+    }
+    const items = [];
+    let offset = 0;
+    for (let page = 0; page < INVENTORY_MAX_PAGES; page += 1) {
+      const payload = await api.inventoryPage({ offset, priority });
+      const rows = normalizeInventory(payload);
+      items.push(...rows);
+      const total = asInt(payload?._metadata?.total, 0);
+      offset += INVENTORY_PAGE_LIMIT;
+      if (!rows.length || rows.length < INVENTORY_PAGE_LIMIT || (total && offset >= total)) break;
+    }
+    Store.saveInventory(items);
+    return items;
+  }
+
+  // Stats, bonuses and rarity for owned copies, by uid, 25 per request.
+  async function loadItemDetails(uids, { priority = 110 } = {}) {
+    const wanted = Array.from(new Set(uids.map((uid) => asInt(uid)).filter(Boolean)));
+    const cache = Store.itemDetailsCache();
+    const result = new Map();
+    const missing = [];
+    wanted.forEach((uid) => {
+      const row = cache[uid];
+      if (row && Date.now() - asInt(row.savedAt) < ITEM_META_TTL_MS) result.set(uid, row);
+      else missing.push(uid);
+    });
+    for (let index = 0; index < missing.length; index += ITEM_DETAILS_BATCH) {
+      const batch = missing.slice(index, index + ITEM_DETAILS_BATCH);
+      try {
+        const payload = await api.itemDetails(batch, { priority });
+        const rows = normalizeItemDetails(payload);
+        Store.saveItemDetails(rows);
+        rows.forEach((row) => result.set(row.uid, row));
+      } catch (error) {
+        log("Item details batch failed", batch.length, error.message);
+        if (error?.tornCode === 2 || error?.tornCode === 16) throw error;
+      }
+    }
+    return result;
+  }
+
+  async function loadCityShops({ force = false, priority = 100 } = {}) {
+    const cached = Store.cityShops();
+    if (!force && cached && Date.now() - asInt(cached.savedAt) < CITY_SHOPS_TTL_MS) return cached.shops;
+    if (force) api.memoryCache.delete("/torn/cityshops");
+    const payload = await api.cityShops({ priority });
+    const shops = normalizeCityShops(payload);
+    Store.saveCityShops(shops);
+    return shops;
+  }
+
+  // Compact catalog of every item sold by a shop (Torn or abroad) or bought
+  // back by a Torn shop, from one daily /torn/items request. Only the fields
+  // the planner needs are persisted.
+  const FOREIGN_FALLBACK_CATEGORIES = Object.freeze(["Drug", "Flower", "Plushie", "Temporary", "Alcohol", "Other", "Clothing", "Jewelry", "Melee", "Primary", "Secondary", "Armor", "Defensive"]);
+
+  async function loadForeignCatalog({ force = false, priority = 30 } = {}) {
+    const cached = Store.foreignCatalog();
+    if (!force && cached && Date.now() - asInt(cached.savedAt) < FOREIGN_CATALOG_TTL_MS) return cached.items;
+    const reduce = (payload) => (Array.isArray(payload?.items) ? payload.items : [])
+      .map(normalizeItemMeta)
+      .filter((meta) => meta && meta.shops.length)
+      .map((meta) => ({ id: meta.id, name: meta.name, type: meta.type, isTradable: meta.isTradable, marketPrice: meta.marketPrice, shops: meta.shops }));
+    let items = [];
+    try {
+      items = reduce(await api.itemCatalog("All", { priority }));
+    } catch (error) {
+      log("Item catalog (All) failed", error.message);
+    }
+    if (!items.length) {
+      for (const category of FOREIGN_FALLBACK_CATEGORIES) {
+        try {
+          items.push(...reduce(await api.itemCatalog(category, { priority })));
+        } catch (error) {
+          log("Item catalog category failed", category, error.message);
+        }
+      }
+    }
+    if (items.length) Store.saveForeignCatalog(items);
+    return items.length ? items : (cached?.items || []);
+  }
+
+  async function loadAuctionListing(listingId, { priority = 80 } = {}) {
+    const payload = await api.auctionListing(listingId, { priority });
+    return normalizeAuctionListing(payload);
   }
 
   function snapshotCacheState(snapshot, nowMs = Date.now()) {
@@ -250,7 +379,16 @@
     if (path.endsWith("/amarket.php") || path.endsWith("amarket.php") || sid.includes("auction")) return "auction";
     if (sid === "travel" || path.endsWith("travelagency.php")) return "travel";
     if (path.endsWith("/item.php") || path.endsWith("item.php")) return "inventory";
+    if (path.endsWith("shops.php") || path.endsWith("bigalgunshop.php")) return "cityshop";
     return "other";
+  }
+
+  // Which Torn city shop the current page shows, when identifiable.
+  function currentCityShopName() {
+    const url = new URL(location.href);
+    if (url.pathname.toLowerCase().endsWith("bigalgunshop.php")) return CITY_SHOP_STEPS.bigalgunshop;
+    const step = String(url.searchParams.get("step") || "").toLowerCase();
+    return CITY_SHOP_STEPS[step] || "";
   }
 
   function getItemIdFromLocation() {

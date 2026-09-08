@@ -6,11 +6,16 @@
     // Museum context is one cheap batch shared by every plushie/flower row.
     let museumContext = new Map();
     try {
-      museumContext = await loadMuseumContext(items.map((item) => item.itemId), { priority: 140 });
+      museumContext = await loadMuseumContext(items.map((item) => item.itemId), { priority: 140, metadata });
     } catch (error) {
       log("Museum context unavailable", error.message);
     }
     if (detectSurface() !== surface || document.visibilityState !== "visible") return;
+
+    // Own Bazaar listings feed the sell-side (undercut) watch.
+    if (surface === "bazaar" && ownBazaar && !bazaarAddRouteActive()) {
+      recordSellWatch(items.filter((visible) => visible.price > 0 && !visible.bazaarAdd).map((visible) => ({ itemId: visible.itemId, name: visible.name, price: visible.price, amount: visible.quantity, venue: "Bazaar" })), "Bazaar", { prune: items.length < clamp(settings.scanMaxVisibleItems, 1, 50) });
+    }
 
     const tasks = items.map(async (visible, index) => {
       const priority = viewportPriority(visible, index);
@@ -30,6 +35,14 @@
           return;
         }
         const museum = museumContext.get(visible.itemId) || null;
+        const extras = { shopSell: shopSellFloor(meta), salesSummary: null };
+        if (surface === "auction" && settings.auctionEvidenceEnabled !== false && meta && metadataSupportsCommodity(meta)) {
+          try {
+            extras.salesSummary = stackableSalesSummary(await loadAuctionSales(visible.itemId, { priority: priority - 5 }));
+          } catch (error) {
+            log("Auction sales unavailable", visible.itemId, error.message);
+          }
+        }
 
         const bundle = await loadSnapshot(visible.itemId, {
           limit: API_LIST_LIMIT,
@@ -45,7 +58,8 @@
               cached.historyStats,
               ownBazaar,
               { stale: Boolean(cached.refreshing), cacheAgeSeconds: cached.cacheState?.ageSeconds },
-              museum
+              museum,
+              extras
             );
             renderInlineResult(surface, result, ownBazaar);
           }
@@ -61,8 +75,13 @@
         const result = resultForSurface(surface, visible, bundle.snapshot, bundle.historyStats, ownBazaar, {
           stale: false,
           cacheAgeSeconds: bundle.cacheState?.ageSeconds
-        }, museum);
+        }, museum, extras);
         renderInlineResult(surface, result, ownBazaar);
+        // Auction House equipment: price the exact copy (row stats or the
+        // listing endpoint) and derive a maximum rational bid.
+        if (surface === "auction" && bundle.snapshot?.equipment && settings.equipmentEnabled !== false) {
+          await annotateAuctionEquipment(visible, queueGroup, priority);
+        }
       } catch (error) {
         if (error?.marketEdgeCanceled) return;
         if (!renderedCached && visible.card?.isConnected) renderInlineError(visible, error.message);
@@ -77,6 +96,513 @@
 
     await Promise.allSettled(tasks);
     await scanExpandedEquipment(surface, ownBazaar);
+  }
+
+  // ---------------------------------------------------------------------------
+  // v0.4.0: Auction House equipment bids, browse-grid overlay, portfolio,
+  // shop runs, travel plan, repricing workbench and sell-side watch
+  // ---------------------------------------------------------------------------
+
+  async function annotateAuctionEquipment(visible, queueGroup, priority = 0) {
+    if (!visible?.card?.isConnected) return;
+    let copy = visible.copyHint || null;
+    let listing = null;
+    if (!copy && visible.listingId) {
+      try {
+        listing = await loadAuctionListing(visible.listingId, { priority });
+        if (listing?.itemId && listing.itemId !== visible.itemId) listing = null;
+        copy = listing?.copy || null;
+      } catch (error) {
+        log("Auction listing details unavailable", visible.listingId, error.message);
+      }
+    }
+    if (!copy || !visible.card?.isConnected || detectSurface() !== "auction") return;
+    try {
+      const [bundle, auctionSales] = await Promise.all([
+        loadSnapshot(visible.itemId, { limit: API_DEEP_LIMIT, priority, queueGroup }),
+        loadAuctionSales(visible.itemId, { priority })
+      ]);
+      if (!visible.card?.isConnected || detectSurface() !== "auction") return;
+      const guidance = equipmentBidGuidance({ snapshot: bundle.snapshot, copy, auctionSales, settings, currentBid: listing?.price || visible.price });
+      if (!guidance) return;
+      renderInlineResult("auction", { visible, snapshot: bundle.snapshot, auctionEquipment: guidance, renderMeta: { stale: false } }, false);
+    } catch (error) {
+      if (!error?.marketEdgeCanceled) log("Auction equipment guidance failed", visible.itemId, error.message);
+    }
+  }
+
+  // Item Market browse grid: every visible card compared with Torn's official
+  // market value from one batched metadata request. No order books.
+  let browseScanRunning = false;
+
+  async function scanBrowseGrid({ force = false } = {}) {
+    if (browseScanRunning || document.visibilityState !== "visible" || !Store.apiKey()) return;
+    if (detectSurface() !== "itemmarket" || getItemIdFromLocation()) return;
+    browseScanRunning = true;
+    try {
+      const items = collectVisibleItems({ requireMoney: true }).filter((visible) => {
+        if (!visible.card?.isConnected) return false;
+        const existing = visible.card.querySelector?.(`.me-inline-analysis[data-me-item-id="${visible.itemId}"]`);
+        if (force && existing) existing.remove();
+        return force || existing?.dataset?.meComplete !== "1";
+      });
+      if (!items.length) return;
+      const metadata = await loadItemMetadataBatch(items.map((item) => item.itemId), { priority: 130 });
+      if (detectSurface() !== "itemmarket" || getItemIdFromLocation()) return;
+      items.forEach((visible) => {
+        if (!visible.card?.isConnected) return;
+        const meta = metadata.get(visible.itemId);
+        if (!meta || !metadataSupportsCommodity(meta)) {
+          renderInlineHtml(visible, "", "GREY", "me-hidden");
+          return;
+        }
+        const browse = evaluateBrowseCard({ price: visible.price, marketPrice: meta.marketPrice, settings });
+        if (!browse) {
+          renderInlineHtml(visible, "", "GREY", "me-hidden");
+          return;
+        }
+        renderInlineResult("itemmarket", { visible, browse, renderMeta: { stale: false } }, false);
+      });
+    } catch (error) {
+      log("Browse grid overlay failed", error.message);
+    } finally {
+      browseScanRunning = false;
+    }
+  }
+
+  // Sell-side watch bookkeeping: remember the player's own listed prices per
+  // venue so the watch loop can warn when the Item Market floor undercuts them.
+  function recordSellWatch(entries, venue, { prune = true } = {}) {
+    if (settings.undercutAlerts === false || !Array.isArray(entries) || !entries.length) return;
+    const now = Math.floor(Date.now() / 1000);
+    const current = Store.sellWatch();
+    const byKey = new Map(current.map((entry) => [`${entry.venue}:${entry.itemId}`, entry]));
+    const seen = new Set();
+    entries.forEach((entry) => {
+      const itemId = asInt(entry.itemId, 0);
+      const price = asInt(entry.price, 0);
+      if (!itemId || price <= 0) return;
+      const key = `${venue}:${itemId}`;
+      seen.add(key);
+      const previous = byKey.get(key);
+      byKey.set(key, {
+        itemId,
+        venue,
+        name: entry.name || previous?.name || `Item ${itemId}`,
+        price,
+        amount: Math.max(1, asInt(entry.amount, 1)),
+        recordedAt: now,
+        // A new price resets the alert state; the same price keeps it.
+        lastAlertAt: previous && previous.price === price ? previous.lastAlertAt : 0,
+        lastFloor: previous && previous.price === price ? previous.lastFloor : null,
+        lastCheckedAt: previous?.lastCheckedAt || 0
+      });
+    });
+    // Listings of this venue that are no longer present were sold or removed,
+    // unless the caller only saw part of the page.
+    const next = Array.from(byKey.values()).filter((entry) => !prune || entry.venue !== venue || seen.has(`${entry.venue}:${entry.itemId}`));
+    Store.saveSellWatch(next);
+  }
+
+  async function sellWatchTick() {
+    if (settings.undercutAlerts === false) return;
+    const entries = Store.sellWatch();
+    if (!entries.length || !Store.apiKey()) return;
+    for (const entry of entries) {
+      if (document.visibilityState !== "visible") break;
+      try {
+        const bundle = await loadSnapshot(entry.itemId, { limit: API_LIST_LIMIT, priority: -60, queueGroup: "watch" });
+        const outcome = evaluateSellWatch(entry, bundle.snapshot);
+        entry.lastCheckedAt = Math.floor(Date.now() / 1000);
+        if (outcome.shouldAlert) {
+          entry.lastAlertAt = Math.floor(Date.now() / 1000);
+          showToast(`Undercut: <strong>${escapeHtml(entry.name)}</strong> on your ${entry.venue === "IM" ? "Item Market" : "Bazaar"} at ${formatMoney(entry.price)}; the Item Market floor is now ${formatMoney(outcome.floor)} (${outcome.cheaperQuantity.toLocaleString("en-US")} units cheaper). <a href="${itemMarketLink(entry.itemId, entry.name)}">Open market</a>`);
+        }
+        entry.lastFloor = outcome.floor;
+      } catch (error) {
+        if (!error?.marketEdgeCanceled) log("Sell watch check failed", entry.itemId, error.message);
+      }
+    }
+    Store.saveSellWatch(entries);
+  }
+
+  // Fill every visible Bazaar row (add form or manage view) that carries a
+  // Market Edge suggestion. Fields only: Torn's save/add buttons stay manual.
+  function fillAllVisiblePrices() {
+    let filled = 0;
+    document.querySelectorAll(".me-inline-analysis .me-bazaar-fill-btn").forEach((button) => {
+      if (!(button instanceof HTMLElement) || !button.isConnected || typeof button.meFill !== "function") return;
+      button.meFill();
+      filled += 1;
+    });
+    if (filled) showToast(`Filled ${filled} price field${filled === 1 ? "" : "s"}. Review them, then use Torn's own button to save.`, { timeoutMs: 8000 });
+    else showToast("No Market Edge price suggestions with a fill control are visible on this page.", { timeoutMs: 6000 });
+    return filled;
+  }
+
+  // Portfolio: every owned item through the official API, valued without
+  // reading the page. Quick pass from market values, then order-book
+  // refinement for the most valuable commodities and uid-based pricing for
+  // equipment copies.
+  const portfolioState = { rows: [], refining: false, refinedIds: new Set(), pricedUids: new Set(), loadedAt: 0 };
+
+  function portfolioRowHtml(row) {
+    const unit = Number.isFinite(row.unitNet) && row.unitNet > 0 ? formatMoney(row.unitNet) : "-";
+    const total = Number.isFinite(row.unitNet) && row.unitNet > 0 ? formatMoney(row.unitNet * row.amount) : "-";
+    const flags = [
+      row.untradable ? `<span class="me-pill GREY" title="Not tradable">untradable</span>` : "",
+      row.equipped ? `<span class="me-pill GREY" title="Currently equipped">equipped</span>` : "",
+      row.source === "order book" ? `<span class="me-pill GREEN" title="Valued from the live order book">book</span>` : (row.source === "comparables" ? `<span class="me-pill GREEN" title="Priced from comparable listings and ended auctions">comps</span>` : ""),
+      row.museum ? `<span class="me-pill YELLOW" title="${escapeHtml(row.museum)}">museum</span>` : ""
+    ].filter(Boolean).join(" ");
+    const name = `<a href="${itemMarketLink(row.itemId, row.name)}" style="color:inherit">${escapeHtml(row.name)}</a>${row.copyLabel ? ` <span class="me-inline-secondary">${escapeHtml(row.copyLabel)}</span>` : ""}`;
+    return `<tr title="${escapeHtml(row.note || "")}"><td>${name} ${flags}</td><td>${row.amount.toLocaleString("en-US")}</td><td>${unit}</td><td>${escapeHtml(row.route || "-")}</td><td>${total}</td></tr>`;
+  }
+
+  function portfolioHtml(rows, { status = "" } = {}) {
+    const summary = summarizePortfolio(rows);
+    const sorted = rows.slice().sort((a, b) => ((b.unitNet || 0) * b.amount) - ((a.unitNet || 0) * a.amount));
+    const routeRows = Object.entries(summary.byRoute).sort((a, b) => b[1] - a[1]).map(([route, value]) => [route, formatMoney(value)]);
+    return `
+      <div class="me-kicker">Portfolio (official inventory)</div>
+      ${metricRows([
+        ["Sellable value (net)", `<span title="${formatMoney(summary.total, true)}">${formatMoney(summary.total)}</span>`],
+        ["Rows valued / pending", `${summary.valuedRows} / ${summary.unvaluedRows}`],
+        ["Untradable / equipped", `${summary.untradable} / ${summary.equipped}`],
+        ...routeRows
+      ])}
+      ${status ? `<div class="me-note me-learning">${escapeHtml(status)}</div>` : ""}
+      <table class="me-table">
+        <thead><tr><th>Item</th><th>Qty</th><th>Unit net</th><th>Route</th><th>Total</th></tr></thead>
+        <tbody>${sorted.slice(0, 80).map(portfolioRowHtml).join("")}</tbody>
+      </table>
+      ${sorted.length > 80 ? `<div class="me-note">Showing the 80 most valuable rows of ${sorted.length}.</div>` : ""}
+      <div class="me-actions">
+        <button class="me-btn me-portfolio-refine" type="button" title="Fetch order books for the most valuable commodities and price equipment copies by uid">Refine (${Math.max(1, asInt(settings.portfolioRefineRequests, PORTFOLIO_REFINE_DEFAULT))} requests)</button>
+        <button class="me-btn me-portfolio-reload" type="button">Reload inventory</button>
+      </div>
+      ${panelToolbarHtml()}
+      <div class="me-note">Quick values come from Torn's official market value with a ${((clamp(settings.safetyHaircut + 0.02, 0, 0.10)) * 100).toFixed(1)}% haircut and the fee model. Refine replaces them with order-book exits (commodities) and comparable pricing per copy (weapons/armor, via each copy's uid). Torn caches the inventory selection for one hour. Nothing is listed or sold.</div>`;
+  }
+
+  async function buildPortfolioRows(items) {
+    const ids = Array.from(new Set(items.map((item) => item.itemId)));
+    let metadata = new Map();
+    for (let index = 0; index < ids.length; index += 100) {
+      try {
+        const batch = await loadItemMetadataBatch(ids.slice(index, index + 100), { priority: 120 });
+        batch.forEach((meta, id) => metadata.set(id, meta));
+      } catch (error) {
+        log("Portfolio metadata batch failed", error.message);
+      }
+    }
+    let museumContext = new Map();
+    try {
+      museumContext = await loadMuseumContext(ids, { priority: 100, metadata });
+    } catch (error) {
+      log("Portfolio museum context unavailable", error.message);
+    }
+    const rows = [];
+    const stackable = new Map();
+    items.forEach((item) => {
+      const meta = metadata.get(item.itemId) || null;
+      const equipment = meta ? !metadataSupportsCommodity(meta) : Boolean(item.uid);
+      if (equipment) {
+        rows.push({
+          key: `uid:${item.uid || item.itemId}:${rows.length}`,
+          itemId: item.itemId,
+          uid: item.uid,
+          name: item.name || meta?.name || `Item ${item.itemId}`,
+          amount: item.amount,
+          equipped: item.equipped,
+          untradable: meta ? meta.isTradable === false : false,
+          equipment: true,
+          unitNet: asInt(meta?.marketPrice, 0) ? officialExit(meta.marketPrice, settings).bazaarSuggestedPrice : null,
+          route: asInt(meta?.marketPrice, 0) ? "Bazaar (plain est.)" : "-",
+          source: "official",
+          note: "Plain-copy estimate until refined by uid."
+        });
+        return;
+      }
+      const existing = stackable.get(item.itemId);
+      if (existing) {
+        existing.amount += item.amount;
+        existing.equipped = existing.equipped || item.equipped;
+        return;
+      }
+      const museum = museumContext.get(item.itemId) || null;
+      const shopSell = shopSellFloor(meta);
+      const exit = officialExit(meta?.marketPrice, settings);
+      const routes = exit ? routeEconomics(exit, 1, settings, { museum, shopSell: shopSell?.price, shopLabel: shopSell?.label }) : null;
+      const row = {
+        key: `item:${item.itemId}`,
+        itemId: item.itemId,
+        name: item.name || meta?.name || `Item ${item.itemId}`,
+        amount: item.amount,
+        equipped: item.equipped,
+        untradable: meta ? meta.isTradable === false : false,
+        equipment: false,
+        marketPrice: asInt(meta?.marketPrice, 0),
+        museum: museum?.complete ? `${museum.label}: implied ${formatMoney(museum.impliedValue, true)}` : "",
+        shopSell,
+        museumValuation: museum,
+        unitNet: routes ? routes.bestNetPerUnit : null,
+        route: routes ? routes.bestRoute : "-",
+        source: "official",
+        note: routes ? `Quick value from Torn market value ${formatMoney(meta?.marketPrice, true)}` : "No official market value"
+      };
+      stackable.set(item.itemId, row);
+      rows.push(row);
+    });
+    return rows;
+  }
+
+  async function refinePortfolio(render) {
+    if (portfolioState.refining) return;
+    portfolioState.refining = true;
+    const budget = Math.max(1, asInt(settings.portfolioRefineRequests, PORTFOLIO_REFINE_DEFAULT));
+    let used = 0;
+    try {
+      // Commodities first, most valuable rows first.
+      const commodities = portfolioState.rows
+        .filter((row) => !row.equipment && !row.untradable && !portfolioState.refinedIds.has(row.itemId) && (row.unitNet || 0) * row.amount > 0)
+        .sort((a, b) => ((b.unitNet || 0) * b.amount) - ((a.unitNet || 0) * a.amount));
+      for (const row of commodities) {
+        if (used >= budget) break;
+        try {
+          const bundle = await loadSnapshot(row.itemId, { limit: API_LIST_LIMIT, priority: 90, queueGroup: "portfolio" });
+          used += bundle.source === "api" ? 1 : 0;
+          const estimate = estimateInventoryExit({ quantity: row.amount, snapshot: bundle.snapshot, historyStats: bundle.historyStats, settings, museum: row.museumValuation, shopSell: row.shopSell?.price });
+          if (estimate) {
+            row.unitNet = estimate.routes.bestNetPerUnit;
+            row.route = estimate.routes.bestRoute;
+            row.source = "order book";
+            row.note = `Order book: floor ${formatMoney(bundle.snapshot.lowestPrice, true)}, anchor ${formatMoney(bundle.snapshot.calculatedMarketAnchor, true)}`;
+          }
+          portfolioState.refinedIds.add(row.itemId);
+        } catch (error) {
+          if (error?.marketEdgeCanceled) return;
+          log("Portfolio refine failed", row.itemId, error.message);
+        }
+        render(`Refining... ${used}/${budget} requests used`);
+      }
+      // Equipment copies by uid: details in batches of 25, then one deep
+      // order book and one sales request per item type.
+      const copies = portfolioState.rows.filter((row) => row.equipment && row.uid && !portfolioState.pricedUids.has(row.uid) && !row.untradable);
+      if (copies.length && used < budget) {
+        const details = await loadItemDetails(copies.map((row) => row.uid), { priority: 85 });
+        used += Math.ceil(copies.length / ITEM_DETAILS_BATCH);
+        const byItem = new Map();
+        copies.forEach((row) => {
+          if (!byItem.has(row.itemId)) byItem.set(row.itemId, []);
+          byItem.get(row.itemId).push(row);
+        });
+        for (const [itemId, group] of byItem.entries()) {
+          if (used >= budget) break;
+          try {
+            const [bundle, auctionSales] = await Promise.all([
+              loadSnapshot(itemId, { limit: API_DEEP_LIMIT, priority: 80, queueGroup: "portfolio" }),
+              loadAuctionSales(itemId, { priority: 80 })
+            ]);
+            used += 2;
+            group.forEach((row) => {
+              const copy = details.get(row.uid);
+              if (!copy) return;
+              const pricing = priceOwnedEquipment({ snapshot: bundle.snapshot, copy, auctionSales, settings });
+              portfolioState.pricedUids.add(row.uid);
+              if (!pricing) return;
+              const bazaar = asInt(pricing.bazaarSuggested, 0);
+              const im = asInt(pricing.itemMarketNet, 0);
+              row.unitNet = Math.max(bazaar, im);
+              row.route = bazaar >= im ? "Bazaar" : "Item Market";
+              row.source = "comparables";
+              row.copyLabel = copyLabelFor(copy);
+              row.note = `${pricing.comparableCount || 0} comparable listings, ${pricing.salesCount || 0} ended auctions${pricing.thinEvidence ? "; thin evidence" : ""}`;
+            });
+          } catch (error) {
+            if (error?.marketEdgeCanceled) return;
+            log("Portfolio equipment refine failed", itemId, error.message);
+          }
+          render(`Refining equipment... ${Math.min(used, budget)}/${budget} requests used`);
+        }
+      }
+    } finally {
+      portfolioState.refining = false;
+      render(used >= budget ? `Refine budget reached (${budget}). Press Refine again for more.` : "");
+    }
+  }
+
+  async function renderPortfolioPanel({ reload = false } = {}) {
+    ui.pinned = true;
+    ensureUi();
+    ui.currentPanel = "portfolio";
+    if (!Store.apiKey()) {
+      errorPanel("Add a Torn API key to value your inventory.");
+      return;
+    }
+    const keyInfo = Store.keyInfo()?.info || null;
+    const allowed = keySupports(keyInfo, { section: "user", selection: "inventory", minimumType: "Minimal Access" });
+    if (allowed === false) {
+      setPanel(`<div class="me-kicker">Portfolio</div><div class="me-error">This panel needs at least a Minimal access API key (user -> inventory). The current key is ${escapeHtml(keyInfo?.access?.type || "lower access")}.</div>${panelToolbarHtml()}`);
+      bindPanelToolbar();
+      return;
+    }
+    const render = (status = "") => {
+      if (!ui.root?.isConnected || ui.currentPanel !== "portfolio") return;
+      setPanel(portfolioHtml(portfolioState.rows, { status }), "PORTFOLIO");
+      ui.body.querySelector(".me-portfolio-refine")?.addEventListener("click", () => refinePortfolio(render));
+      ui.body.querySelector(".me-portfolio-reload")?.addEventListener("click", () => renderPortfolioPanel({ reload: true }));
+      bindPanelToolbar();
+    };
+    setPanel(`<div class="me-kicker">Portfolio</div><div class="me-note">Loading your inventory through the official API...</div>`, "API");
+    try {
+      const items = await loadInventory({ force: reload, priority: 150 });
+      if (!items.length) {
+        setPanel(`<div class="me-kicker">Portfolio</div><div class="me-note">Torn returned no inventory items for this key.</div>${panelToolbarHtml()}`);
+        bindPanelToolbar();
+        return;
+      }
+      portfolioState.rows = await buildPortfolioRows(items);
+      portfolioState.refinedIds = new Set();
+      portfolioState.pricedUids = new Set();
+      portfolioState.loadedAt = Date.now();
+      render("Quick values ready. Refine for order-book and per-copy pricing.");
+    } catch (error) {
+      errorPanel(describeApiError(error, { feature: "The portfolio panel" }).replace("Limited access", "Minimal access"));
+      bindPanelToolbar();
+    }
+  }
+
+  // City shop runs: official stock and prices against market exits.
+  async function renderShopRunsPanel({ reload = false } = {}) {
+    ui.pinned = true;
+    ensureUi();
+    ui.currentPanel = "shops";
+    if (!Store.apiKey()) {
+      errorPanel("Add a Torn API key to price city shop stock.");
+      return;
+    }
+    setPanel(`<div class="me-kicker">City shop runs</div><div class="me-note">Loading shop stock...</div>`, "API");
+    try {
+      const shops = await loadCityShops({ force: reload, priority: 150 });
+      const currentShop = detectSurface() === "cityshop" ? currentCityShopName() : "";
+      const scoped = currentShop ? shops.filter((shop) => shop.name === currentShop) : shops;
+      const shopItems = (scoped.length ? scoped : shops).flatMap((shop) => shop.items.map((item) => ({ ...item, shopName: shop.name })));
+      const ids = Array.from(new Set(shopItems.map((item) => item.itemId)));
+      const metadata = new Map();
+      for (let index = 0; index < ids.length; index += 100) {
+        try {
+          (await loadItemMetadataBatch(ids.slice(index, index + 100), { priority: 140 })).forEach((meta, id) => metadata.set(id, meta));
+        } catch (error) {
+          log("Shop metadata batch failed", error.message);
+        }
+      }
+      let museumContext = new Map();
+      try {
+        museumContext = await loadMuseumContext(ids, { priority: 120, metadata });
+      } catch (error) {
+        log("Shop museum context unavailable", error.message);
+      }
+      const evaluations = shopItems.map((shopItem) => {
+        const meta = metadata.get(shopItem.itemId) || null;
+        if (!meta || !metadataSupportsCommodity(meta) || meta.isTradable === false) return null;
+        const { exit } = bestAvailableExit({ snapshot: Store.snapshot(shopItem.itemId), historyStats: null, marketPrice: meta.marketPrice, settings });
+        const evaluation = evaluateShopRun({ shopItem, exit, settings, museum: museumContext.get(shopItem.itemId) || null, shopSell: shopSellFloor(meta) });
+        return evaluation ? { ...evaluation, shopName: shopItem.shopName } : null;
+      }).filter(Boolean).sort((a, b) => b.expectedProfit - a.expectedProfit);
+      const profitable = evaluations.filter((row) => row.profitPerUnit > 0);
+      const rows = (profitable.length ? profitable : evaluations.slice(0, 15)).slice(0, 40);
+      const qty = Math.max(1, asInt(settings.shopRunQuantity, 100));
+      setPanel(`
+        <div class="me-kicker">City shop runs${currentShop ? ` - ${escapeHtml(currentShop)}` : ""}</div>
+        ${metricRows([
+          ["Shops / items scanned", `${(scoped.length ? scoped : shops).length} / ${shopItems.length}`],
+          ["Profitable after fees", String(profitable.length)],
+          ["Quantity per run", `${qty} (capped by stock)`]
+        ])}
+        <table class="me-table">
+          <thead><tr><th>Item</th><th>Shop</th><th>Buy</th><th>Stock</th><th>Net/unit</th><th>Run</th></tr></thead>
+          <tbody>${rows.map((row) => `<tr class="${row.state}" title="Exit via ${escapeHtml(row.routes.bestRoute)}; ROI ${(row.roi * 100).toFixed(1)}%; capital ${formatMoney(row.capitalRequired, true)}">
+            <td><a href="${itemMarketLink(row.itemId, row.name)}" style="color:inherit">${escapeHtml(row.name)}</a></td>
+            <td>${escapeHtml(row.shopName)}</td>
+            <td>${formatMoney(row.buyPrice)}</td>
+            <td class="${row.outOfStock ? "me-bad" : ""}">${row.stock.toLocaleString("en-US")}</td>
+            <td class="${row.profitPerUnit > 0 ? "me-good" : "me-bad"}">${row.profitPerUnit >= 0 ? "+" : ""}${formatMoney(row.profitPerUnit)}</td>
+            <td>${row.expectedProfit >= 0 ? "+" : ""}${formatMoney(row.expectedProfit)} x${row.quantity}</td>
+          </tr>`).join("")}</tbody>
+        </table>
+        <div class="me-actions"><button class="me-btn me-shops-reload" type="button">Refresh stock</button></div>
+        ${panelToolbarHtml()}
+        <div class="me-note">Stock and prices come from the official city shop endpoint (cached five minutes). Exits use the live order book when Market Edge has seen the item recently, otherwise Torn's market value with an extra haircut. Museum and sell-to-shop routes are included. Buying stays manual.</div>
+      `, "SHOPS");
+      ui.body.querySelector(".me-shops-reload")?.addEventListener("click", () => renderShopRunsPanel({ reload: true }));
+      bindPanelToolbar();
+    } catch (error) {
+      errorPanel(describeApiError(error, { feature: "The shop runs panel" }));
+      bindPanelToolbar();
+    }
+  }
+
+  // Travel plan: official foreign shop prices ranked by profit per trip.
+  async function renderTravelPlanPanel({ reload = false } = {}) {
+    ui.pinned = true;
+    ensureUi();
+    ui.currentPanel = "travel";
+    if (!Store.apiKey()) {
+      errorPanel("Add a Torn API key to plan a trip.");
+      return;
+    }
+    setPanel(`<div class="me-kicker">Travel plan</div><div class="me-note">Loading foreign shop prices (one catalog request, cached six hours)...</div>`, "API");
+    try {
+      const catalog = await loadForeignCatalog({ force: reload, priority: 150 });
+      const offers = foreignOffers(catalog).filter((offer) => offer.isTradable);
+      if (!offers.length) {
+        setPanel(`<div class="me-kicker">Travel plan</div><div class="me-note">No foreign shop prices were returned by the item catalog.</div>${panelToolbarHtml()}`);
+        bindPanelToolbar();
+        return;
+      }
+      const metaById = new Map(catalog.map((meta) => [meta.id, meta]));
+      let museumContext = new Map();
+      try {
+        museumContext = await loadMuseumContext(Array.from(new Set(offers.map((offer) => offer.itemId))), { priority: 120, metadata: metaById });
+      } catch (error) {
+        log("Travel museum context unavailable", error.message);
+      }
+      const capacity = Math.max(0, asInt(settings.travelCapacity, 0));
+      const evaluations = offers.map((offer) => {
+        const meta = metaById.get(offer.itemId);
+        if (meta && isEquipmentType(meta.type)) return null;
+        const { exit } = bestAvailableExit({ snapshot: Store.snapshot(offer.itemId), historyStats: null, marketPrice: offer.marketPrice, settings });
+        return evaluateForeignOffer({ offer, exit, settings, capacity, museum: museumContext.get(offer.itemId) || null, shopSell: shopSellFloor(meta) });
+      }).filter(Boolean);
+      const plan = rankTravelPlan(evaluations, { perCountry: 4 });
+      const countryHtml = plan.map((entry) => `
+        <div class="me-kicker" style="margin-top:8px">${escapeHtml(entry.country)} - best ${escapeHtml(entry.best.name)} ${entry.best.profitPerUnit >= 0 ? "+" : ""}${formatMoney(entry.best.profitPerUnit)} ea${capacity ? `, ${formatMoney(entry.best.perTrip)} per trip` : ""}</div>
+        <table class="me-table"><tbody>${entry.rows.map((row) => `<tr class="${row.state}" title="Exit via ${escapeHtml(row.routes.bestRoute)}; ROI ${(row.roi * 100).toFixed(1)}%${capacity ? `; cash needed ${formatMoney(row.cashNeeded, true)}` : ""}">
+          <td><a href="${itemMarketLink(row.itemId, row.name)}" style="color:inherit">${escapeHtml(row.name)}</a></td>
+          <td>${escapeHtml(row.shop || "")}</td>
+          <td>${formatMoney(row.buyPrice)}</td>
+          <td class="${row.profitPerUnit > 0 ? "me-good" : ""}">${row.profitPerUnit >= 0 ? "+" : ""}${formatMoney(row.profitPerUnit)} ea</td>
+          ${capacity ? `<td>${formatMoney(row.perTrip)}</td>` : ""}
+        </tr>`).join("")}</tbody></table>`).join("");
+      setPanel(`
+        <div class="me-kicker">Travel plan (official prices)</div>
+        ${metricRows([
+          ["Countries with profitable stock", String(plan.length)],
+          ["Capacity used", capacity ? `${capacity} items per trip` : "not set (per-item only)"],
+          ["Offers evaluated", String(evaluations.length)]
+        ])}
+        ${countryHtml || `<div class="me-note">No foreign offer beats the market after fees right now.</div>`}
+        <div class="me-actions"><button class="me-btn me-travel-reload" type="button">Refresh catalog</button></div>
+        ${panelToolbarHtml()}
+        <div class="me-note">Prices are Torn's official shop prices per country; the official API has no foreign stock, so an item may be sold out or repriced abroad (Patch #413 varies drug and contraband prices). Set your travel capacity in settings for per-trip totals. Exits use recent order books when available, otherwise Torn's market value with an extra haircut.</div>
+      `, "TRAVEL");
+      ui.body.querySelector(".me-travel-reload")?.addEventListener("click", () => renderTravelPlanPanel({ reload: true }));
+      bindPanelToolbar();
+    } catch (error) {
+      errorPanel(describeApiError(error, { feature: "The travel plan" }));
+      bindPanelToolbar();
+    }
   }
 
   function describeNode(node) {
@@ -304,20 +830,37 @@
     const stateClass = evaluation.status === "UNDERCUT" ? "RED" : evaluation.status === "CLOSE" ? "YELLOW" : evaluation.status === "CHEAPEST" ? "GREEN" : "GREY";
     const floor = evaluation.floor ? formatMoney(evaluation.floor) : "-";
     const ahead = evaluation.status === "CHEAPEST" ? "0" : `${evaluation.cheaperQuantity.toLocaleString("en-US")}`;
-    const suggestion = evaluation.suggestedPrice ? formatMoney(evaluation.suggestedPrice) : "-";
     const versus = Number.isFinite(evaluation.versusAverage) ? `${evaluation.versusAverage >= 0 ? "+" : ""}${(evaluation.versusAverage * 100).toFixed(1)}%` : "-";
     const title = [
       `Net after ${evaluation.feeBps / 100}% fees: ${formatMoney(evaluation.net, true)}`,
       `Versus Torn daily average: ${versus}`,
       evaluation.note
     ].filter(Boolean).join("\n");
-    return `<tr class="${stateClass}" title="${escapeHtml(title)}">
+    // Repricing workbench: the item's rule decides which suggestion is filled.
+    const rule = Store.pricingRules()[listing.itemId] || null;
+    const fill = applyPricingRule({ rule, floorSuggestion: evaluation.suggestedPrice, anchorSuggestion: evaluation.anchorPrice || null });
+    const fillText = fill.price ? formatMoney(fill.price) : (fill.reason === "held by rule" ? "hold" : "-");
+    const fillTitle = fill.price
+      ? `Fill Torn's price field for this listing with ${formatMoney(fill.price, true)} (${fill.mode}${fill.clamped ? ", raised to your minimum" : ""}). Saving stays manual.`
+      : `No fill: ${fill.reason}`;
+    const alreadyThere = fill.price && fill.price === listing.price;
+    return `<tr class="${stateClass}" data-listing-id="${listing.listingId}" data-item-id="${listing.itemId}" title="${escapeHtml(title)}">
       <td>${name}${anonymous}</td>
       <td>${listing.amount}</td>
       <td>${formatMoney(listing.price)}</td>
       <td title="Cheapest listing on the Item Market">${floor}</td>
       <td title="Units listed cheaper than yours">${ahead}</td>
-      <td><span class="me-pill ${stateClass}">${evaluation.status}</span>${evaluation.suggestedPrice ? ` <span class="me-inline-secondary" title="Floor minus your configured undercut">${suggestion}</span>` : ""}</td>
+      <td><span class="me-pill ${stateClass}">${evaluation.status}</span></td>
+      <td class="me-workbench-cell">
+        <span class="me-inline-secondary" title="${escapeHtml(fillTitle)}">${fillText}</span>
+        ${fill.price && !alreadyThere ? `<button class="me-btn me-listing-fill" type="button" data-price="${fill.price}" title="${escapeHtml(fillTitle)}">^</button>` : ""}
+        <select class="me-inline-input me-rule-mode" title="Pricing rule for this item">
+          <option value="undercut" ${(rule?.mode || "undercut") === "undercut" ? "selected" : ""}>undercut floor</option>
+          <option value="anchor" ${rule?.mode === "anchor" ? "selected" : ""}>hold anchor</option>
+          <option value="hold" ${rule?.mode === "hold" ? "selected" : ""}>never fill</option>
+        </select>
+        <input class="me-inline-input me-rule-min" type="number" min="0" placeholder="min $" title="Never fill below this price" value="${rule?.minPrice || ""}">
+      </td>
     </tr>`;
   }
 
@@ -337,12 +880,60 @@
         ["Cheapest / close / undercut", `${cheapest} / ${close} / ${undercut}`]
       ])}
       <table class="me-table">
-        <thead><tr><th>Item</th><th>Qty</th><th>Yours</th><th>Floor</th><th>Ahead</th><th>Status</th></tr></thead>
+        <thead><tr><th>Item</th><th>Qty</th><th>Yours</th><th>Floor</th><th>Ahead</th><th>Status</th><th>Fill / rule</th></tr></thead>
         <tbody>${listings.map((listing) => ownListingRowHtml(listing, evaluations.get(listing.listingId))).join("")}</tbody>
       </table>
-      <div class="me-actions"><button class="me-btn me-refresh-listings" type="button">Refresh</button></div>
+      <div class="me-actions">
+        <button class="me-btn me-refresh-listings" type="button">Refresh</button>
+        <button class="me-btn me-fill-all-listings" type="button" title="Fill every matching price field Torn shows on this page (fields only; saving stays manual)">Fill all on page</button>
+      </div>
+      <div class="me-note me-workbench-status"></div>
       ${panelToolbarHtml()}
-      <div class="me-note">Floor comes from the official Item Market order book. "Ahead" counts units listed below your price. Suggested prices are floor minus your configured undercut; they are never applied automatically. Anonymous listings pay 15% total in fees${settings.anonymousFeeWaived ? " (waived by your company perk)" : ""}.</div>`;
+      <div class="me-note">Floor comes from the official Item Market order book. "Ahead" counts units listed below your price. Fill values are floor minus your configured undercut (or the anchor target, per the item's rule) and are written into Torn's price fields only when you press ^ or "Fill all"; Torn's save button stays manual. Rules persist per item. Anonymous listings pay 15% total in fees${settings.anonymousFeeWaived ? " (waived by your company perk)" : ""}. ${settings.undercutAlerts !== false ? "These listings are watched for undercuts while a Torn tab is visible." : ""}</div>`;
+  }
+
+  // Fill Torn's price field for one own listing when the page shows it.
+  function fillOwnListingOnPage(itemId, price) {
+    const rows = collectOwnListingRows().filter((row) => row.itemId === asInt(itemId));
+    if (!rows.length) return { filled: 0, reason: "This listing's price field is not on the current page (open your listings in Torn's manage view)." };
+    let filled = 0;
+    rows.forEach((row) => { if (setBazaarInputValue(row.priceInput, price)) filled += 1; });
+    return { filled, reason: filled ? "" : "Torn's price field rejected the value." };
+  }
+
+  function bindOwnListingsWorkbench(listings, evaluations, rerender) {
+    const body = ui.body;
+    if (!body) return;
+    const status = body.querySelector(".me-workbench-status");
+    const setStatus = (text) => { if (status) status.textContent = text; };
+    body.querySelectorAll(".me-listing-fill").forEach((button) => {
+      button.addEventListener("click", () => {
+        const row = button.closest("tr");
+        const outcome = fillOwnListingOnPage(row?.dataset?.itemId, asInt(button.dataset.price, 0));
+        setStatus(outcome.filled ? `Filled ${outcome.filled} field(s) with ${formatMoney(asInt(button.dataset.price, 0), true)}. Save in Torn when ready.` : outcome.reason);
+      });
+    });
+    body.querySelector(".me-fill-all-listings")?.addEventListener("click", () => {
+      let filled = 0;
+      let missing = 0;
+      body.querySelectorAll(".me-listing-fill").forEach((button) => {
+        const row = button.closest("tr");
+        const outcome = fillOwnListingOnPage(row?.dataset?.itemId, asInt(button.dataset.price, 0));
+        if (outcome.filled) filled += outcome.filled;
+        else missing += 1;
+      });
+      setStatus(`Filled ${filled} field(s)${missing ? `; ${missing} listing(s) not found on this page` : ""}. Save in Torn when ready.`);
+    });
+    const saveRule = (row) => {
+      const itemId = asInt(row?.dataset?.itemId, 0);
+      if (!itemId) return;
+      const mode = row.querySelector(".me-rule-mode")?.value || "undercut";
+      const minPrice = asInt(row.querySelector(".me-rule-min")?.value, 0);
+      Store.savePricingRule(itemId, mode === "undercut" && !minPrice ? null : { mode, minPrice });
+      rerender();
+    };
+    body.querySelectorAll(".me-rule-mode").forEach((select) => select.addEventListener("change", () => saveRule(select.closest("tr"))));
+    body.querySelectorAll(".me-rule-min").forEach((input) => input.addEventListener("change", () => saveRule(input.closest("tr"))));
   }
 
   async function renderOwnListingsPanel({ force = false } = {}) {
@@ -370,8 +961,11 @@
         if (!ui.root?.isConnected) return;
         setPanel(ownListingsHtml(listings, evaluations), "LISTINGS");
         ui.body.querySelector(".me-refresh-listings")?.addEventListener("click", () => renderOwnListingsPanel({ force: true }));
+        bindOwnListingsWorkbench(listings, evaluations, render);
         bindPanelToolbar();
       };
+      // Own Item Market prices feed the sell-side (undercut) watch.
+      recordSellWatch(listings.filter((listing) => !listing.equipment).map((listing) => ({ itemId: listing.itemId, name: listing.name, price: listing.price, amount: listing.amount, venue: "IM" })), "IM", { prune: listings.length < OWN_LISTINGS_MAX });
       if (!listings.length) {
         setPanel(`<div class="me-kicker">Your Item Market listings</div><div class="me-note">No active Item Market listings were returned for this key.</div>${panelToolbarHtml()}`);
         bindPanelToolbar();
@@ -387,7 +981,10 @@
         }
         try {
           const bundle = await loadSnapshot(listing.itemId, { limit: API_LIST_LIMIT, priority: 150 - index, queueGroup: "listings" });
-          evaluations.set(listing.listingId, evaluateOwnListing(listing, bundle.snapshot, settings));
+          const evaluation = evaluateOwnListing(listing, bundle.snapshot, settings);
+          const exit = calculateExit({ snapshot: bundle.snapshot, historyStats: bundle.historyStats, settings });
+          evaluation.anchorPrice = exit?.itemMarketSuggestedPrice || null;
+          evaluations.set(listing.listingId, evaluation);
         } catch (error) {
           evaluations.set(listing.listingId, { status: "ERROR", floor: null, cheaperQuantity: 0, net: 0, feeBps: ITEM_MARKET_FEE_BPS, note: error.message, suggestedPrice: null, versusAverage: null });
         }
@@ -446,7 +1043,8 @@
     if (!settings.watchlistEnabled || watchRunning) return;
     if (document.visibilityState !== "visible") return;
     const entries = Store.watchlist();
-    if (!entries.length || !Store.apiKey()) return;
+    if (!Store.apiKey()) return;
+    if (!entries.length && (settings.undercutAlerts === false || !Store.sellWatch().length)) return;
     const intervalMs = Math.max(WATCHLIST_MIN_INTERVAL_SEC, asInt(settings.watchlistIntervalSeconds, DEFAULTS.watchlistIntervalSeconds)) * 1000;
     if (!force && Date.now() - watchLastPollAt < intervalMs) return;
     watchLastPollAt = Date.now();
@@ -469,6 +1067,7 @@
       }
       Store.saveWatchlist(entries);
       if (ui.currentPanel === "watchlist" && ui.root?.isConnected) renderWatchlistPanel({ refresh: false });
+      await sellWatchTick();
     } finally {
       watchRunning = false;
     }
@@ -501,9 +1100,22 @@
         <span class="me-watch-remove" role="button" title="Remove">X</span>
       </div>`;
     }).join("");
+    const sellEntries = Store.sellWatch();
+    const sellRows = sellEntries.map((entry) => {
+      const undercut = entry.lastFloor && entry.lastFloor < entry.price;
+      return `<div class="me-watch-row" data-sell-key="${entry.venue}:${entry.itemId}">
+        <span class="me-watch-name"><a href="${itemMarketLink(entry.itemId, entry.name)}" style="color:inherit">${escapeHtml(entry.name)}</a> <span class="me-inline-secondary">${entry.venue}</span></span>
+        <span title="Your listed price">${formatMoney(entry.price)}</span>
+        <span class="${undercut ? "me-bad" : "me-inline-secondary"}" title="Last observed Item Market floor">${entry.lastFloor ? formatMoney(entry.lastFloor) : "-"}</span>
+        <span class="me-inline-secondary" title="Last checked">${entry.lastCheckedAt ? formatAge(Math.floor(Date.now() / 1000 - entry.lastCheckedAt)) : "never"}</span>
+        <span class="me-watch-remove me-sell-remove" role="button" title="Stop watching">X</span>
+      </div>`;
+    }).join("");
     setPanel(`
       <div class="me-kicker">Watchlist ${settings.watchlistEnabled ? `- every ${intervalSec}s while visible` : "- disabled in settings"}</div>
       ${entries.length ? rows : `<div class="me-note">No watched items. Open an Item Market item and press Watch, or add an item ID in settings.</div>`}
+      <div class="me-kicker" style="margin-top:8px">Your listings (undercut alerts${settings.undercutAlerts === false ? " - disabled in settings" : ""})</div>
+      ${sellEntries.length ? sellRows : `<div class="me-note">Open "My listings" or your Bazaar to record your listed prices; you are then warned when the Item Market floor drops below them.</div>`}
       <div class="me-actions"><button class="me-btn me-watch-check" type="button">Check now</button></div>
       ${panelToolbarHtml()}
       <div class="me-note">Polling only happens while a Torn tab is visible, uses the official Item Market API, and respects Torn's cache delay. Alerts are in-page only. Market Edge never buys.</div>
@@ -512,6 +1124,13 @@
       button.addEventListener("click", () => {
         const itemId = asInt(button.closest(".me-watch-row")?.dataset?.itemId, 0);
         Store.saveWatchlist(Store.watchlist().filter((entry) => entry.itemId !== itemId));
+        renderWatchlistPanel();
+      });
+    });
+    ui.body.querySelectorAll(".me-sell-remove").forEach((button) => {
+      button.addEventListener("click", () => {
+        const key = String(button.closest(".me-watch-row")?.dataset?.sellKey || "");
+        Store.saveSellWatch(Store.sellWatch().filter((entry) => `${entry.venue}:${entry.itemId}` !== key));
         renderWatchlistPanel();
       });
     });
@@ -553,6 +1172,10 @@
         <button class="me-btn" data-action="analyze" type="button">Analyze page</button>
         <button class="me-btn" data-action="listings" type="button">My listings</button>
         <button class="me-btn" data-action="watchlist" type="button">Watchlist</button>
+        <button class="me-btn" data-action="portfolio" type="button">Portfolio</button>
+        <button class="me-btn" data-action="shops" type="button">Shops</button>
+        <button class="me-btn" data-action="travel" type="button">Travel</button>
+        <button class="me-btn" data-action="fill" type="button">Fill all prices</button>
       </div>`;
       menu.querySelectorAll("[data-action]").forEach((button) => {
         button.addEventListener("click", () => {
@@ -562,6 +1185,10 @@
           else if (action === "analyze") analyzeCurrentPage();
           else if (action === "listings") renderOwnListingsPanel();
           else if (action === "watchlist") renderWatchlistPanel();
+          else if (action === "portfolio") renderPortfolioPanel();
+          else if (action === "shops") renderShopRunsPanel();
+          else if (action === "travel") renderTravelPlanPanel();
+          else if (action === "fill") fillAllVisiblePrices();
         });
       });
       document.body.appendChild(menu);
@@ -592,8 +1219,10 @@
     refreshTimer = setTimeout(() => refresh(force), 160);
   }
 
+  const LIST_SURFACES = Object.freeze(["bazaar", "auction", "travel", "inventory", "cityshop"]);
+
   function listSurfaceSignature(surface) {
-    if (!["bazaar", "auction", "travel", "inventory"].includes(surface)) return "";
+    if (!LIST_SURFACES.includes(surface)) return "";
     const entries = new Set();
     const marker = surface === "inventory" ? inventoryListMarker() : null;
     if (surface === "bazaar") {
@@ -634,7 +1263,12 @@
     signatureTimer = setTimeout(() => {
       if (document.visibilityState !== "visible") return;
       const surface = detectSurface();
-      if (!["bazaar", "auction", "travel", "inventory"].includes(surface)) return;
+      if (surface === "itemmarket" && !getItemIdFromLocation() && settings.browseOverlayEnabled !== false) {
+        // Browse grid: new cards appear on scroll/category change.
+        scanBrowseGrid({ force: false });
+        return;
+      }
+      if (!LIST_SURFACES.includes(surface)) return;
       const startedAt = Date.now();
       const signature = listSurfaceSignature(surface);
       // Adapt the quiet period to how long the check itself took, so a slow
@@ -656,7 +1290,7 @@
     const locationKey = `${surface}|${location.pathname}|${location.search}|${location.hash}`;
     const locationChanged = locationKey !== lastLocationKey || ui.currentSurface !== surface;
     if (!force && !locationChanged) {
-      if (["bazaar", "auction", "travel", "inventory"].includes(surface)) scheduleSignatureCheck(false);
+      if (LIST_SURFACES.includes(surface)) scheduleSignatureCheck(false);
       return;
     }
 
@@ -681,6 +1315,8 @@
     } else {
       genericIntro(surface, { clear: true });
       scheduleSignatureCheck(false);
+      // City shop pages also get the shop-runs panel, scoped to that shop.
+      if (surface === "cityshop" && Store.apiKey()) setTimeout(() => { if (detectSurface() === "cityshop") renderShopRunsPanel(); }, 400);
     }
   }
 
@@ -752,7 +1388,7 @@
   function analyzeCurrentPage() {
     const surface = detectSurface();
     if (surface === "itemmarket") renderItemMarket();
-    else if (["bazaar", "auction", "travel", "inventory"].includes(surface)) scanVisibleSurface(surface, { force: true });
+    else if (LIST_SURFACES.includes(surface)) scanVisibleSurface(surface, { force: true });
   }
 
   function registerMenu() {
@@ -762,6 +1398,10 @@
         GM_registerMenuCommand("Market Edge analyze current page", analyzeCurrentPage);
         GM_registerMenuCommand("Market Edge my Item Market listings", () => renderOwnListingsPanel());
         GM_registerMenuCommand("Market Edge watchlist", () => renderWatchlistPanel());
+        GM_registerMenuCommand("Market Edge portfolio", () => renderPortfolioPanel());
+        GM_registerMenuCommand("Market Edge city shop runs", () => renderShopRunsPanel());
+        GM_registerMenuCommand("Market Edge travel plan", () => renderTravelPlanPanel());
+        GM_registerMenuCommand("Market Edge fill all visible prices", () => fillAllVisiblePrices());
         return;
       } catch {
         // fall through to the on-page launcher
@@ -807,6 +1447,22 @@
       addWatchItem,
       ensureLauncher,
       showToast,
+      renderPortfolioPanel,
+      renderShopRunsPanel,
+      renderTravelPlanPanel,
+      scanBrowseGrid,
+      annotateAuctionEquipment,
+      recordSellWatch,
+      sellWatchTick,
+      fillAllVisiblePrices,
+      collectOwnListingRows,
+      fillOwnListingOnPage,
+      loadInventory,
+      loadItemDetails,
+      loadCityShops,
+      loadForeignCatalog,
+      currentCityShopName,
+      reloadSettings: () => { settings = Store.settings(); },
       ui
     });
   } else {

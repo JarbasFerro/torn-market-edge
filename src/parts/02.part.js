@@ -582,6 +582,403 @@
     return keyAccessRank(info) >= required;
   }
 
+
+  // ---------------------------------------------------------------------------
+  // v0.4.0 pure helpers: inventory portfolio, item details by uid, city and
+  // foreign shops, auction guidance, browse-grid overlay, pricing rules and
+  // sell-side (undercut) watch. All DOM-free and covered by unit tests.
+  // ---------------------------------------------------------------------------
+
+  function normalizeInventory(payload) {
+    const rows = Array.isArray(payload?.inventory?.items) ? payload.inventory.items : (Array.isArray(payload?.inventory) ? payload.inventory : []);
+    return rows
+      .map((row) => ({
+        itemId: asInt(row?.id ?? row?.item_id, 0),
+        name: String(row?.name || `Item ${row?.id || ""}`).trim(),
+        amount: Math.max(0, asInt(row?.amount ?? row?.quantity, 1)),
+        equipped: row?.equipped === true,
+        factionOwned: row?.faction_owned === true,
+        uid: row?.uid == null ? null : asInt(row.uid, 0) || null
+      }))
+      .filter((row) => row.itemId > 0 && row.amount > 0);
+  }
+
+  function normalizeItemDetailsRow(row) {
+    if (!row || typeof row !== "object") return null;
+    const stats = row.stats && typeof row.stats === "object" ? row.stats : {};
+    const bonuses = Array.isArray(row.bonuses) ? row.bonuses : [];
+    const quality = Number(stats.quality);
+    return {
+      uid: asInt(row.uid, 0) || null,
+      itemId: asInt(row.id ?? row.item_id, 0) || null,
+      name: row.name ? String(row.name) : "",
+      type: row.type ? String(row.type) : "",
+      subType: row.sub_type == null ? null : String(row.sub_type),
+      quality: Number.isFinite(quality) ? quality : null,
+      damage: Number.isFinite(Number(stats.damage)) ? Number(stats.damage) : null,
+      accuracy: Number.isFinite(Number(stats.accuracy)) ? Number(stats.accuracy) : null,
+      armor: Number.isFinite(Number(stats.armor)) ? Number(stats.armor) : null,
+      bonuses: bonuses.map((bonus) => ({
+        title: String(bonus?.title || "").trim(),
+        value: Number.isFinite(Number(bonus?.value)) ? Number(bonus.value) : null
+      })).filter((bonus) => bonus.title),
+      rarity: row.rarity ? String(row.rarity).toLowerCase() : null
+    };
+  }
+
+  // /torn/{uids}/itemdetails returns an array (current) or, for a single uid,
+  // the deprecated single-object shape until 2027-01-01. Both are accepted.
+  function normalizeItemDetails(payload) {
+    const raw = payload?.itemdetails ?? payload;
+    const rows = Array.isArray(raw) ? raw : (raw && typeof raw === "object" ? [raw] : []);
+    return rows.map(normalizeItemDetailsRow).filter((row) => row && row.uid);
+  }
+
+  function copyLabelFor(copy) {
+    if (!copy) return "";
+    const bonus = (copy.bonuses || []).map((entry) => entry.title).filter(Boolean).join("+");
+    const rarity = copy.rarity ? copy.rarity.toUpperCase() : "";
+    const quality = Number.isFinite(copy.quality) ? `Q ${copy.quality.toFixed(1)}%` : "";
+    return [quality, rarity, bonus || (Number.isFinite(copy.quality) ? "plain" : "")].filter(Boolean).join(" ");
+  }
+
+  function normalizeCityShops(payload) {
+    const shops = Array.isArray(payload?.cityshops) ? payload.cityshops : [];
+    return shops.map((shop) => ({
+      shopId: asInt(shop?.id, 0),
+      name: String(shop?.name || `Shop ${shop?.id || ""}`),
+      items: (Array.isArray(shop?.items) ? shop.items : []).map((item) => ({
+        itemId: asInt(item?.id, 0),
+        name: String(item?.name || `Item ${item?.id || ""}`),
+        price: asInt(item?.price, 0),
+        stock: Math.max(0, asInt(item?.stock?.current, 0)),
+        defaultStock: Math.max(0, asInt(item?.stock?.default, 0))
+      })).filter((item) => item.itemId > 0 && item.price > 0)
+    })).filter((shop) => shop.items.length);
+  }
+
+  // Highest price a Torn NPC shop pays for the item (instant, fee-free exit).
+  function shopSellFloor(meta) {
+    const shops = Array.isArray(meta?.shops) ? meta.shops : [];
+    let best = 0;
+    let label = "";
+    shops.forEach((shop) => {
+      if (shop.country && shop.country !== "Torn") return;
+      if (shop.sellPrice > best) {
+        best = shop.sellPrice;
+        label = shop.name ? `Sell to ${shop.name}` : "Sell to shop";
+      }
+    });
+    return best > 0 ? { price: best, label } : null;
+  }
+
+  // Foreign shop offers from item metadata (official buy prices per country;
+  // stock is not part of the official API).
+  function foreignOffers(metaList) {
+    const offers = [];
+    (metaList || []).forEach((meta) => {
+      if (!meta || !Array.isArray(meta.shops)) return;
+      meta.shops.forEach((shop) => {
+        if (!shop.country || shop.country === "Torn" || !(shop.buyPrice > 0)) return;
+        offers.push({
+          itemId: meta.id,
+          name: meta.name,
+          type: meta.type,
+          country: shop.country,
+          shop: shop.name,
+          buyPrice: shop.buyPrice,
+          marketPrice: asInt(meta.marketPrice, 0),
+          isTradable: meta.isTradable !== false
+        });
+      });
+    });
+    return offers;
+  }
+
+  // Profit for buying `quantity` units at `buyPrice` and exiting through the
+  // best route. `exit` comes from bestAvailableExit(); extras carry the
+  // museum and shop-sell routes.
+  function evaluateBuyAtPrice({ buyPrice, quantity = 1, exit, settings, museum = null, shopSell = null }) {
+    const unit = asInt(buyPrice, 0);
+    const qty = Math.max(1, asInt(quantity, 1));
+    if (!unit || !exit) return null;
+    const routes = routeEconomics(exit, qty, settings, { museum, shopSell: shopSell?.price ?? shopSell, shopLabel: shopSell?.label });
+    const capital = unit * qty;
+    const profit = routes.bestNet - capital;
+    return {
+      quantity: qty,
+      capitalRequired: capital,
+      expectedProfit: profit,
+      profitPerUnit: Math.floor(profit / qty),
+      roi: capital > 0 ? profit / capital : 0,
+      routes,
+      exit
+    };
+  }
+
+  // City shop run: how much one restock-limited purchase at the NPC price is
+  // worth after fees. Quantity is capped by current stock.
+  function evaluateShopRun({ shopItem, exit, settings, museum = null, shopSell = null, quantity = null }) {
+    if (!shopItem || !exit) return null;
+    const requested = Math.max(1, asInt(quantity ?? settings.shopRunQuantity, 100));
+    const qty = Math.max(1, Math.min(requested, shopItem.stock > 0 ? shopItem.stock : requested));
+    const evaluation = evaluateBuyAtPrice({ buyPrice: shopItem.price, quantity: qty, exit, settings, museum, shopSell });
+    if (!evaluation) return null;
+    return {
+      ...evaluation,
+      itemId: shopItem.itemId,
+      name: shopItem.name,
+      buyPrice: shopItem.price,
+      stock: shopItem.stock,
+      outOfStock: shopItem.stock <= 0,
+      state: evaluation.profitPerUnit <= 0 ? "GREY" : (evaluation.roi >= settings.minimumROI ? "GREEN" : "YELLOW")
+    };
+  }
+
+  // Travel plan: profit per unit and per trip for a foreign offer, and the
+  // cash needed to fill the capacity.
+  function evaluateForeignOffer({ offer, exit, settings, capacity = 0, museum = null, shopSell = null }) {
+    if (!offer || !exit) return null;
+    const qty = capacity > 0 ? capacity : 1;
+    const evaluation = evaluateBuyAtPrice({ buyPrice: offer.buyPrice, quantity: qty, exit, settings, museum, shopSell });
+    if (!evaluation) return null;
+    return {
+      ...evaluation,
+      itemId: offer.itemId,
+      name: offer.name,
+      country: offer.country,
+      shop: offer.shop,
+      buyPrice: offer.buyPrice,
+      perTrip: capacity > 0 ? evaluation.expectedProfit : null,
+      cashNeeded: capacity > 0 ? offer.buyPrice * capacity : offer.buyPrice,
+      state: evaluation.profitPerUnit <= 0 ? "GREY" : (evaluation.roi >= settings.minimumROI ? "GREEN" : "YELLOW")
+    };
+  }
+
+  function rankTravelPlan(evaluations, { perCountry = 3 } = {}) {
+    const byCountry = new Map();
+    (evaluations || []).forEach((row) => {
+      if (!row || !(row.profitPerUnit > 0)) return;
+      if (!byCountry.has(row.country)) byCountry.set(row.country, []);
+      byCountry.get(row.country).push(row);
+    });
+    const countries = Array.from(byCountry.entries()).map(([country, rows]) => {
+      rows.sort((a, b) => b.profitPerUnit - a.profitPerUnit);
+      return { country, best: rows[0], rows: rows.slice(0, perCountry) };
+    });
+    countries.sort((a, b) => b.best.profitPerUnit - a.best.profitPerUnit);
+    return countries;
+  }
+
+  // Museum pieces recognised by name (contraband singles and the arrowhead
+  // set). Returns a valuation shaped like museumValuation().
+  function museumByName({ meta, pointValue, allMetas = [], settings = {} }) {
+    if (!meta?.name || !(pointValue > 0) || settings.museumSetsEnabled === false) return null;
+    const lower = String(meta.name).toLowerCase().trim();
+    const singlePoints = MUSEUM_SINGLES_BY_NAME[lower];
+    if (singlePoints) {
+      const implied = singlePoints * pointValue;
+      return { label: `Museum piece (${singlePoints} pts)`, points: singlePoints, pointValue, othersCost: 0, setValue: implied, impliedValue: implied, complete: true, single: true };
+    }
+    for (const set of MUSEUM_NAME_SETS) {
+      if (!set.pattern.test(meta.name)) continue;
+      const members = allMetas.filter((other) => other && set.pattern.test(other.name));
+      const distinct = new Map(members.map((other) => [other.id, other]));
+      if (distinct.size < set.size) return { label: set.label, points: set.points, pointValue, complete: false, impliedValue: null };
+      const othersCost = Array.from(distinct.values()).filter((other) => other.id !== meta.id).slice(0, set.size - 1).reduce((sum, other) => sum + asInt(other.marketPrice, 0), 0);
+      const setValue = set.points * pointValue;
+      return { label: set.label, points: set.points, pointValue, othersCost, setValue, impliedValue: setValue - othersCost, complete: true };
+    }
+    return null;
+  }
+
+  // Ended auction timing: when do sales of this item close at the best price?
+  // Buckets are 6-hour windows in Torn City Time (UTC). Ratios are relative
+  // to the overall median so equipment groups and commodities compare alike.
+  function auctionTimingStats(sales, { minCount = 3 } = {}) {
+    const rows = (sales || []).filter((sale) => Number.isFinite(sale?.price) && sale.price > 0 && asInt(sale?.timestamp, 0) > 0);
+    if (!rows.length) return { buckets: [], best: null, overallMedian: null, total: 0 };
+    const overallMedian = median(rows.map((sale) => sale.price));
+    const buckets = [
+      { key: "00-06", label: "00:00-06:00 TCT", start: 0 },
+      { key: "06-12", label: "06:00-12:00 TCT", start: 6 },
+      { key: "12-18", label: "12:00-18:00 TCT", start: 12 },
+      { key: "18-24", label: "18:00-24:00 TCT", start: 18 }
+    ].map((bucket) => ({ ...bucket, prices: [] }));
+    rows.forEach((sale) => {
+      const hour = new Date(sale.timestamp * 1000).getUTCHours();
+      const bucket = buckets[Math.min(3, Math.floor(hour / 6))];
+      bucket.prices.push(sale.price);
+    });
+    const result = buckets.map((bucket) => {
+      const value = median(bucket.prices);
+      return {
+        key: bucket.key,
+        label: bucket.label,
+        count: bucket.prices.length,
+        median: Number.isFinite(value) ? Math.round(value) : null,
+        ratio: Number.isFinite(value) && overallMedian > 0 ? value / overallMedian : null
+      };
+    });
+    const eligible = result.filter((bucket) => bucket.count >= minCount && Number.isFinite(bucket.ratio));
+    eligible.sort((a, b) => b.ratio - a.ratio || b.count - a.count);
+    return { buckets: result, best: eligible[0] || null, worst: eligible.length > 1 ? eligible[eligible.length - 1] : null, overallMedian: Math.round(overallMedian), total: rows.length };
+  }
+
+  function stackableSalesSummary(sales, nowMs = Date.now()) {
+    const rows = (sales || []).filter((sale) => sale?.stackable && Number.isFinite(sale.price) && sale.price > 0 && nowMs - asInt(sale.timestamp, 0) * 1000 <= AUCTION_SALES_WINDOW_MS);
+    if (!rows.length) return { count: 0, median: null, low: null, high: null };
+    const prices = rows.map((sale) => sale.price);
+    return { count: rows.length, median: Math.round(median(prices)), low: Math.min(...prices), high: Math.max(...prices) };
+  }
+
+  function normalizeAuctionListing(payload) {
+    const raw = payload?.auctionhouselisting ?? payload;
+    if (!raw || typeof raw !== "object") return null;
+    const item = raw.item && typeof raw.item === "object" ? raw.item : {};
+    const copy = item.stats || item.bonuses ? normalizeItemDetailsRow({ ...item, uid: item.uid ?? 0 }) : null;
+    return {
+      listingId: asInt(raw.id, 0),
+      itemId: asInt(item.id, 0),
+      name: String(item.name || ""),
+      type: String(item.type || ""),
+      price: asInt(raw.price, 0),
+      bids: asInt(raw.bids, 0),
+      timestamp: asInt(raw.timestamp, 0),
+      copy
+    };
+  }
+
+  // Maximum rational bid for a specific weapon/armor copy: the net proceeds
+  // of reselling that copy at its comparable-based price, less the required
+  // ROI. Uses priceOwnedEquipment() so the same comparables drive sell and
+  // buy sides.
+  function equipmentBidGuidance({ snapshot, copy, auctionSales = [], settings, currentBid = 0 }) {
+    if (!snapshot?.equipment || !copy) return null;
+    const pricing = priceOwnedEquipment({ snapshot, copy, auctionSales, settings });
+    if (!pricing) return null;
+    const bestNet = Math.max(asInt(pricing.bazaarSuggested, 0), asInt(pricing.itemMarketNet, 0));
+    if (bestNet <= 0) return null;
+    const maxBid = Math.max(0, Math.floor(bestNet / (1 + settings.minimumROI)));
+    const bid = Math.max(0, asInt(currentBid, 0));
+    return {
+      maxBid,
+      headroom: maxBid - bid,
+      bestNet,
+      pricing,
+      label: copyLabelFor(copy),
+      state: maxBid - bid > 0 ? (pricing.thinEvidence ? "YELLOW" : "GREEN") : "GREY"
+    };
+  }
+
+  // Browse-grid overlay: discount of the displayed cheapest price against
+  // Torn's official market value. No order book is fetched for the grid.
+  function evaluateBrowseCard({ price, marketPrice, settings }) {
+    const unit = asInt(price, 0);
+    const value = asInt(marketPrice, 0);
+    if (!unit || !value) return null;
+    const discount = 1 - unit / value;
+    const exit = officialExit(value, settings);
+    const routes = exit ? routeEconomics(exit, 1, settings) : null;
+    const netPerUnit = routes ? routes.bestNetPerUnit : null;
+    const profit = Number.isFinite(netPerUnit) ? netPerUnit - unit : null;
+    let state = "GREY";
+    let label = "FAIR";
+    if (discount < 0) label = "ABOVE MV";
+    else if (profit > 0 && discount >= Math.max(0.10, settings.minimumDiscount * 2)) { state = "GREEN"; label = "STRONG"; }
+    else if (profit > 0 && discount >= settings.minimumDiscount) { state = "YELLOW"; label = "CONSIDER"; }
+    return { discount, profitPerUnit: profit, bestRoute: routes?.bestRoute || null, state, label, marketPrice: value };
+  }
+
+  // Per-item pricing rules for the repricing workbench.
+  const PRICING_MODES = Object.freeze(["undercut", "anchor", "hold"]);
+
+  function normalizePricingRules(raw) {
+    const rules = {};
+    if (!raw || typeof raw !== "object") return rules;
+    Object.entries(raw).forEach(([key, value]) => {
+      const itemId = asInt(key, 0);
+      if (!itemId || !value || typeof value !== "object") return;
+      const mode = PRICING_MODES.includes(value.mode) ? value.mode : "undercut";
+      const minPrice = Math.max(0, asInt(value.minPrice, 0));
+      if (mode === "undercut" && !minPrice) return;
+      rules[itemId] = { mode, minPrice };
+    });
+    return rules;
+  }
+
+  // Resolve the price to fill for one listing given the rule and the two
+  // candidate suggestions. Returns null price when the rule says hold or when
+  // the floor-based suggestion would breach the item's minimum.
+  function applyPricingRule({ rule = null, floorSuggestion = null, anchorSuggestion = null }) {
+    const mode = rule?.mode || "undercut";
+    const minPrice = Math.max(0, asInt(rule?.minPrice, 0));
+    if (mode === "hold") return { price: null, mode, reason: "held by rule" };
+    let price = mode === "anchor" ? anchorSuggestion : floorSuggestion;
+    if (!Number.isFinite(price) || price <= 0) price = Number.isFinite(anchorSuggestion) && anchorSuggestion > 0 ? anchorSuggestion : null;
+    if (!Number.isFinite(price) || price <= 0) return { price: null, mode, reason: "no suggestion" };
+    if (minPrice && price < minPrice) return { price: minPrice, mode, reason: "raised to minimum", clamped: true };
+    return { price: Math.floor(price), mode, reason: "" };
+  }
+
+  // Sell-side watch: the player's own listed prices, alerted when the Item
+  // Market floor drops below them.
+  function normalizeSellWatch(raw) {
+    if (!Array.isArray(raw)) return [];
+    const seen = new Set();
+    const rows = [];
+    raw.forEach((entry) => {
+      const itemId = asInt(entry?.itemId, 0);
+      const price = asInt(entry?.price, 0);
+      const venue = entry?.venue === "Bazaar" ? "Bazaar" : "IM";
+      if (!itemId || price <= 0) return;
+      const key = `${venue}:${itemId}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      rows.push({
+        itemId,
+        venue,
+        name: String(entry?.name || `Item ${itemId}`),
+        price,
+        amount: Math.max(1, asInt(entry?.amount, 1)),
+        recordedAt: asInt(entry?.recordedAt, 0),
+        lastAlertAt: asInt(entry?.lastAlertAt, 0),
+        lastFloor: asInt(entry?.lastFloor, 0) || null,
+        lastCheckedAt: asInt(entry?.lastCheckedAt, 0)
+      });
+    });
+    return rows.slice(0, SELL_WATCH_MAX_ITEMS);
+  }
+
+  function evaluateSellWatch(entry, snapshot, nowMs = Date.now()) {
+    const floor = asInt(snapshot?.lowestPrice, 0);
+    if (!floor) return { undercut: false, shouldAlert: false, floor: null, cheaperQuantity: 0 };
+    const cheaper = (snapshot.listings || []).filter((row) => row.price < entry.price);
+    const cheaperQuantity = cheaper.reduce((sum, row) => sum + row.quantity, 0);
+    const undercut = floor < entry.price;
+    const lastAlertMs = asInt(entry.lastAlertAt, 0) * 1000;
+    const inCooldown = lastAlertMs && nowMs - lastAlertMs < SELL_WATCH_ALERT_COOLDOWN_MS;
+    const furtherDrop = entry.lastFloor && floor < entry.lastFloor * 0.98;
+    return { undercut, shouldAlert: undercut && (!inCooldown || furtherDrop), floor, cheaperQuantity, gap: entry.price - floor };
+  }
+
+  // Portfolio aggregation: one row per item id (commodities) or per copy
+  // (equipment), each with a unit value, route and net total.
+  function summarizePortfolio(rows) {
+    const valued = rows.filter((row) => Number.isFinite(row.unitNet) && row.unitNet > 0);
+    const total = valued.reduce((sum, row) => sum + row.unitNet * row.amount, 0);
+    const byRoute = {};
+    valued.forEach((row) => { byRoute[row.route] = (byRoute[row.route] || 0) + row.unitNet * row.amount; });
+    return {
+      total,
+      valuedRows: valued.length,
+      unvaluedRows: rows.length - valued.length,
+      untradable: rows.filter((row) => row.untradable).length,
+      equipped: rows.filter((row) => row.equipped).length,
+      byRoute
+    };
+  }
+
   const TEST_EXPORTS = Object.freeze({
     APP,
     DEFAULTS,
@@ -628,7 +1025,30 @@
     keySupports,
     formatMoney,
     parseMoney,
-    parseQuantity
+    parseQuantity,
+    officialExit,
+    bestAvailableExit,
+    normalizeInventory,
+    normalizeItemDetails,
+    copyLabelFor,
+    normalizeCityShops,
+    shopSellFloor,
+    foreignOffers,
+    evaluateBuyAtPrice,
+    evaluateShopRun,
+    evaluateForeignOffer,
+    rankTravelPlan,
+    museumByName,
+    auctionTimingStats,
+    stackableSalesSummary,
+    normalizeAuctionListing,
+    equipmentBidGuidance,
+    evaluateBrowseCard,
+    normalizePricingRules,
+    applyPricingRule,
+    normalizeSellWatch,
+    evaluateSellWatch,
+    summarizePortfolio
   });
 
   global.__MARKET_EDGE_TEST__ = TEST_EXPORTS;
@@ -848,6 +1268,74 @@
     static saveItemMeta(meta) {
       if (!meta?.id) return;
       Store.set(`${STORAGE_KEYS.itemMetaPrefix}${asInt(meta.id)}`, { savedAt: Date.now(), meta });
+    }
+
+    static pricingRules() {
+      return normalizePricingRules(Store.get(STORAGE_KEYS.pricingRules, {}));
+    }
+
+    static savePricingRule(itemId, rule) {
+      const rules = Store.pricingRules();
+      const id = asInt(itemId, 0);
+      if (!id) return rules;
+      if (!rule) delete rules[id];
+      else rules[id] = rule;
+      Store.set(STORAGE_KEYS.pricingRules, normalizePricingRules(rules));
+      return Store.pricingRules();
+    }
+
+    static sellWatch() {
+      return normalizeSellWatch(Store.get(STORAGE_KEYS.sellWatch, []));
+    }
+
+    static saveSellWatch(entries) {
+      Store.set(STORAGE_KEYS.sellWatch, normalizeSellWatch(entries));
+    }
+
+    static inventory() {
+      const raw = Store.get(STORAGE_KEYS.inventory, null);
+      if (!raw || typeof raw !== "object" || !raw.savedAt || !Array.isArray(raw.items)) return null;
+      return raw;
+    }
+
+    static saveInventory(items) {
+      Store.set(STORAGE_KEYS.inventory, { savedAt: Date.now(), items });
+    }
+
+    static itemDetailsCache() {
+      const raw = Store.get(STORAGE_KEYS.itemDetails, {});
+      return raw && typeof raw === "object" ? raw : {};
+    }
+
+    static saveItemDetails(rows) {
+      const cache = Store.itemDetailsCache();
+      rows.forEach((row) => { if (row?.uid) cache[row.uid] = { ...row, savedAt: Date.now() }; });
+      const keys = Object.keys(cache);
+      if (keys.length > ITEM_DETAILS_MAX_CACHED) {
+        keys.sort((a, b) => asInt(cache[a].savedAt) - asInt(cache[b].savedAt));
+        keys.slice(0, keys.length - ITEM_DETAILS_MAX_CACHED).forEach((key) => { delete cache[key]; });
+      }
+      Store.set(STORAGE_KEYS.itemDetails, cache);
+    }
+
+    static cityShops() {
+      const raw = Store.get(STORAGE_KEYS.cityShops, null);
+      if (!raw || typeof raw !== "object" || !raw.savedAt || !Array.isArray(raw.shops)) return null;
+      return raw;
+    }
+
+    static saveCityShops(shops) {
+      Store.set(STORAGE_KEYS.cityShops, { savedAt: Date.now(), shops });
+    }
+
+    static foreignCatalog() {
+      const raw = Store.get(STORAGE_KEYS.foreignCatalog, null);
+      if (!raw || typeof raw !== "object" || !raw.savedAt || !Array.isArray(raw.items)) return null;
+      return raw;
+    }
+
+    static saveForeignCatalog(items) {
+      Store.set(STORAGE_KEYS.foreignCatalog, { savedAt: Date.now(), items });
     }
 
     static history(itemId) {

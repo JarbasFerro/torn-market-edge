@@ -473,9 +473,12 @@
     }
 
     // Only the rows nearest the viewport get the expensive text/input
-    // inspection; long categories would otherwise thrash layout.
+    // inspection; long categories would otherwise thrash layout. Rows that
+    // carry Torn's "Price per unit" label are existing listings (manage
+    // view), never add rows.
     const limit = clamp(settings.scanMaxVisibleItems, 1, 50);
     const nearest = candidatePairs
+      .filter(({ card }) => !/price per unit\s*:/i.test(card.textContent || ""))
       .map((pair) => ({ pair, priority: viewportPriority({ card: pair.card }) }))
       .sort((a, b) => b.priority - a.priority)
       .slice(0, limit * 2)
@@ -740,6 +743,34 @@
       .slice(0, clamp(settings.scanMaxVisibleItems, 1, 50));
   }
 
+  // Auction listing id from a row, when Torn exposes it (attributes, ids or
+  // links). It must differ from the item id; without it equipment rows fall
+  // back to the row's own text for the copy's stats.
+  function auctionListingIdFrom(li, itemId) {
+    if (!li) return null;
+    const candidates = [];
+    ["data-listing-id", "data-listingid", "data-auction-id", "data-auctionid", "data-aid", "data-id", "id"].forEach((attr) => {
+      const raw = li.getAttribute?.(attr);
+      if (raw) candidates.push(raw);
+    });
+    li.querySelectorAll("a[href*='ID='],a[href*='id='],input[type='hidden'][name*='id' i],[data-listing-id],[data-auction-id],[data-aid]").forEach((node) => {
+      const href = node.getAttribute("href") || "";
+      const match = href.match(/(?:auctionID|auctionId|aID|listingID|listingId|ID)=(\d+)/i);
+      if (match) candidates.push(match[1]);
+      ["data-listing-id", "data-auction-id", "data-aid", "value"].forEach((attr) => {
+        const raw = node.getAttribute(attr);
+        if (raw) candidates.push(raw);
+      });
+    });
+    for (const raw of candidates) {
+      const digits = String(raw).match(/\d{3,}/);
+      if (!digits) continue;
+      const value = asInt(digits[0], 0);
+      if (value && value !== itemId) return value;
+    }
+    return null;
+  }
+
   function collectAuctionItems() {
     const rows = [];
     document.querySelectorAll("div.items-list-wrap > ul.items-list > li").forEach((li) => {
@@ -750,9 +781,56 @@
       const name = (li.querySelector("span.title .item-name")?.textContent || hover?.querySelector("button.view-info")?.getAttribute("aria-label") || `Item ${itemId}`).trim();
       const bidText = (li.querySelector("div.c-bid-wrap")?.textContent || li.querySelector("div.mob-wrap .top-bid-mob-wrap")?.textContent || "").trim();
       const price = /^none$|bid:\s*none/i.test(bidText) ? 0 : asInt(String(bidText).replace(/[^0-9]/g, ""), 0);
-      rows.push({ itemId, name, price, quantity: 1, card: li, domTextLength: (li.innerText || "").length });
+      const text = li.innerText || "";
+      // Torn prints the copy's quality and bonuses inside the row on the
+      // Auction House; when present they price the exact copy without a
+      // listing request.
+      const copyHint = QUALITY_PATTERN.test(text) ? parseEquipmentDetailsText(text, detailsPanelHints(li)) : null;
+      rows.push({ itemId, name, price, quantity: 1, card: li, listingId: auctionListingIdFrom(li, itemId), copyHint, domTextLength: text.length });
     });
     return rows.sort((a, b) => viewportPriority(b) - viewportPriority(a)).slice(0, clamp(settings.scanMaxVisibleItems, 1, 50));
+  }
+
+  // Editable price field in a row on Torn's "manage listings" style views
+  // (own Item Market listings). Prefers price-labelled inputs and rejects
+  // quantity/remove fields; a numeric value is required.
+  function findGenericPriceInput(card) {
+    if (!card) return null;
+    let best = null;
+    card.querySelectorAll("input").forEach((input) => {
+      if (!(input instanceof HTMLInputElement)) return;
+      if (input.closest("#market-edge-root,.me-inline-analysis")) return;
+      if (/^(checkbox|radio|hidden|submit|button)$/i.test(input.type || "")) return;
+      const metadata = `${input.name || ""} ${input.id || ""} ${input.className || ""} ${input.getAttribute("aria-label") || ""} ${input.getAttribute("placeholder") || ""}`;
+      if (/amount|qty|quantity|remove|search/i.test(metadata)) return;
+      let score = /price|cost|money/i.test(metadata) ? 100 : 0;
+      const value = parseIntegerField(input.value);
+      if (value > 0) score += 20;
+      if (!score) return;
+      if (!best || score > best.score) best = { input, score, value };
+    });
+    return best?.input || null;
+  }
+
+  // Rows of the player's own Item Market listings as Torn renders them, each
+  // with its price input when one exists. Used by the repricing workbench to
+  // fill (never submit) Torn's fields.
+  function collectOwnListingRows() {
+    const rows = [];
+    const seen = new Set();
+    document.querySelectorAll(itemIdentitySelector()).forEach((node) => {
+      if (node.closest("#market-edge-root,.me-inline-analysis")) return;
+      const itemId = itemIdFromElement(node);
+      if (!itemId) return;
+      let card = node.closest("li,tr,[role='row'],[class*='row'],[class*='item___'],[class*='listing']") || findCompactCard(node, false);
+      for (let depth = 0; card && depth < 4 && !card.querySelector("input"); depth += 1) card = card.parentElement;
+      if (!card || seen.has(card) || card === document.body) return;
+      const priceInput = findGenericPriceInput(card);
+      if (!priceInput) return;
+      seen.add(card);
+      rows.push({ itemId, card, priceInput, price: parseIntegerField(priceInput.value) || 0 });
+    });
+    return rows;
   }
 
   function parseLiveItemMarketListings() {
