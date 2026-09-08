@@ -114,33 +114,28 @@
         return;
       }
 
-      let analysisSnapshot = snapshot;
-      let liveConfirmation = "API discovery";
       const liveRows = parseLiveItemMarketListings();
-      if (liveRows.length >= 2) {
-        const liveListings = liveRows.map((row) => ({ price: row.price, quantity: row.quantity }));
-        analysisSnapshot = {
-          ...snapshot,
-          listings: liveListings,
-          lowestPrice: liveListings[0]?.price ?? snapshot.lowestPrice,
-          secondPrice: liveListings[1]?.price ?? snapshot.secondPrice,
-          thirdPrice: liveListings[2]?.price ?? snapshot.thirdPrice,
-          calculatedMarketAnchor: robustMarketAnchor(liveListings),
-          depthMetrics: {
-            listingCount: liveListings.length,
-            top5Quantity: liveListings.slice(0, 5).reduce((sum, row) => sum + row.quantity, 0),
-            top20Quantity: liveListings.slice(0, 20).reduce((sum, row) => sum + row.quantity, 0)
-          }
-        };
-        liveConfirmation = "CONFIRMED ON PAGE";
-      }
 
-      const evaluated = evaluatePrefixes(analysisSnapshot, historyStats, settings);
+      // The official Torn API is the authoritative valuation source. The live
+      // DOM is used only to confirm/highlight what the player currently sees.
+      const evaluated = evaluatePrefixes(snapshot, historyStats, settings);
       const best = evaluated.best;
+      const compareCount = Math.max(2, best?.prefixCount || Math.min(5, snapshot.listings.length));
+      const liveMatchesApi = liveRows.length >= compareCount && snapshot.listings.length >= compareCount &&
+        Array.from({ length: compareCount }, (_, index) => (
+          liveRows[index]?.price === snapshot.listings[index]?.price &&
+          liveRows[index]?.quantity === snapshot.listings[index]?.quantity
+        )).every(Boolean);
+      const liveConfirmation = liveRows.length < 2
+        ? "API"
+        : (liveMatchesApi ? "PAGE MATCHES API" : "API - PAGE DIFFERS");
       const fresh = freshness(snapshot.cacheTimestamp);
       const reference = chooseReference(snapshot, historyStats);
       const learning = historyStats.oneDay.count < 5;
       const currentDiscount = reference.value && snapshot.lowestPrice ? 1 - snapshot.lowestPrice / reference.value : null;
+      const sourceWarning = liveRows.length >= 2 && !liveMatchesApi
+        ? `<div class="me-note me-warn">The visible Torn listings differ from the current API cache. Market Edge is keeping the official API snapshot authoritative and will not mix the two books.</div>`
+        : "";
 
       setPanel(`
         <div class="me-kicker">Item Market - ${escapeHtml(liveConfirmation)}</div>
@@ -154,6 +149,7 @@
           ["API age", `${formatAge(fresh.ageSeconds)} - ${fresh.label}`],
           ["Observations (24h)", String(historyStats.oneDay.count)]
         ])}
+        ${sourceWarning}
         <div class="me-rule"></div>
         <div class="me-kicker">Best opportunity</div>
         ${best ? metricRows([
@@ -169,10 +165,11 @@
         ${decisionHtml(best)}
         ${diagnosticsHtml(best)}
         ${learning ? `<div class="me-note me-learning">Learning market... ${historyStats.oneDay.count} observations collected. Until 5 observations, Market Edge applies an extra 2% safety haircut and does not treat current lowest as fair value.</div>` : ""}
-        <div class="me-note">Facts: visible/API asks and 5% Item Market fee. Local data: observed anchors. Exit, profit and confidence are estimates - not guarantees.</div>
+        <div class="me-note">Facts: official API asks and 5% Item Market fee. The visible page is used only for confirmation/highlighting. Local data: observed anchors. Exit, profit and confidence are estimates - not guarantees.</div>
       `, fresh.label);
 
-      highlightItemMarketRows(liveRows, best);
+      if (liveMatchesApi) highlightItemMarketRows(liveRows, best);
+      else clearBadges();
     } catch (error) {
       errorPanel(error.message);
     }
@@ -245,18 +242,42 @@
     };
   }
 
+  let listQueueGeneration = 0;
+  let activeListQueueGroup = "";
+
+  function beginListQueueGroup(surface, { cancelObsolete = false } = {}) {
+    const prefix = `list:${surface}:`;
+    if (cancelObsolete || !activeListQueueGroup.startsWith(prefix)) {
+      activeListQueueGroup = `${prefix}${++listQueueGeneration}`;
+      api.scheduler.cancelQueued(
+        (job) => String(job.meta?.queueGroup || "").startsWith("list:") && job.meta.queueGroup !== activeListQueueGroup,
+        "Market Edge list request superseded by a newer Torn view."
+      );
+    }
+    return activeListQueueGroup;
+  }
+
+  function cancelQueuedListRequests(reason = "Market Edge left the list view.") {
+    activeListQueueGroup = "";
+    return api.scheduler.cancelQueued(
+      (job) => String(job.meta?.queueGroup || "").startsWith("list:"),
+      reason
+    );
+  }
+
   function genericIntro(surface, { clear = true } = {}) {
     removeFloatingUi();
     if (clear) clearInlineAnalysis();
     // List-style surfaces use War-Overlay-style inline intelligence rather
     // than a floating results window. New rows are discovered incrementally.
-    setTimeout(() => scanVisibleSurface(surface, { retryIfEmpty: true, force: false }), 250);
+    setTimeout(() => scanVisibleSurface(surface, { retryIfEmpty: true, force: false, cancelObsolete: true }), 250);
   }
 
-  async function scanVisibleSurface(surface, { retryIfEmpty = false, force = false } = {}) {
+  async function scanVisibleSurface(surface, { retryIfEmpty = false, force = false, cancelObsolete = false } = {}) {
     removeFloatingUi();
     if (document.visibilityState !== "visible") return;
 
+    const queueGroup = beginListQueueGroup(surface, { cancelObsolete });
     const ownBazaar = surface === "bazaar" ? await isOwnBazaar() : false;
     if (detectSurface() !== surface || document.visibilityState !== "visible") return;
 
@@ -269,7 +290,7 @@
       if (retryIfEmpty) {
         setTimeout(() => {
           if (detectSurface() === surface && document.visibilityState === "visible") {
-            scanVisibleSurface(surface, { retryIfEmpty: false, force });
+            scanVisibleSurface(surface, { retryIfEmpty: false, force, cancelObsolete: false });
           }
         }, 650);
       }
@@ -279,7 +300,13 @@
     items = items.filter((visible) => {
       if (!visible?.card?.isConnected) return false;
       const existing = visible.card.querySelector?.(`.me-inline-analysis[data-me-item-id="${visible.itemId}"]`);
-      const scanning = visible.card.dataset?.meScanning === String(visible.itemId);
+      const scanningGroup = visible.card.dataset?.meScanningGroup || "";
+      const scanning = visible.card.dataset?.meScanning === String(visible.itemId) && scanningGroup === queueGroup;
+      if (cancelObsolete && scanningGroup && scanningGroup !== queueGroup) {
+        delete visible.card.dataset.meScanning;
+        delete visible.card.dataset.meScanningGroup;
+        if (existing?.classList.contains("me-loading")) existing.remove();
+      }
       if (force && existing) existing.remove();
       return force || (!scanning && existing?.dataset?.meComplete !== "1");
     });
@@ -292,7 +319,10 @@
 
     items.sort((a, b) => viewportPriority(b) - viewportPriority(a));
     items.forEach((visible) => {
-      if (visible.card?.dataset) visible.card.dataset.meScanning = String(visible.itemId);
+      if (visible.card?.dataset) {
+        visible.card.dataset.meScanning = String(visible.itemId);
+        visible.card.dataset.meScanningGroup = queueGroup;
+      }
       renderInlineLoading(visible);
     });
 

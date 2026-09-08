@@ -17,6 +17,7 @@
         const bundle = await loadSnapshot(visible.itemId, {
           limit: API_LIST_LIMIT,
           priority,
+          queueGroup,
           onCached: (cached) => {
             if (!visible.card?.isConnected || detectSurface() !== surface) return;
             renderedCached = true;
@@ -39,10 +40,14 @@
         });
         renderInlineResult(surface, result, ownBazaar);
       } catch (error) {
+        if (error?.marketEdgeCanceled) return;
         if (!renderedCached && visible.card?.isConnected) renderInlineError(visible, error.message);
         else log("Refresh failed; keeping cached row", visible.itemId, error.message);
       } finally {
-        if (visible.card?.dataset?.meScanning === String(visible.itemId)) delete visible.card.dataset.meScanning;
+        if (visible.card?.dataset?.meScanning === String(visible.itemId) && visible.card.dataset.meScanningGroup === queueGroup) {
+          delete visible.card.dataset.meScanning;
+          delete visible.card.dataset.meScanningGroup;
+        }
       }
     });
 
@@ -57,6 +62,14 @@
   let signatureTimer = null;
   let lastLocationKey = "";
   let lastListSignature = "";
+  const listRowIds = new WeakMap();
+  let nextListRowId = 1;
+
+  function listRowIdentity(card) {
+    if (!card || (typeof card !== "object" && typeof card !== "function")) return 0;
+    if (!listRowIds.has(card)) listRowIds.set(card, nextListRowId++);
+    return listRowIds.get(card);
+  }
 
   function scheduleRefresh(force = false) {
     clearTimeout(refreshTimer);
@@ -65,7 +78,7 @@
 
   function listSurfaceSignature(surface) {
     if (!["bazaar", "auction", "travel", "inventory"].includes(surface)) return "";
-    const ids = [];
+    const entries = new Set();
     const marker = surface === "inventory" ? inventoryListMarker() : null;
     document.querySelectorAll(itemIdentitySelector()).forEach((node) => {
       if (node.closest?.("#market-edge-root,.me-inline-analysis")) return;
@@ -75,13 +88,13 @@
       if (surface === "inventory" && !isInventoryListCandidate(card, marker)) return;
       const rect = card?.getBoundingClientRect?.();
       if (rect && (rect.width <= 0 || rect.height <= 0)) return;
-      ids.push(itemId);
+      entries.add(`${itemId}@${listRowIdentity(node)}`);
     });
-    const uniqueIds = Array.from(new Set(ids)).sort((a, b) => a - b);
+    const structuralEntries = Array.from(entries).sort();
     const heading = surface === "inventory"
       ? String(marker?.textContent || "").replace(/\s+/g, " ").trim()
       : "";
-    return `${surface}|${heading}|${uniqueIds.join(",")}`;
+    return `${surface}|${heading}|${structuralEntries.join(",")}`;
   }
 
   function scheduleSignatureCheck(forceScan = false) {
@@ -94,7 +107,7 @@
       if (!signature) return;
       if (forceScan || signature !== lastListSignature) {
         lastListSignature = signature;
-        scanVisibleSurface(surface, { retryIfEmpty: false, force: false });
+        scanVisibleSurface(surface, { retryIfEmpty: false, force: false, cancelObsolete: true });
       }
     }, 120);
   }
@@ -115,11 +128,13 @@
     lastListSignature = "";
 
     if (surface === "other") {
+      cancelQueuedListRequests("Market Edge left a supported market/list view.");
       clearInlineAnalysis();
       removeFloatingUi();
       return;
     }
     if (surface === "itemmarket") {
+      cancelQueuedListRequests("Market Edge opened detailed Item Market analysis.");
       clearInlineAnalysis();
       ensureUi();
       await renderItemMarket();

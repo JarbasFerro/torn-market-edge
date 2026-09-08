@@ -45,6 +45,67 @@
     return candidates[0]?.element || card;
   }
 
+  function priceForSurfaceCard(surface, card, explicitElement = null) {
+    if (!card) return null;
+    const explicit = parseMoney(explicitElement?.textContent || "");
+    if (explicit) return explicit;
+
+    const candidates = [];
+    const selector = [
+      "[data-testid*='price']",
+      "[class*='price']",
+      "[aria-label*='price']",
+      "button",
+      "a",
+      "span",
+      "strong",
+      "b",
+      "div"
+    ].join(",");
+
+    card.querySelectorAll(selector).forEach((element) => {
+      if (!(element instanceof HTMLElement)) return;
+      if (element.closest(".me-inline-analysis,#market-edge-root")) return;
+      const rect = element.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+
+      const directText = Array.from(element.childNodes)
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.textContent || "")
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
+      const text = directText || (element.textContent || "").replace(/\s+/g, " ").trim();
+      if (!text || text.length > 140) return;
+      const price = parseMoney(text);
+      if (!price) return;
+
+      const metadata = `${element.getAttribute("data-testid") || ""} ${element.className || ""} ${element.getAttribute("aria-label") || ""} ${element.getAttribute("title") || ""}`;
+      let score = 0;
+      if (/price/i.test(element.getAttribute("data-testid") || "")) score += 100;
+      if (/price|cost/i.test(metadata)) score += 45;
+      if (element.matches("button,a")) score += 15;
+
+      if (surface === "bazaar") {
+        if (/\brrp\b|market\s+(?:value|price)|estimated\s+value|\bvalue\s*:/i.test(text)) score -= 250;
+        if (/\bprice\b|\bbuy\b|\beach\b|\bunit\b/i.test(`${text} ${metadata}`)) score += 35;
+      } else if (surface === "travel") {
+        if (/market\s+(?:value|price)|resale|\bsell\b|\bvalue\s*:/i.test(text)) score -= 200;
+        if (/\bcost\b|\bprice\b|\bbuy\b|\beach\b|\bunit\b/i.test(`${text} ${metadata}`)) score += 35;
+      }
+
+      candidates.push({ price, score, textLength: text.length, area: rect.width * rect.height });
+    });
+
+    candidates.sort((a, b) => b.score - a.score || a.textLength - b.textLength || a.area - b.area);
+    if (candidates.length && candidates[0].score > -100) return candidates[0].price;
+
+    // On Bazaar/travel pages a missing value is safer than falling back to an
+    // arbitrary dollar amount from the card (RRP, market value, etc.).
+    if (surface === "bazaar" || surface === "travel") return null;
+    return parseMoney(card.innerText || "");
+  }
+
   function collectVisibleItems({ requireMoney = false } = {}) {
     const candidates = new Set();
     const selector = itemIdentitySelector();
@@ -76,7 +137,7 @@
       if (rect && (rect.width <= 0 || rect.height <= 0)) continue;
       const text = card?.innerText || "";
       const priceElement = card?.querySelector?.('[data-testid="price"]');
-      const price = requireMoney ? (parseMoney(priceElement?.textContent || "") || parseMoney(text)) : null;
+      const price = requireMoney ? priceForSurfaceCard(detectSurface(), card, priceElement) : null;
       if (requireMoney && !price) continue;
       const quantity = parseQuantity(text);
       const name = elementItemName(card, node);

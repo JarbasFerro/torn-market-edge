@@ -794,12 +794,31 @@
       this.timer = null;
     }
 
-    schedule(task, priority = 0) {
+    schedule(task, priority = 0, meta = {}) {
       return new Promise((resolve, reject) => {
-        this.queue.push({ task, priority, resolve, reject, sequence: this.sequence++ });
+        this.queue.push({ task, priority, meta, resolve, reject, sequence: this.sequence++ });
         this.queue.sort((a, b) => b.priority - a.priority || a.sequence - b.sequence);
         this.pump();
       });
+    }
+
+    cancelQueued(predicate, reason = "Market Edge request superseded by page navigation.") {
+      const kept = [];
+      let canceled = 0;
+      for (const job of this.queue) {
+        if (!predicate(job)) {
+          kept.push(job);
+          continue;
+        }
+        const error = new Error(reason);
+        error.name = "AbortError";
+        error.marketEdgeCanceled = true;
+        job.reject(error);
+        canceled += 1;
+      }
+      this.queue = kept;
+      if (canceled) this.pump();
+      return canceled;
     }
 
     pump() {
@@ -848,7 +867,7 @@
       return url.toString();
     }
 
-    async request(path, { cacheMs = 25000, priority = 0 } = {}) {
+    async request(path, { cacheMs = 25000, priority = 0, queueGroup = null } = {}) {
       const key = Store.apiKey();
       if (!key) throw new Error("API key missing. Open Market Edge settings.");
 
@@ -891,7 +910,7 @@
             ontimeout: () => reject(new Error("Torn API request timed out."))
           });
         });
-      }, priority)
+      }, priority, { path, queueGroup })
         .then((data) => {
           this.memoryCache.set(cacheKey, { at: Date.now(), data });
           return data;
@@ -909,9 +928,9 @@
       return { ok: true, playerId: playerId || null, data };
     }
 
-    async itemMarket(itemId, { limit = API_LIST_LIMIT, priority = 0 } = {}) {
+    async itemMarket(itemId, { limit = API_LIST_LIMIT, priority = 0, queueGroup = null } = {}) {
       const safeLimit = clamp(asInt(limit, API_LIST_LIMIT), 1, API_DEEP_LIMIT);
-      return this.request(`/market/${asInt(itemId)}/itemmarket?limit=${safeLimit}&offset=0`, { priority });
+      return this.request(`/market/${asInt(itemId)}/itemmarket?limit=${safeLimit}&offset=0`, { priority, queueGroup });
     }
 
     async items(itemIds, { priority = 120 } = {}) {
@@ -992,7 +1011,7 @@
     return { snapshot, historyStats: calculateHistoryStats(history) };
   }
 
-  async function loadSnapshot(itemId, { limit = API_LIST_LIMIT, priority = 0, onCached = null } = {}) {
+  async function loadSnapshot(itemId, { limit = API_LIST_LIMIT, priority = 0, onCached = null, queueGroup = null } = {}) {
     const persisted = Store.snapshot(itemId);
     const persistedState = snapshotCacheState(persisted);
     if (persisted && typeof onCached === "function") {
@@ -1007,7 +1026,7 @@
       return { ...snapshotBundle(persisted), cacheState: persistedState, source: "persistent-cache" };
     }
 
-    const payload = await api.itemMarket(itemId, { limit, priority });
+    const payload = await api.itemMarket(itemId, { limit, priority, queueGroup });
     const snapshot = normalizeMarketResponse(itemId, payload);
     Store.saveSnapshot(snapshot);
     Store.appendHistory(snapshot, settings);
@@ -1245,6 +1264,67 @@
     return candidates[0]?.element || card;
   }
 
+  function priceForSurfaceCard(surface, card, explicitElement = null) {
+    if (!card) return null;
+    const explicit = parseMoney(explicitElement?.textContent || "");
+    if (explicit) return explicit;
+
+    const candidates = [];
+    const selector = [
+      "[data-testid*='price']",
+      "[class*='price']",
+      "[aria-label*='price']",
+      "button",
+      "a",
+      "span",
+      "strong",
+      "b",
+      "div"
+    ].join(",");
+
+    card.querySelectorAll(selector).forEach((element) => {
+      if (!(element instanceof HTMLElement)) return;
+      if (element.closest(".me-inline-analysis,#market-edge-root")) return;
+      const rect = element.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+
+      const directText = Array.from(element.childNodes)
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.textContent || "")
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
+      const text = directText || (element.textContent || "").replace(/\s+/g, " ").trim();
+      if (!text || text.length > 140) return;
+      const price = parseMoney(text);
+      if (!price) return;
+
+      const metadata = `${element.getAttribute("data-testid") || ""} ${element.className || ""} ${element.getAttribute("aria-label") || ""} ${element.getAttribute("title") || ""}`;
+      let score = 0;
+      if (/price/i.test(element.getAttribute("data-testid") || "")) score += 100;
+      if (/price|cost/i.test(metadata)) score += 45;
+      if (element.matches("button,a")) score += 15;
+
+      if (surface === "bazaar") {
+        if (/\brrp\b|market\s+(?:value|price)|estimated\s+value|\bvalue\s*:/i.test(text)) score -= 250;
+        if (/\bprice\b|\bbuy\b|\beach\b|\bunit\b/i.test(`${text} ${metadata}`)) score += 35;
+      } else if (surface === "travel") {
+        if (/market\s+(?:value|price)|resale|\bsell\b|\bvalue\s*:/i.test(text)) score -= 200;
+        if (/\bcost\b|\bprice\b|\bbuy\b|\beach\b|\bunit\b/i.test(`${text} ${metadata}`)) score += 35;
+      }
+
+      candidates.push({ price, score, textLength: text.length, area: rect.width * rect.height });
+    });
+
+    candidates.sort((a, b) => b.score - a.score || a.textLength - b.textLength || a.area - b.area);
+    if (candidates.length && candidates[0].score > -100) return candidates[0].price;
+
+    // On Bazaar/travel pages a missing value is safer than falling back to an
+    // arbitrary dollar amount from the card (RRP, market value, etc.).
+    if (surface === "bazaar" || surface === "travel") return null;
+    return parseMoney(card.innerText || "");
+  }
+
   function collectVisibleItems({ requireMoney = false } = {}) {
     const candidates = new Set();
     const selector = itemIdentitySelector();
@@ -1276,7 +1356,7 @@
       if (rect && (rect.width <= 0 || rect.height <= 0)) continue;
       const text = card?.innerText || "";
       const priceElement = card?.querySelector?.('[data-testid="price"]');
-      const price = requireMoney ? (parseMoney(priceElement?.textContent || "") || parseMoney(text)) : null;
+      const price = requireMoney ? priceForSurfaceCard(detectSurface(), card, priceElement) : null;
       if (requireMoney && !price) continue;
       const quantity = parseQuantity(text);
       const name = elementItemName(card, node);
@@ -1914,33 +1994,28 @@
         return;
       }
 
-      let analysisSnapshot = snapshot;
-      let liveConfirmation = "API discovery";
       const liveRows = parseLiveItemMarketListings();
-      if (liveRows.length >= 2) {
-        const liveListings = liveRows.map((row) => ({ price: row.price, quantity: row.quantity }));
-        analysisSnapshot = {
-          ...snapshot,
-          listings: liveListings,
-          lowestPrice: liveListings[0]?.price ?? snapshot.lowestPrice,
-          secondPrice: liveListings[1]?.price ?? snapshot.secondPrice,
-          thirdPrice: liveListings[2]?.price ?? snapshot.thirdPrice,
-          calculatedMarketAnchor: robustMarketAnchor(liveListings),
-          depthMetrics: {
-            listingCount: liveListings.length,
-            top5Quantity: liveListings.slice(0, 5).reduce((sum, row) => sum + row.quantity, 0),
-            top20Quantity: liveListings.slice(0, 20).reduce((sum, row) => sum + row.quantity, 0)
-          }
-        };
-        liveConfirmation = "CONFIRMED ON PAGE";
-      }
 
-      const evaluated = evaluatePrefixes(analysisSnapshot, historyStats, settings);
+      // The official Torn API is the authoritative valuation source. The live
+      // DOM is used only to confirm/highlight what the player currently sees.
+      const evaluated = evaluatePrefixes(snapshot, historyStats, settings);
       const best = evaluated.best;
+      const compareCount = Math.max(2, best?.prefixCount || Math.min(5, snapshot.listings.length));
+      const liveMatchesApi = liveRows.length >= compareCount && snapshot.listings.length >= compareCount &&
+        Array.from({ length: compareCount }, (_, index) => (
+          liveRows[index]?.price === snapshot.listings[index]?.price &&
+          liveRows[index]?.quantity === snapshot.listings[index]?.quantity
+        )).every(Boolean);
+      const liveConfirmation = liveRows.length < 2
+        ? "API"
+        : (liveMatchesApi ? "PAGE MATCHES API" : "API - PAGE DIFFERS");
       const fresh = freshness(snapshot.cacheTimestamp);
       const reference = chooseReference(snapshot, historyStats);
       const learning = historyStats.oneDay.count < 5;
       const currentDiscount = reference.value && snapshot.lowestPrice ? 1 - snapshot.lowestPrice / reference.value : null;
+      const sourceWarning = liveRows.length >= 2 && !liveMatchesApi
+        ? `<div class="me-note me-warn">The visible Torn listings differ from the current API cache. Market Edge is keeping the official API snapshot authoritative and will not mix the two books.</div>`
+        : "";
 
       setPanel(`
         <div class="me-kicker">Item Market - ${escapeHtml(liveConfirmation)}</div>
@@ -1954,6 +2029,7 @@
           ["API age", `${formatAge(fresh.ageSeconds)} - ${fresh.label}`],
           ["Observations (24h)", String(historyStats.oneDay.count)]
         ])}
+        ${sourceWarning}
         <div class="me-rule"></div>
         <div class="me-kicker">Best opportunity</div>
         ${best ? metricRows([
@@ -1969,10 +2045,11 @@
         ${decisionHtml(best)}
         ${diagnosticsHtml(best)}
         ${learning ? `<div class="me-note me-learning">Learning market... ${historyStats.oneDay.count} observations collected. Until 5 observations, Market Edge applies an extra 2% safety haircut and does not treat current lowest as fair value.</div>` : ""}
-        <div class="me-note">Facts: visible/API asks and 5% Item Market fee. Local data: observed anchors. Exit, profit and confidence are estimates - not guarantees.</div>
+        <div class="me-note">Facts: official API asks and 5% Item Market fee. The visible page is used only for confirmation/highlighting. Local data: observed anchors. Exit, profit and confidence are estimates - not guarantees.</div>
       `, fresh.label);
 
-      highlightItemMarketRows(liveRows, best);
+      if (liveMatchesApi) highlightItemMarketRows(liveRows, best);
+      else clearBadges();
     } catch (error) {
       errorPanel(error.message);
     }
@@ -2045,18 +2122,42 @@
     };
   }
 
+  let listQueueGeneration = 0;
+  let activeListQueueGroup = "";
+
+  function beginListQueueGroup(surface, { cancelObsolete = false } = {}) {
+    const prefix = `list:${surface}:`;
+    if (cancelObsolete || !activeListQueueGroup.startsWith(prefix)) {
+      activeListQueueGroup = `${prefix}${++listQueueGeneration}`;
+      api.scheduler.cancelQueued(
+        (job) => String(job.meta?.queueGroup || "").startsWith("list:") && job.meta.queueGroup !== activeListQueueGroup,
+        "Market Edge list request superseded by a newer Torn view."
+      );
+    }
+    return activeListQueueGroup;
+  }
+
+  function cancelQueuedListRequests(reason = "Market Edge left the list view.") {
+    activeListQueueGroup = "";
+    return api.scheduler.cancelQueued(
+      (job) => String(job.meta?.queueGroup || "").startsWith("list:"),
+      reason
+    );
+  }
+
   function genericIntro(surface, { clear = true } = {}) {
     removeFloatingUi();
     if (clear) clearInlineAnalysis();
     // List-style surfaces use War-Overlay-style inline intelligence rather
     // than a floating results window. New rows are discovered incrementally.
-    setTimeout(() => scanVisibleSurface(surface, { retryIfEmpty: true, force: false }), 250);
+    setTimeout(() => scanVisibleSurface(surface, { retryIfEmpty: true, force: false, cancelObsolete: true }), 250);
   }
 
-  async function scanVisibleSurface(surface, { retryIfEmpty = false, force = false } = {}) {
+  async function scanVisibleSurface(surface, { retryIfEmpty = false, force = false, cancelObsolete = false } = {}) {
     removeFloatingUi();
     if (document.visibilityState !== "visible") return;
 
+    const queueGroup = beginListQueueGroup(surface, { cancelObsolete });
     const ownBazaar = surface === "bazaar" ? await isOwnBazaar() : false;
     if (detectSurface() !== surface || document.visibilityState !== "visible") return;
 
@@ -2069,7 +2170,7 @@
       if (retryIfEmpty) {
         setTimeout(() => {
           if (detectSurface() === surface && document.visibilityState === "visible") {
-            scanVisibleSurface(surface, { retryIfEmpty: false, force });
+            scanVisibleSurface(surface, { retryIfEmpty: false, force, cancelObsolete: false });
           }
         }, 650);
       }
@@ -2079,7 +2180,13 @@
     items = items.filter((visible) => {
       if (!visible?.card?.isConnected) return false;
       const existing = visible.card.querySelector?.(`.me-inline-analysis[data-me-item-id="${visible.itemId}"]`);
-      const scanning = visible.card.dataset?.meScanning === String(visible.itemId);
+      const scanningGroup = visible.card.dataset?.meScanningGroup || "";
+      const scanning = visible.card.dataset?.meScanning === String(visible.itemId) && scanningGroup === queueGroup;
+      if (cancelObsolete && scanningGroup && scanningGroup !== queueGroup) {
+        delete visible.card.dataset.meScanning;
+        delete visible.card.dataset.meScanningGroup;
+        if (existing?.classList.contains("me-loading")) existing.remove();
+      }
       if (force && existing) existing.remove();
       return force || (!scanning && existing?.dataset?.meComplete !== "1");
     });
@@ -2092,7 +2199,10 @@
 
     items.sort((a, b) => viewportPriority(b) - viewportPriority(a));
     items.forEach((visible) => {
-      if (visible.card?.dataset) visible.card.dataset.meScanning = String(visible.itemId);
+      if (visible.card?.dataset) {
+        visible.card.dataset.meScanning = String(visible.itemId);
+        visible.card.dataset.meScanningGroup = queueGroup;
+      }
       renderInlineLoading(visible);
     });
 
@@ -2117,6 +2227,7 @@
         const bundle = await loadSnapshot(visible.itemId, {
           limit: API_LIST_LIMIT,
           priority,
+          queueGroup,
           onCached: (cached) => {
             if (!visible.card?.isConnected || detectSurface() !== surface) return;
             renderedCached = true;
@@ -2139,10 +2250,14 @@
         });
         renderInlineResult(surface, result, ownBazaar);
       } catch (error) {
+        if (error?.marketEdgeCanceled) return;
         if (!renderedCached && visible.card?.isConnected) renderInlineError(visible, error.message);
         else log("Refresh failed; keeping cached row", visible.itemId, error.message);
       } finally {
-        if (visible.card?.dataset?.meScanning === String(visible.itemId)) delete visible.card.dataset.meScanning;
+        if (visible.card?.dataset?.meScanning === String(visible.itemId) && visible.card.dataset.meScanningGroup === queueGroup) {
+          delete visible.card.dataset.meScanning;
+          delete visible.card.dataset.meScanningGroup;
+        }
       }
     });
 
@@ -2157,6 +2272,14 @@
   let signatureTimer = null;
   let lastLocationKey = "";
   let lastListSignature = "";
+  const listRowIds = new WeakMap();
+  let nextListRowId = 1;
+
+  function listRowIdentity(card) {
+    if (!card || (typeof card !== "object" && typeof card !== "function")) return 0;
+    if (!listRowIds.has(card)) listRowIds.set(card, nextListRowId++);
+    return listRowIds.get(card);
+  }
 
   function scheduleRefresh(force = false) {
     clearTimeout(refreshTimer);
@@ -2165,7 +2288,7 @@
 
   function listSurfaceSignature(surface) {
     if (!["bazaar", "auction", "travel", "inventory"].includes(surface)) return "";
-    const ids = [];
+    const entries = new Set();
     const marker = surface === "inventory" ? inventoryListMarker() : null;
     document.querySelectorAll(itemIdentitySelector()).forEach((node) => {
       if (node.closest?.("#market-edge-root,.me-inline-analysis")) return;
@@ -2175,13 +2298,13 @@
       if (surface === "inventory" && !isInventoryListCandidate(card, marker)) return;
       const rect = card?.getBoundingClientRect?.();
       if (rect && (rect.width <= 0 || rect.height <= 0)) return;
-      ids.push(itemId);
+      entries.add(`${itemId}@${listRowIdentity(node)}`);
     });
-    const uniqueIds = Array.from(new Set(ids)).sort((a, b) => a - b);
+    const structuralEntries = Array.from(entries).sort();
     const heading = surface === "inventory"
       ? String(marker?.textContent || "").replace(/\s+/g, " ").trim()
       : "";
-    return `${surface}|${heading}|${uniqueIds.join(",")}`;
+    return `${surface}|${heading}|${structuralEntries.join(",")}`;
   }
 
   function scheduleSignatureCheck(forceScan = false) {
@@ -2194,7 +2317,7 @@
       if (!signature) return;
       if (forceScan || signature !== lastListSignature) {
         lastListSignature = signature;
-        scanVisibleSurface(surface, { retryIfEmpty: false, force: false });
+        scanVisibleSurface(surface, { retryIfEmpty: false, force: false, cancelObsolete: true });
       }
     }, 120);
   }
@@ -2215,11 +2338,13 @@
     lastListSignature = "";
 
     if (surface === "other") {
+      cancelQueuedListRequests("Market Edge left a supported market/list view.");
       clearInlineAnalysis();
       removeFloatingUi();
       return;
     }
     if (surface === "itemmarket") {
+      cancelQueuedListRequests("Market Edge opened detailed Item Market analysis.");
       clearInlineAnalysis();
       ensureUi();
       await renderItemMarket();
