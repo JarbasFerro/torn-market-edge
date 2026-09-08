@@ -106,7 +106,26 @@
 
   // Expanded item-details panels on sell-side surfaces: price the exact copy
   // against the deep order book (limit 100) and ended Auction House sales.
+  function removeDetailCards(panel) {
+    let card = findDetailCard(panel);
+    while (card) {
+      card.remove();
+      card = findDetailCard(panel);
+    }
+  }
+
+  // Torn keeps the details container when a panel collapses; the card must
+  // not outlive the stats block it was attached to.
+  function cleanupOrphanedDetailCards() {
+    document.querySelectorAll(".me-equip-card").forEach((card) => {
+      const previous = card.previousElementSibling;
+      const anchored = previous && !previous.classList.contains("me-equip-card") && /Quality:\s*[^\d]*[\d.]+\s*%/i.test(previous.textContent || "");
+      if (!anchored) card.remove();
+    });
+  }
+
   async function scanExpandedEquipment(surface, ownBazaar, queueGroup) {
+    cleanupOrphanedDetailCards();
     if (settings.equipmentEnabled === false) return;
     const sellSide = surface === "inventory" || (surface === "bazaar" && ownBazaar);
     if (!sellSide || !Store.apiKey()) return;
@@ -117,7 +136,10 @@
       log("Details panel scan failed", error.message);
       return;
     }
-    details = details.filter((detail) => detail.panel.querySelector(`:scope .me-equip-card[data-me-detail-key="${CSS.escape ? CSS.escape(detail.key) : detail.key}"][data-me-complete="1"]`) === null);
+    details = details.filter((detail) => {
+      const card = findDetailCard(detail.panel);
+      return !(card && card.dataset.meDetailKey === detail.key && card.dataset.meComplete === "1");
+    });
     if (!details.length) return;
 
     await Promise.allSettled(details.map(async (detail) => {
@@ -126,7 +148,7 @@
         const bundle = await loadSnapshot(detail.itemId, { limit: API_DEEP_LIMIT, priority: 180, queueGroup });
         if (!detail.panel.isConnected || detectSurface() !== surface) return;
         if (!bundle.snapshot.equipment) {
-          detail.panel.querySelectorAll(":scope .me-equip-card").forEach((node) => node.remove());
+          removeDetailCards(detail.panel);
           return;
         }
         const auctionSales = await loadAuctionSales(detail.itemId, { priority: 170 });
@@ -137,7 +159,7 @@
       } catch (error) {
         if (error?.marketEdgeCanceled) return;
         log("Details pricing failed", detail.itemId, error.message);
-        detail.panel.querySelectorAll(":scope .me-equip-card").forEach((node) => node.remove());
+        removeDetailCards(detail.panel);
       }
     }));
   }

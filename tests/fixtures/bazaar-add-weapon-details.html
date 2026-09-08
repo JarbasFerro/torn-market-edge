@@ -3,20 +3,26 @@
 <div id="mainContainer">
   <div id="bazaarRoot" class="bazaar-main-wrap">
     <h4 class="title">Add items to your Bazaar</h4>
-    <div class="info">You are adding 0 items across 0 categories</div>
+    <div class="info">You are adding 0 items across 0 categories for a total of $0 to your Bazaar. Torn lists every item you own in this category with its price control and a quantity checkbox, and explains the fees that apply when the Bazaar is opened to the public, the maximum number of listings you may hold, and the daily limits that apply to bulk purchases from other players. This paragraph is intentionally long so that the page root exceeds the text budget used to reject wrapper containers, exactly like the real Torn page where the surrounding chrome, navigation and descriptions add thousands of characters around each item row and its details panel, which keeps the innermost stats block as the only sensible anchor for the pricing card. It also mirrors the fact that Torn repeats the item name, the category tabs and the totals bar above the list, so text matching alone can never identify a row and the script must rely on structure instead. Rows are list items with an image wrap, a title wrap and an amount wrap holding the price input and the quantity checkbox; when a row is expanded, Torn injects the item information block, including the description, the large image, the stats list with damage, accuracy, rate of fire, stealth, caliber, ammo and quality, and the bonus slots, inside that same list item, which is why the expanded row becomes several screens tall on mobile devices and why the height filter used for ordinary rows must not reject it. The same structure appears on the inventory page, where the details block follows the row that was tapped, and on the manage view of the Bazaar, where existing listings show the price per unit field instead of the add controls. None of this text carries a quality percentage or a damage figure, so it cannot be mistaken for a details panel by the collector, and its only purpose is to make the fixture realistic in size.</div>
     <ul class="items-cont">
       <li class="clearfix">
+        <div class="image-wrap"><img src="/images/items/2/large.png" alt="Fixture Uzi"></div>
+        <div class="title-wrap"><span class="name">Fixture Uzi</span></div>
+        <div class="amount-main-wrap">
+          <div class="choice-container"><input type="checkbox"></div>
+          <div class="price"><input class="input-money" type="text" placeholder="Price"></div>
+        </div>
+      </li>
+      <li class="clearfix expanded">
         <div class="image-wrap"><img src="/images/items/1/large.png" alt="Fixture Rifle"></div>
         <div class="title-wrap"><span class="name">Fixture Rifle</span></div>
         <div class="amount-main-wrap">
           <div class="choice-container"><input type="checkbox"></div>
           <div class="price"><input class="input-money" type="text" placeholder="Price"></div>
         </div>
-      </li>
-      <li class="item-info-wrap">
-        <div class="info-wrap">
+        <div class="item-info-wrap">
           <div class="stats-bar"><span class="damage">65.55</span> <span class="accuracy">44.21</span> <span class="bonus-slot"><i class="bonus-attachment-empty"></i></span></div>
-          <p>The <b>Fixture Rifle</b> is a Rifle Weapon.</p>
+          <p>The <b>Fixture Rifle</b> is a Rifle Weapon. Powerful, accurate and virtually unbreakable.</p>
           <img class="big" src="/images/items/1/large.png" alt="Fixture Rifle">
           <ul class="details">
             <li>Buy: $1,100,000 (Mexico)</li>
@@ -29,6 +35,14 @@
             <li>Stealth: 3.4</li>
             <li>Quality: 51.00%</li>
           </ul>
+        </div>
+      </li>
+      <li class="clearfix">
+        <div class="image-wrap"><img src="/images/items/1/large.png" alt="Fixture Rifle"></div>
+        <div class="title-wrap"><span class="name">Fixture Rifle</span></div>
+        <div class="amount-main-wrap">
+          <div class="choice-container"><input type="checkbox"></div>
+          <div class="price"><input class="input-money" type="text" placeholder="Price"></div>
         </div>
       </li>
       <li class="clearfix">

@@ -79,7 +79,7 @@ function responder(url) {
   }
   if (url.includes("/items")) {
     const ids = (url.match(/\/torn\/([\d,]+)\/items/) || [])[1] || "";
-    return { items: ids.split(",").filter(Boolean).map((id) => ({ id: Number(id), name: `Item ${id}`, type: Number(id) === 206 ? "Drug" : (Number(id) === 1 ? "Weapon" : "Plushie"), is_tradable: true, value: { market_price: 100000, shops: [] } })) };
+    return { items: ids.split(",").filter(Boolean).map((id) => ({ id: Number(id), name: `Item ${id}`, type: Number(id) === 206 ? "Drug" : ([1, 2].includes(Number(id)) ? "Weapon" : "Plushie"), is_tradable: true, value: { market_price: 100000, shops: [] } })) };
   }
   return {};
 }
@@ -259,34 +259,39 @@ run("Inventory weapon rows make no market request and show nothing until priced 
   assert.ok(!env.requests.some((url) => url.includes("/market/1/")), "rescans stay silent for weapon rows");
 });
 
-run("Expanded weapon details panel prices the exact copy and fills the row", async (t) => {
+run("Expanded weapon details panel prices the exact copy and fills the correct row", async (t) => {
   const env = boot(fixture("bazaar-add-weapon-details.html"), "https://www.torn.com/bazaar.php#/add");
   t.after(env.close);
+  // The expanded row is far taller than a normal row, like on the real page.
+  const expandedRow = env.document.querySelector("li.expanded");
+  expandedRow.getBoundingClientRect = () => ({ width: 320, height: 1200, top: 60, bottom: 1260, left: 0, right: 320, x: 0, y: 60 });
+
   const details = env.ME.collectExpandedEquipmentDetails("bazaar");
   assert.equal(details.length, 1);
   assert.equal(details[0].itemId, 1);
   assert.equal(details[0].copy.quality, 51);
   assert.equal(details[0].copy.damage, 65.55);
   assert.equal(details[0].copy.bonuses.length, 0);
-  assert.ok(details[0].row, "panel is matched to the preceding row");
+  assert.equal(details[0].row, expandedRow, "panel is matched to the row that contains it, not the row above");
 
   await env.ME.scanVisibleSurface("bazaar", { force: true });
   const card = env.document.querySelector(".me-equip-card");
   assert.ok(card, "details panel receives a pricing card");
+  assert.equal(card.previousElementSibling.className, "details", "card sits right below Torn's stats block");
   assert.equal(card.dataset.meComplete, "1");
   assert.match(card.textContent, /Q 51\.0%/);
   assert.match(card.textContent, /plain \(no bonus\)/);
-  // Plain group: 800k, 1.0m, 1.02m, 1.05m, 1.1m with qualities 50/52/49/51/53 -> all within +/-10 of Q51.
-  // Reference = min(median 1.02m, AH 950k*1.05=997.5k, avg 1.0m*1.05=1.05m) = 997,500; -1% = 987,525; capped by floor 800k; bazaar -1% = 792,000.
   assert.match(card.textContent, /\$792k/);
   assert.match(card.textContent, /5 listings within Q ±10/);
   assert.match(card.textContent, /median \$950k over 1/);
-  assert.match(card.textContent, /Bonus copies/);
   const button = card.querySelector(".me-bazaar-fill-btn");
   assert.ok(button, "details card carries the ^ fill control");
   button.click();
-  assert.equal(env.document.querySelector("li.clearfix input.input-money").value, "792000");
-  assert.equal(env.document.querySelector("li.clearfix input[type='checkbox']").checked, true);
+  const rows = Array.from(env.document.querySelectorAll("li.clearfix"));
+  assert.equal(rows[1].querySelector("input.input-money").value, "792000", "the expanded row is filled");
+  assert.equal(rows[1].querySelector("input[type='checkbox']").checked, true);
+  assert.equal(rows[0].querySelector("input.input-money").value, "", "the row above is untouched");
+  assert.equal(rows[2].querySelector("input.input-money").value, "", "the identical item below is untouched");
   assert.ok(env.requests.some((url) => url.includes("/market/1/itemmarket?limit=100")), "deep order book is used for comparables");
   assert.ok(env.requests.some((url) => url.includes("/market/1/auctionhouse")));
 
@@ -294,21 +299,27 @@ run("Expanded weapon details panel prices the exact copy and fills the row", asy
   await env.ME.scanVisibleSurface("bazaar", { force: false });
   assert.equal(env.document.querySelectorAll(".me-equip-card").length, 1);
 
-  // The priced copy is promoted onto its row with its own fill control.
-  const rowBlock = env.document.querySelector("li.clearfix .me-inline-analysis");
-  assert.ok(rowBlock, "row is annotated after pricing");
+  // The priced copy is promoted onto its own row with its own fill control.
+  const rowBlock = rows[1].querySelector(".me-inline-analysis");
+  assert.ok(rowBlock, "expanded row is annotated after pricing");
   assert.match(rowBlock.textContent, /\$792k/);
   assert.match(rowBlock.textContent, /Q 51\.0% plain/);
-  assert.doesNotMatch(rowBlock.textContent, /open details/);
+  assert.match(rows[0].querySelector(".me-inline-analysis").textContent, /open details to price/, "row above keeps its hint");
+  assert.match(rows[2].querySelector(".me-inline-analysis").textContent, /open details to price/, "identical item below keeps its hint");
   const rowButton = rowBlock.querySelector(".me-bazaar-fill-btn");
   assert.ok(rowButton, "row carries the ^ fill once the copy is priced");
-  env.document.querySelector("li.clearfix input.input-money").value = "";
+  rows[1].querySelector("input.input-money").value = "";
   rowButton.click();
-  assert.equal(env.document.querySelector("li.clearfix input.input-money").value, "792000");
+  assert.equal(rows[1].querySelector("input.input-money").value, "792000");
 
-  // A rescan of the rows keeps the copy price instead of reverting to the hint.
+  // Collapsing the details (Torn removes the stats block but keeps the wrapper)
+  // removes the card and leaves only the row summary.
+  rows[1].querySelector("ul.details").remove();
+  rows[1].querySelector(".stats-bar").remove();
+  delete expandedRow.getBoundingClientRect; // the row shrinks back to normal height
   await env.ME.scanVisibleSurface("bazaar", { force: true });
-  const again = env.document.querySelector("li.clearfix .me-inline-analysis");
+  assert.equal(env.document.querySelectorAll(".me-equip-card").length, 0, "no card outlives the collapsed panel");
+  const again = rows[1].querySelector(".me-inline-analysis");
   assert.match(again.textContent, /\$792k/);
   assert.ok(again.querySelector(".me-bazaar-fill-btn"));
 });

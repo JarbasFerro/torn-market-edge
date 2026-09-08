@@ -6,6 +6,14 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-09-08
+
+### Fixed
+
+- **Details-panel pricing was attached to the row above the expanded item.** An expanded row grows far beyond the normal row height and was dropped by the row detector, so the panel fell back to the previous row. Expanded rows are now kept, the panel is matched to the row that contains it, and the `^` fills that row only. Identical items above and below are untouched.
+- **Pricing cards no longer outlive a collapsed details panel.** The card is inserted right below Torn's stats block and removed as soon as that block disappears, leaving only the compact row summary (price, `^`, quality and bonus label).
+- Add-form rows are never mistaken for existing Bazaar listings: the managed-listing collector is skipped on the add route and ignores rows that carry the add controls.
+
 ## [0.3.4] - 2026-09-08
 
 ### Changed

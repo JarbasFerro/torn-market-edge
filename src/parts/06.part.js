@@ -118,7 +118,7 @@
   function renderEquipmentDetailCard(detail, pricing, { canFill = false, loading = false } = {}) {
     const panel = detail?.panel;
     if (!panel?.isConnected) return null;
-    panel.querySelectorAll(":scope .me-equip-card").forEach((node) => node.remove());
+    removeDetailCards(panel);
     const card = document.createElement("div");
     card.className = "me-equip-card";
     card.dataset.meDetailKey = detail.key;
@@ -133,7 +133,7 @@
 
     if (loading) {
       card.innerHTML = `<div class="me-equip-head"><span class="me-equip-brand">ME</span><span class="me-equip-alt">${escapeHtml(copyLabel)}</span><span class="me-equip-alt">pricing this copy...</span></div>`;
-      panel.appendChild(card);
+      panel.insertAdjacentElement("afterend", card);
       return card;
     }
 
@@ -141,7 +141,7 @@
       const groupCount = pricing?.group?.count || 0;
       card.innerHTML = `<div class="me-equip-head"><span class="me-equip-brand">ME</span><span class="me-equip-alt">${escapeHtml(copyLabel)}</span></div>
         <div class="me-equip-note">No comparable ${escapeHtml(pricing?.groupLabel || "listings")} ${groupCount ? "" : "are on the Item Market and no recent Auction House sales were found"}. Price this copy manually or check the Item Market page for the closest rolls.</div>`;
-      panel.appendChild(card);
+      panel.insertAdjacentElement("afterend", card);
       return card;
     }
 
@@ -174,7 +174,7 @@
       <div class="me-equip-facts">${facts.map(([label, value]) => `<span class="label">${escapeHtml(label)}</span><span class="value">${escapeHtml(value)}</span>`).join("")}</div>
       ${warn}
       <div class="me-equip-note">Reference ${formatMoney(pricing.reference)} from ${escapeHtml(pricing.referenceSource)}, minus safety haircut, never above the cheapest comparable. Estimates, not guarantees; ADD TO BAZAAR stays manual.</div>`;
-    panel.appendChild(card);
+    panel.insertAdjacentElement("afterend", card);
 
     const button = card.querySelector(".me-bazaar-fill-btn");
     if (button && detail.row) {

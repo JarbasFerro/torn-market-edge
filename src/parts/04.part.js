@@ -291,7 +291,10 @@
       if (!(row instanceof HTMLElement) || row.classList.contains("disabled")) return false;
       if (String(row.className || "").includes("item___UN3Mg")) return false;
       const rect = row.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0 || rect.height > 300) return false;
+      if (rect.width <= 0 || rect.height <= 0) return false;
+      // Expanded rows carry Torn's item-details panel and grow well past the
+      // normal row height; they must stay recognisable.
+      if (rect.height > 300 && !/Quality:\s*[^\d]*[\d.]+\s*%/i.test(row.textContent || "")) return false;
       const image = row.querySelector("div.image-wrap img, img[src*='/items/'], img[srcset*='/items/']");
       const amount = row.querySelector("div[class*='amount___'], div.amount-main-wrap") || row;
       const input = Array.from(amount.querySelectorAll("input")).find((candidate) => {
@@ -470,10 +473,14 @@
   }
 
   function collectManagedBazaarItems() {
+    // Managed listings never appear on the add route, and add rows are
+    // recognisable by their amount/price control wrapper. Both guards stop a
+    // filled add row from being mistaken for an existing listing.
+    if (bazaarAddRouteActive()) return [];
     const candidates = new Set();
     const selector = itemIdentitySelector();
     document.querySelectorAll(selector).forEach((node) => {
-      if (!node.closest("#market-edge-root") && !node.closest(".me-inline-analysis")) candidates.add(node);
+      if (!node.closest("#market-edge-root") && !node.closest(".me-inline-analysis,.me-equip-card")) candidates.add(node);
     });
 
     const byId = new Map();
@@ -482,6 +489,7 @@
       if (!itemId) continue;
       const card = findOwnBazaarCard(node);
       if (!card || card.closest("#market-edge-root")) continue;
+      if (card.querySelector("div.amount-main-wrap, div[class*='amount___']") || card.closest("ul.items-cont li.clearfix")?.querySelector("div.amount-main-wrap, div[class*='amount___']")) continue;
       const rect = card.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) continue;
       const priceContext = findOwnBazaarPriceContext(card);
@@ -523,14 +531,21 @@
     return hints;
   }
 
+  const BAZAAR_ADD_ROW_SELECTOR = "ul.items-cont li.clearfix, div[class*='itemsContainner___'] div[class*='item___'], div[class*='rowItems___'] div[class*='item___']";
+
+  function findDetailCard(panel) {
+    const node = panel?.nextElementSibling;
+    return node?.classList?.contains("me-equip-card") ? node : null;
+  }
+
   function collectExpandedEquipmentDetails(surface) {
     const results = [];
     const candidates = [];
     const root = (surface === "bazaar" ? bazaarAddSection() : document.querySelector(".items-cont, [class*='itemsCont'], [class*='items-cont']")) || document.body;
     // textContent avoids forcing layout for every element; innerText is only
     // read for the few panels that match.
-    root.querySelectorAll("div,li,section").forEach((element) => {
-      if (!(element instanceof HTMLElement) || element.closest("#market-edge-root")) return;
+    root.querySelectorAll("div,li,section,ul").forEach((element) => {
+      if (!(element instanceof HTMLElement) || element.closest("#market-edge-root,.me-equip-card")) return;
       const text = (element.textContent || "").replace(/\s+/g, " ");
       if (text.length > 2500) return;
       if (!/Quality:\s*[^\d]*[\d.]+\s*%/i.test(text)) return;
@@ -539,42 +554,42 @@
       if (rect.width <= 0 || rect.height <= 0) return;
       candidates.push(element);
     });
-    // Keep the outermost panel per copy (nested wrappers repeat the text).
-    const panels = candidates.filter((element) => !candidates.some((other) => other !== element && other.contains(element)));
+    // Keep the innermost element that still holds the whole stats block: the
+    // card is inserted right after it, below Torn's stats.
+    const panels = candidates.filter((element) => !candidates.some((other) => other !== element && element.contains(other)));
 
     panels.forEach((panel) => {
-      let itemId = null;
-      const image = panel.querySelector("img[src*='/items/'], img[srcset*='/items/'], [style*='/items/']");
-      if (image) itemId = itemIdFromElement(image);
-      let row = null;
-      if (surface === "bazaar") {
-        const section = bazaarAddSection();
-        const rows = section ? knownBazaarAddRows(section) : [];
-        row = rows.find((candidate) => candidate.contains(panel)) || null;
-        if (!row) {
-          let sibling = panel.previousElementSibling;
-          for (let depth = 0; sibling && depth < 4 && !row; depth += 1, sibling = sibling.previousElementSibling) {
-            row = rows.find((candidate) => candidate === sibling || candidate.contains(sibling) || sibling.contains(candidate)) || null;
+      const rowSelector = surface === "bazaar" ? BAZAAR_ADD_ROW_SELECTOR : "li, tr, [role='row'], [class*='item___'], [class*='itemRow'], [class*='item-row']";
+      // The expanded row usually contains the panel. Otherwise walk up to the
+      // panel's top-level wrapper and look at the rows just before it.
+      let row = panel.closest(rowSelector);
+      if (row && surface === "inventory" && directItemIdsWithin(row).size !== 1) row = null;
+      if (!row) {
+        let top = panel;
+        while (top.parentElement && top.parentElement !== root && !top.parentElement.matches?.(rowSelector)) top = top.parentElement;
+        let sibling = top.previousElementSibling;
+        for (let depth = 0; sibling && depth < 4 && !row; depth += 1, sibling = sibling.previousElementSibling) {
+          if (sibling.matches?.(rowSelector) && directItemIdsWithin(sibling).size >= 1) row = sibling;
+          else {
+            const inner = sibling.querySelector?.(rowSelector);
+            if (inner && directItemIdsWithin(inner).size >= 1) row = inner;
           }
         }
-        if (!row && panel.parentElement) {
-          const parentRow = rows.find((candidate) => candidate.contains(panel.parentElement));
-          if (parentRow) row = parentRow;
-        }
-        if (!itemId && row) {
-          const rowImage = row.querySelector("div.image-wrap img, img[src*='/items/'], img[srcset*='/items/']");
-          itemId = itemIdFromElement(rowImage || row);
-        }
-      } else if (surface === "inventory") {
-        let sibling = panel.previousElementSibling;
-        for (let depth = 0; sibling && depth < 4 && !row; depth += 1, sibling = sibling.previousElementSibling) {
-          const ids = directItemIdsWithin(sibling);
-          if (ids.size === 1) row = sibling;
-        }
-        if (!itemId && row) itemId = Array.from(directItemIdsWithin(row))[0] || null;
+      }
+      // Item id: prefer the row image (unambiguous), then the panel's own image.
+      let itemId = null;
+      if (row) {
+        const rowImage = row.querySelector("div.image-wrap img, img[src*='/items/'], img[srcset*='/items/']");
+        itemId = itemIdFromElement(rowImage || row);
+      }
+      if (!itemId) {
+        const scope = row || panel.parentElement || panel;
+        const image = scope.querySelector("img[src*='/items/'], img[srcset*='/items/'], [style*='/items/']");
+        if (image) itemId = itemIdFromElement(image);
       }
       if (!itemId) return;
-      const copy = parseEquipmentDetailsText(panel.innerText || panel.textContent || "", detailsPanelHints(panel));
+      const hintScope = row || panel.parentElement || panel;
+      const copy = parseEquipmentDetailsText(panel.innerText || panel.textContent || "", detailsPanelHints(hintScope));
       if (!copy) return;
       results.push({ itemId, panel, row, copy, key: `${itemId}|${copy.quality}|${copy.damage}|${copy.armor}|${copy.bonuses.map((bonus) => bonus.title).join("+")}|${copy.rarity || ""}` });
     });
