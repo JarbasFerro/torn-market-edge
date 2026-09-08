@@ -482,7 +482,7 @@
     }
     if (surface === "bazaar" || surface === "inventory") {
       try {
-        collectExpandedEquipmentDetails(surface).forEach((detail) => entries.add(`detail:${detail.key}@${listRowIdentity(detail.panel)}`));
+        collectExpandedEquipmentDetails(surface, { resolveRows: false }).forEach((detail) => entries.add(`detail:${detail.key}@${listRowIdentity(detail.panel)}`));
       } catch {
         // Details detection is best effort.
       }

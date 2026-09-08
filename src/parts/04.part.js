@@ -598,28 +598,48 @@
     });
   }
 
-  function collectExpandedEquipmentDetails(surface) {
+  function collectExpandedEquipmentDetails(surface, { resolveRows = true } = {}) {
     const results = [];
     // The walker is linear and cheap, so the whole page is scanned; the row
     // association below keeps panels tied to their own item.
-    const root = document.body;
-    const panels = findStatsPanels(root);
+    const panels = findStatsPanels(document.body);
+    if (!panels.length) return results;
+
+    // Known rows: the add-form rows on the Bazaar, the inventory row cards
+    // elsewhere. Torn nests the panel inside the row on the Bazaar add form
+    // and places it after the row on the inventory page; both are handled by
+    // checking ancestors first, then the previous siblings of the panel's
+    // top-level wrapper.
+    let knownRows = [];
+    if (resolveRows) {
+      if (surface === "bazaar") {
+        const section = bazaarAddSection();
+        knownRows = section ? knownBazaarAddRows(section) : [];
+      } else if (surface === "inventory") {
+        knownRows = collectVisibleItems({ requireMoney: false }).map((item) => item.card);
+      }
+    }
+    const isKnown = (element) => knownRows.find((known) => known === element || known.contains(element) || element.contains(known)) || null;
 
     panels.forEach((panel) => {
-      const rowSelector = surface === "bazaar" ? BAZAAR_ADD_ROW_SELECTOR : "li, tr, [role='row'], [class*='item___'], [class*='itemRow'], [class*='item-row']";
-      // The expanded row usually contains the panel. Otherwise walk up to the
-      // panel's top-level wrapper and look at the rows just before it.
-      let row = panel.closest(rowSelector);
-      if (row && surface === "inventory" && directItemIdsWithin(row).size !== 1) row = null;
-      if (!row) {
-        let top = panel;
-        while (top.parentElement && top.parentElement !== root && !top.parentElement.matches?.(rowSelector)) top = top.parentElement;
-        let sibling = top.previousElementSibling;
-        for (let depth = 0; sibling && depth < 4 && !row; depth += 1, sibling = sibling.previousElementSibling) {
-          if (sibling.matches?.(rowSelector) && directItemIdsWithin(sibling).size >= 1) row = sibling;
-          else {
-            const inner = sibling.querySelector?.(rowSelector);
-            if (inner && directItemIdsWithin(inner).size >= 1) row = inner;
+      let row = null;
+      if (resolveRows) {
+        for (let ancestor = panel.parentElement, depth = 0; ancestor && ancestor !== document.body && depth < 12 && !row; depth += 1, ancestor = ancestor.parentElement) {
+          const known = knownRows.find((candidate) => candidate === ancestor);
+          if (known) row = known;
+        }
+        if (!row) {
+          let top = panel;
+          while (top.parentElement && top.parentElement !== document.body && !isKnown(top.parentElement) && !top.parentElement.querySelector?.(BAZAAR_ADD_ROW_SELECTOR)) top = top.parentElement;
+          let sibling = top.previousElementSibling;
+          for (let depth = 0; sibling && depth < 4 && !row; depth += 1, sibling = sibling.previousElementSibling) {
+            row = isKnown(sibling);
+          }
+        }
+        if (!row && surface === "inventory") {
+          let sibling = panel.closest("li,tr,[role='row']")?.previousElementSibling || null;
+          for (let depth = 0; sibling && depth < 4 && !row; depth += 1, sibling = sibling.previousElementSibling) {
+            if (directItemIdsWithin(sibling).size === 1) row = sibling;
           }
         }
       }
@@ -635,7 +655,7 @@
         if (image) itemId = itemIdFromElement(image);
       }
       if (!itemId) return;
-      const hintScope = row || panel.parentElement || panel;
+      const hintScope = row && row.contains(panel) ? row : (panel.parentElement || panel);
       const copy = parseEquipmentDetailsText(panel.innerText || panel.textContent || "", detailsPanelHints(hintScope));
       if (!copy) return;
       results.push({ itemId, panel, row, copy, key: `${itemId}|${copy.quality}|${copy.damage}|${copy.armor}|${copy.bonuses.map((bonus) => bonus.title).join("+")}|${copy.rarity || ""}` });

@@ -701,6 +701,7 @@
           }
         }, 650);
       }
+      await scanExpandedEquipment(surface, ownBazaar, queueGroup);
       return;
     }
 
@@ -717,7 +718,12 @@
       if (force && existing) existing.remove();
       return force || (!scanning && existing?.dataset?.meComplete !== "1");
     });
-    if (!items.length) return;
+    if (!items.length) {
+      // Every row is already annotated; an expanded details panel may still
+      // be new (opening one does not change the rows).
+      await scanExpandedEquipment(surface, ownBazaar, queueGroup);
+      return;
+    }
 
     if (!Store.apiKey()) {
       items.forEach((visible) => renderInlineError(visible, "Add API key in Market Edge settings"));

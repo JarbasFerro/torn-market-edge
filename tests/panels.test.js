@@ -323,3 +323,46 @@ run("Expanded weapon details panel prices the exact copy and fills the correct r
   assert.match(again.textContent, /\$792k/);
   assert.ok(again.querySelector(".me-bazaar-fill-btn"));
 });
+
+run("Opening details after the rows were already annotated still prices the copy", async (t) => {
+  const env = boot(fixture("bazaar-add-weapons.html"), "https://www.torn.com/bazaar.php#/add");
+  t.after(env.close);
+  await env.ME.scanVisibleSurface("bazaar", { force: true });
+  assert.equal(env.document.querySelector(".me-equip-card"), null);
+  // The player expands the rifle: Torn injects the details inside the row.
+  const rifleRow = env.document.querySelector("li.clearfix");
+  rifleRow.insertAdjacentHTML("beforeend", `<div class="item-info-wrap"><ul class="details">
+    <li><span class="label">Damage</span>: <span class="value">65.55</span></li>
+    <li><span class="label">Accuracy</span>: <span class="value">44.21</span></li>
+    <li><span class="label">Bonus</span>: <span class="value">24% Proficience</span></li>
+    <li><span class="label">Quality</span>: <span class="value">124.26% <span class="yellow">Yellow</span></span></li>
+  </ul></div>`);
+  await env.ME.scanVisibleSurface("bazaar", { force: false });
+  const card = env.document.querySelector(".me-equip-card");
+  assert.ok(card, "details are priced even though every row was already complete");
+  assert.match(card.textContent, /Q 124\.3%/);
+  assert.match(card.textContent, /Proficience 24%/);
+  assert.match(card.textContent, /YELLOW/);
+  assert.match(card.textContent, /No comparable YELLOW proficience/, "no bonus comparables in the stub book");
+  assert.equal(card.previousElementSibling.className, "details");
+});
+
+run("Inventory details block placed after the row prices the copy and promotes it to that row", async (t) => {
+  const env = boot(fixture("inventory-weapon-details.html"), "https://www.torn.com/item.php");
+  t.after(env.close);
+  await env.ME.scanVisibleSurface("inventory", { force: true });
+  const details = env.ME.collectExpandedEquipmentDetails("inventory");
+  assert.equal(details.length, 1);
+  assert.equal(details[0].itemId, 1);
+  assert.ok(details[0].row, "row resolved");
+  assert.ok(details[0].row.querySelector(".name").textContent.startsWith("x1 Fixture Rifle"), "the item row before the info block, not the info block itself");
+  const card = env.document.querySelector(".me-equip-card");
+  assert.ok(card, "inventory details get a pricing card");
+  assert.match(card.textContent, /\$792k/);
+  assert.equal(card.querySelector(".me-bazaar-fill-btn"), null, "no fill control on inventory");
+  const rowBlock = details[0].row.querySelector(".me-inline-analysis");
+  assert.ok(rowBlock);
+  assert.match(rowBlock.textContent, /BZ \$792k/);
+  assert.match(rowBlock.textContent, /Q 51\.0% plain/);
+  assert.ok(env.requests.some((url) => url.includes("/market/1/itemmarket?limit=100")));
+});

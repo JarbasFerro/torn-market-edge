@@ -6,6 +6,13 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-09-08
+
+### Fixed
+
+- **Opening a weapon's details after the page had already been scanned did nothing.** Once every row carried its completed marker, the scan exited before the details step. The details step now always runs, so expanding a copy at any time prices it.
+- **Inventory details are matched to the item row.** Torn places the inventory details block after the row (on the Bazaar add form it is nested inside), so the panel is now associated with the known item rows around it in both layouts. The priced copy is promoted onto its inventory row as `BZ | IM | quality/bonus`.
+
 ## [0.3.7] - 2026-09-08
 
 ### Fixed
