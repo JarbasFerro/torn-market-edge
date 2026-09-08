@@ -297,6 +297,27 @@
     return scored[0]?.input || null;
   }
 
+  function findBazaarAddQuantityInput(card, priceInput = null) {
+    if (!card) return null;
+    const candidates = Array.from(card.querySelectorAll("input")).filter((input) => {
+      if (input === priceInput) return false;
+      const rect = input.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0 && !["hidden", "checkbox", "radio"].includes(input.type);
+    });
+    if (!candidates.length) return null;
+
+    const scored = candidates.map((input) => {
+      const metadata = `${input.name || ""} ${input.id || ""} ${input.getAttribute("aria-label") || ""} ${input.getAttribute("placeholder") || ""} ${input.className || ""}`;
+      let score = 0;
+      if (/qty|quantity|amount|count/i.test(metadata)) score += 180;
+      if (/price|cost|unit/i.test(metadata)) score -= 140;
+      const rect = input.getBoundingClientRect();
+      return { input, score, left: rect.left };
+    });
+    scored.sort((a, b) => b.score - a.score || a.left - b.left);
+    return scored[0]?.input || null;
+  }
+
   function collectBazaarAddItems() {
     const section = bazaarAddSection();
     if (!section) return [];
@@ -310,8 +331,11 @@
       if (!card || card.closest("#market-edge-root")) return;
       const priceInput = findBazaarAddPriceInput(card);
       if (!priceInput) return;
+      const quantityInput = findBazaarAddQuantityInput(card, priceInput);
       const text = card.innerText || "";
       const quantity = parseQuantity(text);
+      const maxFromInput = parseIntegerField(quantityInput?.getAttribute("max"));
+      const maxAvailable = Math.max(1, Math.min(quantity, maxFromInput || quantity));
       const name = elementItemName(card, node);
       const key = card;
       const existing = byCard.get(key);
@@ -322,8 +346,10 @@
           name,
           price: parseIntegerField(priceInput.value) || 0,
           quantity,
+          maxAvailable,
           card,
           priceInput,
+          quantityInput,
           bazaarAdd: true,
           inlineAnchor: findItemTextHost(card, name),
           inlineMode: "inline",

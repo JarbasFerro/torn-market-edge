@@ -6,6 +6,14 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-09-08
+
+### Changed
+
+- The `>` action in **Add items to your Bazaar** now fills both the suggested selling price and the maximum available quantity for that item.
+- Quantity input detection prefers `Qty`/quantity-labelled fields and uses the row's visible `xN` stock as the maximum, respecting a smaller native input `max` when Torn provides one.
+- The final **ADD TO BAZAAR** action remains manual; Market Edge only fills fields after the user's explicit tap.
+
 ## [0.2.2] - 2026-09-08
 
 ### Added

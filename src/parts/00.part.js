@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.2.2
+// @version      0.2.3
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -23,12 +23,13 @@
 (function marketEdgeBootstrap(global) {
   "use strict";
 
-  // v0.2.2: SPA/API hardening plus explicit, user-triggered Bazaar add-form
-  // price suggestions. Market Edge never submits a Bazaar form automatically.
+  // v0.2.3: Bazaar add-form suggestions can explicitly fill both the
+  // suggested price and the player's maximum available quantity. Market Edge
+  // never submits a Bazaar form automatically.
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.2.2",
+    version: "0.2.3",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });

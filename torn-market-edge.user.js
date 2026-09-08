@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.2.2
+// @version      0.2.3
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -23,12 +23,13 @@
 (function marketEdgeBootstrap(global) {
   "use strict";
 
-  // v0.2.2: SPA/API hardening plus explicit, user-triggered Bazaar add-form
-  // price suggestions. Market Edge never submits a Bazaar form automatically.
+  // v0.2.3: Bazaar add-form suggestions can explicitly fill both the
+  // suggested price and the player's maximum available quantity. Market Edge
+  // never submits a Bazaar form automatically.
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.2.2",
+    version: "0.2.3",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -1515,6 +1516,27 @@
     return scored[0]?.input || null;
   }
 
+  function findBazaarAddQuantityInput(card, priceInput = null) {
+    if (!card) return null;
+    const candidates = Array.from(card.querySelectorAll("input")).filter((input) => {
+      if (input === priceInput) return false;
+      const rect = input.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0 && !["hidden", "checkbox", "radio"].includes(input.type);
+    });
+    if (!candidates.length) return null;
+
+    const scored = candidates.map((input) => {
+      const metadata = `${input.name || ""} ${input.id || ""} ${input.getAttribute("aria-label") || ""} ${input.getAttribute("placeholder") || ""} ${input.className || ""}`;
+      let score = 0;
+      if (/qty|quantity|amount|count/i.test(metadata)) score += 180;
+      if (/price|cost|unit/i.test(metadata)) score -= 140;
+      const rect = input.getBoundingClientRect();
+      return { input, score, left: rect.left };
+    });
+    scored.sort((a, b) => b.score - a.score || a.left - b.left);
+    return scored[0]?.input || null;
+  }
+
   function collectBazaarAddItems() {
     const section = bazaarAddSection();
     if (!section) return [];
@@ -1528,8 +1550,11 @@
       if (!card || card.closest("#market-edge-root")) return;
       const priceInput = findBazaarAddPriceInput(card);
       if (!priceInput) return;
+      const quantityInput = findBazaarAddQuantityInput(card, priceInput);
       const text = card.innerText || "";
       const quantity = parseQuantity(text);
+      const maxFromInput = parseIntegerField(quantityInput?.getAttribute("max"));
+      const maxAvailable = Math.max(1, Math.min(quantity, maxFromInput || quantity));
       const name = elementItemName(card, node);
       const key = card;
       const existing = byCard.get(key);
@@ -1540,8 +1565,10 @@
           name,
           price: parseIntegerField(priceInput.value) || 0,
           quantity,
+          maxAvailable,
           card,
           priceInput,
+          quantityInput,
           bazaarAdd: true,
           inlineAnchor: findItemTextHost(card, name),
           inlineMode: "inline",
@@ -2022,7 +2049,7 @@
     return result?.renderMeta?.stale ? `<span class="me-inline-stale" title="Showing cached data while Market Edge refreshes">*</span>` : "";
   }
 
-  function setBazaarPriceInput(input, value) {
+  function setBazaarInputValue(input, value) {
     if (!(input instanceof HTMLInputElement)) return false;
     const target = Math.max(1, asInt(value));
     if (!target) return false;
@@ -2049,7 +2076,7 @@
     const targetText = formatMoney(target);
     const block = renderInlineHtml(
       visible,
-      `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="Suggested Bazaar selling price">${targetText}</span><button class="me-bazaar-fill-btn" type="button" aria-label="Set Bazaar price to ${escapeHtml(targetText)}" title="Fill Torn price field with ${escapeHtml(targetText)}">&gt;</button>${stale}`,
+      `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="Suggested Bazaar selling price">${targetText}</span><button class="me-bazaar-fill-btn" type="button" aria-label="Fill Bazaar price and maximum quantity" title="Fill price with ${escapeHtml(targetText)} and quantity with max available">&gt;</button>${stale}`,
       "GREY",
       "me-bazaar-add"
     );
@@ -2060,10 +2087,17 @@
       event.preventDefault();
       event.stopPropagation();
       if (!visible.priceInput?.isConnected) return;
-      if (!setBazaarPriceInput(visible.priceInput, target)) return;
+      const priceFilled = setBazaarInputValue(visible.priceInput, target);
+      const maxAvailable = Math.max(1, asInt(visible.maxAvailable || visible.quantity, 1));
+      const quantityFilled = visible.quantityInput?.isConnected
+        ? setBazaarInputValue(visible.quantityInput, maxAvailable)
+        : false;
+      if (!priceFilled) return;
       visible.price = target;
       block.classList.add("me-applied");
-      button.title = `Price filled with ${targetText}`;
+      button.title = quantityFilled
+        ? `Filled ${maxAvailable} units at ${targetText}`
+        : `Price filled with ${targetText}; quantity field was not detected`;
       setTimeout(() => block?.classList?.remove("me-applied"), 700);
     });
     return block;

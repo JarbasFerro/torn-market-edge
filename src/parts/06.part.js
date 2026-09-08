@@ -7,7 +7,7 @@
     return result?.renderMeta?.stale ? `<span class="me-inline-stale" title="Showing cached data while Market Edge refreshes">*</span>` : "";
   }
 
-  function setBazaarPriceInput(input, value) {
+  function setBazaarInputValue(input, value) {
     if (!(input instanceof HTMLInputElement)) return false;
     const target = Math.max(1, asInt(value));
     if (!target) return false;
@@ -34,7 +34,7 @@
     const targetText = formatMoney(target);
     const block = renderInlineHtml(
       visible,
-      `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="Suggested Bazaar selling price">${targetText}</span><button class="me-bazaar-fill-btn" type="button" aria-label="Set Bazaar price to ${escapeHtml(targetText)}" title="Fill Torn price field with ${escapeHtml(targetText)}">&gt;</button>${stale}`,
+      `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="Suggested Bazaar selling price">${targetText}</span><button class="me-bazaar-fill-btn" type="button" aria-label="Fill Bazaar price and maximum quantity" title="Fill price with ${escapeHtml(targetText)} and quantity with max available">&gt;</button>${stale}`,
       "GREY",
       "me-bazaar-add"
     );
@@ -45,10 +45,17 @@
       event.preventDefault();
       event.stopPropagation();
       if (!visible.priceInput?.isConnected) return;
-      if (!setBazaarPriceInput(visible.priceInput, target)) return;
+      const priceFilled = setBazaarInputValue(visible.priceInput, target);
+      const maxAvailable = Math.max(1, asInt(visible.maxAvailable || visible.quantity, 1));
+      const quantityFilled = visible.quantityInput?.isConnected
+        ? setBazaarInputValue(visible.quantityInput, maxAvailable)
+        : false;
+      if (!priceFilled) return;
       visible.price = target;
       block.classList.add("me-applied");
-      button.title = `Price filled with ${targetText}`;
+      button.title = quantityFilled
+        ? `Filled ${maxAvailable} units at ${targetText}`
+        : `Price filled with ${targetText}; quantity field was not detected`;
       setTimeout(() => block?.classList?.remove("me-applied"), 700);
     });
     return block;
