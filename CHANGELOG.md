@@ -6,6 +6,12 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-09-08
+
+### Fixed
+
+- **Torn PDA froze when switching item category tabs.** Every DOM mutation triggered a signature pass that read text and layout for each element in the list, which is quadratic on long categories. The pass is now linear: details panels are found through a text-node walker instead of scanning every element, the change signature no longer resolves rows (no innerText or layout per node), the Bazaar section lookup is memoized, and row collection only inspects the rows nearest the viewport. The debounce also adapts to how long a pass took, so slow devices are not asked to re-run it mid-render.
+
 ## [0.3.5] - 2026-09-08
 
 ### Fixed

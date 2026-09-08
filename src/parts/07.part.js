@@ -487,14 +487,13 @@
         // Details detection is best effort.
       }
     }
+    // The signature only needs to notice structural change, so it works on
+    // the identity nodes themselves; row/card resolution (which reads
+    // innerText and forces layout) is left to the scan.
     document.querySelectorAll(itemIdentitySelector()).forEach((node) => {
       if (node.closest?.("#market-edge-root,.me-inline-analysis,.me-equip-card")) return;
       const itemId = itemIdFromElement(node);
       if (!itemId) return;
-      const card = surface === "inventory" ? findInventoryRow(node) : findCompactCard(node, false);
-      if (surface === "inventory" && !isInventoryListCandidate(card, marker)) return;
-      const rect = card?.getBoundingClientRect?.();
-      if (rect && (rect.width <= 0 || rect.height <= 0)) return;
       entries.add(`${itemId}@${listRowIdentity(node)}`);
     });
     const structuralEntries = Array.from(entries).sort();
@@ -504,19 +503,27 @@
     return `${surface}|${heading}|${structuralEntries.join(",")}`;
   }
 
+  let signatureDelayMs = 120;
+
   function scheduleSignatureCheck(forceScan = false) {
     clearTimeout(signatureTimer);
     signatureTimer = setTimeout(() => {
       if (document.visibilityState !== "visible") return;
       const surface = detectSurface();
       if (!["bazaar", "auction", "travel", "inventory"].includes(surface)) return;
+      const startedAt = Date.now();
       const signature = listSurfaceSignature(surface);
+      // Adapt the quiet period to how long the check itself took, so a slow
+      // phone under a React re-render storm is not asked to do it again
+      // before it has caught up.
+      const took = Date.now() - startedAt;
+      signatureDelayMs = clamp(Math.round(took * 5), 120, 2000);
       if (!signature) return;
       if (forceScan || signature !== lastListSignature) {
         lastListSignature = signature;
         scanVisibleSurface(surface, { retryIfEmpty: false, force: false, cancelObsolete: true });
       }
-    }, 120);
+    }, signatureDelayMs);
   }
 
   async function refresh(force = false) {

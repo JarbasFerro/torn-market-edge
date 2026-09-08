@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.3.5
+// @version      0.3.6
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.3.5",
+    version: "0.3.6",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -2382,7 +2382,16 @@
     }
 
     const byId = new Map();
-    for (const node of candidates) {
+    const limit = clamp(settings.scanMaxVisibleItems, 1, 50);
+    const ordered = Array.from(candidates)
+      .map((node) => {
+        const rect = node.getBoundingClientRect?.();
+        return { node, priority: rect ? viewportPriority({ card: node }) : 0 };
+      })
+      .sort((a, b) => b.priority - a.priority)
+      .slice(0, limit * 3)
+      .map((entry) => entry.node);
+    for (const node of ordered) {
       const itemId = itemIdFromElement(node);
       if (!itemId) continue;
       const card = detectSurface() === "inventory" ? findInventoryRow(node) : findCompactCard(node, requireMoney);
@@ -2479,7 +2488,19 @@
       hash.includes("#/p=add") || hash.includes("/p=add");
   }
 
+  let bazaarSectionCache = { at: 0, node: null, href: "" };
+
   function bazaarAddSection() {
+    const now = Date.now();
+    if (bazaarSectionCache.href === location.href && now - bazaarSectionCache.at < 250 && (bazaarSectionCache.node === null || bazaarSectionCache.node.isConnected)) {
+      return bazaarSectionCache.node;
+    }
+    const node = bazaarAddSectionUncached();
+    bazaarSectionCache = { at: now, node, href: location.href };
+    return node;
+  }
+
+  function bazaarAddSectionUncached() {
     if (detectSurface() !== "bazaar") return null;
 
     // Torn's current Bazaar add page has a stable root/list shape even though
@@ -2684,7 +2705,16 @@
       });
     }
 
-    for (const { card, node } of candidatePairs) {
+    // Only the rows nearest the viewport get the expensive text/input
+    // inspection; long categories would otherwise thrash layout.
+    const limit = clamp(settings.scanMaxVisibleItems, 1, 50);
+    const nearest = candidatePairs
+      .map((pair) => ({ pair, priority: viewportPriority({ card: pair.card }) }))
+      .sort((a, b) => b.priority - a.priority)
+      .slice(0, limit * 2)
+      .map((entry) => entry.pair);
+
+    for (const { card, node } of nearest) {
       if (!card || card.closest("#market-edge-root")) continue;
       const itemId = itemIdFromElement(node) || itemIdFromElement(card);
       if (!itemId) continue;
@@ -2792,25 +2822,40 @@
     return node?.classList?.contains("me-equip-card") ? node : null;
   }
 
+  // Find Torn's item-stats blocks by walking text nodes for "Quality:" and
+  // climbing to the innermost element that also holds Damage/Accuracy/Armor.
+  // Linear in the number of text nodes, no layout reads except for the few
+  // panels found; safe to call from the mutation signature on long lists.
+  function findStatsPanels(root) {
+    const panels = new Set();
+    if (!root || typeof document.createTreeWalker !== "function") return [];
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode: (node) => (/Quality:/i.test(node.textContent || "") ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP)
+    });
+    let textNode = walker.nextNode();
+    while (textNode) {
+      let element = textNode.parentElement;
+      for (let depth = 0; element && element !== root && depth < 8; depth += 1, element = element.parentElement) {
+        if (element.closest("#market-edge-root,.me-equip-card")) break;
+        const text = element.textContent || "";
+        if (text.length > 2500) break;
+        if (/Quality:\s*[^\d]*[\d.]+\s*%/i.test(text) && /Damage:|Accuracy:|Armou?r:/i.test(text)) {
+          panels.add(element);
+          break;
+        }
+      }
+      textNode = walker.nextNode();
+    }
+    return Array.from(panels).filter((element) => {
+      const rect = element.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    });
+  }
+
   function collectExpandedEquipmentDetails(surface) {
     const results = [];
-    const candidates = [];
     const root = (surface === "bazaar" ? bazaarAddSection() : document.querySelector(".items-cont, [class*='itemsCont'], [class*='items-cont']")) || document.body;
-    // textContent avoids forcing layout for every element; innerText is only
-    // read for the few panels that match.
-    root.querySelectorAll("div,li,section,ul").forEach((element) => {
-      if (!(element instanceof HTMLElement) || element.closest("#market-edge-root,.me-equip-card")) return;
-      const text = (element.textContent || "").replace(/\s+/g, " ");
-      if (text.length > 2500) return;
-      if (!/Quality:\s*[^\d]*[\d.]+\s*%/i.test(text)) return;
-      if (!/Damage:|Accuracy:|Armou?r:/i.test(text)) return;
-      const rect = element.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return;
-      candidates.push(element);
-    });
-    // Keep the innermost element that still holds the whole stats block: the
-    // card is inserted right after it, below Torn's stats.
-    const panels = candidates.filter((element) => !candidates.some((other) => other !== element && element.contains(other)));
+    const panels = findStatsPanels(root);
 
     panels.forEach((panel) => {
       const rowSelector = surface === "bazaar" ? BAZAAR_ADD_ROW_SELECTOR : "li, tr, [role='row'], [class*='item___'], [class*='itemRow'], [class*='item-row']";
@@ -4646,14 +4691,13 @@
         // Details detection is best effort.
       }
     }
+    // The signature only needs to notice structural change, so it works on
+    // the identity nodes themselves; row/card resolution (which reads
+    // innerText and forces layout) is left to the scan.
     document.querySelectorAll(itemIdentitySelector()).forEach((node) => {
       if (node.closest?.("#market-edge-root,.me-inline-analysis,.me-equip-card")) return;
       const itemId = itemIdFromElement(node);
       if (!itemId) return;
-      const card = surface === "inventory" ? findInventoryRow(node) : findCompactCard(node, false);
-      if (surface === "inventory" && !isInventoryListCandidate(card, marker)) return;
-      const rect = card?.getBoundingClientRect?.();
-      if (rect && (rect.width <= 0 || rect.height <= 0)) return;
       entries.add(`${itemId}@${listRowIdentity(node)}`);
     });
     const structuralEntries = Array.from(entries).sort();
@@ -4663,19 +4707,27 @@
     return `${surface}|${heading}|${structuralEntries.join(",")}`;
   }
 
+  let signatureDelayMs = 120;
+
   function scheduleSignatureCheck(forceScan = false) {
     clearTimeout(signatureTimer);
     signatureTimer = setTimeout(() => {
       if (document.visibilityState !== "visible") return;
       const surface = detectSurface();
       if (!["bazaar", "auction", "travel", "inventory"].includes(surface)) return;
+      const startedAt = Date.now();
       const signature = listSurfaceSignature(surface);
+      // Adapt the quiet period to how long the check itself took, so a slow
+      // phone under a React re-render storm is not asked to do it again
+      // before it has caught up.
+      const took = Date.now() - startedAt;
+      signatureDelayMs = clamp(Math.round(took * 5), 120, 2000);
       if (!signature) return;
       if (forceScan || signature !== lastListSignature) {
         lastListSignature = signature;
         scanVisibleSurface(surface, { retryIfEmpty: false, force: false, cancelObsolete: true });
       }
-    }, 120);
+    }, signatureDelayMs);
   }
 
   async function refresh(force = false) {
