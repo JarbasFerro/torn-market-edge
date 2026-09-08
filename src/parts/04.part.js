@@ -146,6 +146,10 @@
       // swallow the annotation.
       if (!card || card === node || card.tagName === "IMG" || !(card.textContent || "").trim()) continue;
       if (node.closest?.(".me-equip-card")) continue;
+      // A "row" that contains an item stats block is the expanded details
+      // container reached through its large picture, not an inventory row.
+      const cardText = card.textContent || "";
+      if (QUALITY_PATTERN.test(cardText) && STATS_PATTERN.test(cardText)) continue;
       if (!isInventoryListCandidate(card, inventoryMarker)) continue;
       const rect = card?.getBoundingClientRect?.();
       if (rect && (rect.width <= 0 || rect.height <= 0)) continue;
@@ -155,10 +159,13 @@
       if (requireMoney && !price) continue;
       const quantity = parseQuantity(text);
       const name = elementItemName(card, node);
-      const existing = byId.get(itemId);
+      // Key by row element, not item id: equipment copies share an item id
+      // but each occupies its own row and gets its own annotation. Several
+      // identity nodes inside one row still collapse to a single entry.
+      const existing = byId.get(card);
       const score = Math.min(text.length, 900);
       if (!existing || score < existing.domTextLength) {
-        byId.set(itemId, {
+        byId.set(card, {
           itemId,
           name,
           price,

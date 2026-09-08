@@ -6,6 +6,12 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.3.13] - 2026-09-08
+
+### Fixed
+
+- **Row summary missing for equipment copies that share an item id.** The row collector kept a single row per item id, so with several AK-47s only one row existed for the script and the priced copy usually had nowhere to render. Rows are now keyed by their element; each copy keeps its own row and its own summary. The expanded details container (reached through its large picture) is excluded from the row set.
+
 ## [0.3.12] - 2026-09-08
 
 ### Fixed

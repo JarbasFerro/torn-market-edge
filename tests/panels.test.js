@@ -476,3 +476,20 @@ run("Pricing card is placed outside a grid stats wrapper so the layout cannot hi
   await env.ME.scanVisibleSurface("inventory", { force: true });
   assert.equal(env.document.querySelectorAll(".me-equip-card").length, 0);
 });
+
+run("Equipment copies sharing an item id each keep their own row, and the priced copy's row shows the summary", async (t) => {
+  const env = boot(fixture("inventory-weapon-duplicates.html"), "https://www.torn.com/item.php");
+  t.after(env.close);
+  const rows = env.ME.collectVisibleItems({ requireMoney: false });
+  assert.equal(rows.filter((row) => row.itemId === 1).length, 3, "three rifle rows are collected despite the shared item id");
+  await env.ME.scanVisibleSurface("inventory", { force: true });
+  const rifleRows = Array.from(env.document.querySelectorAll("li.item-row[data-item='1']"));
+  assert.equal(rifleRows.length, 3);
+  assert.ok(env.document.querySelector(".me-equip-card"), "card rendered");
+  const summaries = rifleRows.map((row) => row.querySelector(".me-inline-analysis")?.textContent || "");
+  assert.match(summaries[1], /BZ \$/, "the copy whose details are open (second row) gets the summary");
+  assert.match(summaries[1], /Q 38\.6% plain/);
+  assert.equal(summaries[0], "", "first copy keeps its hidden marker");
+  assert.equal(summaries[2], "", "third copy keeps its hidden marker");
+  assert.ok(!env.requests.some((url) => url.includes("/market/1/itemmarket?limit=20")), "no per-row market requests for equipment");
+});
