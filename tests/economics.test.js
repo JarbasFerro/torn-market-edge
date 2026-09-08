@@ -200,6 +200,15 @@ test("unsupported equipment is not commodity-valued", () => {
 test("Bazaar add form suggestion is explicit and user-triggered", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "torn-market-edge.user.js"), "utf8");
   assert.ok(source.includes("function collectBazaarAddItems()"));
+  assert.ok(source.includes("function bazaarAddRouteActive()"));
+  assert.ok(source.includes("function knownBazaarAddRows(section)"));
+  assert.ok(source.includes("#bazaarRoot"));
+  assert.ok(source.includes("itemsContainner___"));
+  assert.ok(source.includes("rowItems___"));
+  assert.ok(source.includes("li.clearfix:not(.disabled)"));
+  assert.ok(source.includes("div.amount-main-wrap"));
+  assert.ok(source.includes("input.input-money"));
+  assert.ok(source.includes("input.clear-all"));
   assert.ok(source.includes("function findBazaarAddPriceInput(card)"));
   assert.ok(source.includes("function setBazaarInputValue(input, value)"));
   assert.ok(source.includes("function findBazaarAddQuantityInput(card, priceInput = null)"));
@@ -207,7 +216,8 @@ test("Bazaar add form suggestion is explicit and user-triggered", () => {
   assert.ok(source.includes("me-bazaar-fill-btn"));
   assert.ok(source.includes('dispatchEvent(new Event("input", { bubbles: true, composed: true }))'));
   assert.ok(source.includes('dispatchEvent(new Event("change", { bubbles: true, composed: true }))'));
-  assert.ok(source.includes("never submits a Bazaar form automatically"));
+  assert.ok(source.includes("event.preventDefault()"));
+  assert.ok(source.includes("event.stopPropagation()"));
 });
 
 test("hardening guards remain present in the assembled userscript", () => {

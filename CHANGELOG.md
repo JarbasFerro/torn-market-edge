@@ -6,6 +6,15 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-09-08
+
+### Fixed
+
+- Detect the current Torn **Add items to your Bazaar** rows directly on desktop and mobile using Bazaar root/list/item structures instead of depending on a short ancestor climb from the section heading.
+- Recognize current and legacy Bazaar amount/price controls, including `div.amount-main-wrap`, `input.input-money` and quantity-style inputs such as `input.clear-all`.
+- Keep the older heading-based discovery path as a defensive fallback for future/legacy layouts.
+- Preserve the explicit `>` interaction: it fills suggested price and maximum available quantity but never submits **ADD TO BAZAAR**.
+
 ## [0.2.3] - 2026-09-08
 
 ### Changed
