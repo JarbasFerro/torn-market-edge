@@ -194,12 +194,31 @@
       this.timer = null;
     }
 
-    schedule(task, priority = 0) {
+    schedule(task, priority = 0, meta = {}) {
       return new Promise((resolve, reject) => {
-        this.queue.push({ task, priority, resolve, reject, sequence: this.sequence++ });
+        this.queue.push({ task, priority, meta, resolve, reject, sequence: this.sequence++ });
         this.queue.sort((a, b) => b.priority - a.priority || a.sequence - b.sequence);
         this.pump();
       });
+    }
+
+    cancelQueued(predicate, reason = "Market Edge request superseded by page navigation.") {
+      const kept = [];
+      let canceled = 0;
+      for (const job of this.queue) {
+        if (!predicate(job)) {
+          kept.push(job);
+          continue;
+        }
+        const error = new Error(reason);
+        error.name = "AbortError";
+        error.marketEdgeCanceled = true;
+        job.reject(error);
+        canceled += 1;
+      }
+      this.queue = kept;
+      if (canceled) this.pump();
+      return canceled;
     }
 
     pump() {
@@ -248,7 +267,7 @@
       return url.toString();
     }
 
-    async request(path, { cacheMs = 25000, priority = 0 } = {}) {
+    async request(path, { cacheMs = 25000, priority = 0, queueGroup = null } = {}) {
       const key = Store.apiKey();
       if (!key) throw new Error("API key missing. Open Market Edge settings.");
 
@@ -291,7 +310,7 @@
             ontimeout: () => reject(new Error("Torn API request timed out."))
           });
         });
-      }, priority)
+      }, priority, { path, queueGroup })
         .then((data) => {
           this.memoryCache.set(cacheKey, { at: Date.now(), data });
           return data;
