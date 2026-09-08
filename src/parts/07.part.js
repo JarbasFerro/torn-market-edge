@@ -106,6 +106,7 @@
         }
       } catch (error) {
         if (error?.marketEdgeCanceled) return;
+        recordRuntime("row-error", `item ${visible.itemId} on ${surface}: ${error.message}`);
         if (!renderedCached && visible.card?.isConnected) renderInlineError(visible, error.message);
         else log("Refresh failed; keeping cached row", visible.itemId, error.message);
       } finally {
@@ -118,6 +119,8 @@
 
     await Promise.allSettled(tasks);
     await scanExpandedEquipment(surface, ownBazaar);
+    const annotated = items.filter((visible) => visible.card?.querySelector?.(`.me-inline-analysis[data-me-item-id="${visible.itemId}"]`)?.dataset?.meComplete === "1").length;
+    recordRuntime("scan", `${surface}: ${annotated}/${items.length} rows`, { surface, rows: items.length, annotated, ms: Date.now() - scanStartedAt });
   }
 
   // ---------------------------------------------------------------------------
@@ -684,9 +687,76 @@
 
   // Structure report for bug reports: what the script sees around item rows
   // and expanded details on the current page. Contains no API key.
+  // Runtime self-check: the last scans (surface, rows found, rows annotated,
+  // duration) and any error raised by this script, kept in memory so the
+  // page structure report can show how each surface actually behaved.
+  const RUNTIME_LOG_MAX = 40;
+  const runtimeLog = [];
+  const runtimeStats = { scans: 0, errors: 0, startedAt: Date.now() };
+
+  function recordRuntime(kind, message, extra = null) {
+    runtimeLog.push({ at: Date.now(), kind, message: String(message || "").slice(0, 300), extra });
+    if (runtimeLog.length > RUNTIME_LOG_MAX) runtimeLog.splice(0, runtimeLog.length - RUNTIME_LOG_MAX);
+    if (kind === "error") runtimeStats.errors += 1;
+    if (kind === "scan") runtimeStats.scans += 1;
+  }
+
+  function isOwnError(source, stack) {
+    return /market.?edge/i.test(`${source || ""} ${stack || ""}`);
+  }
+
+  window.addEventListener("error", (event) => {
+    try {
+      const stack = event?.error?.stack || "";
+      if (!isOwnError(event?.filename, stack)) return;
+      recordRuntime("error", `${event.message} @ ${String(event.filename || "").split("/").pop()}:${event.lineno}`);
+    } catch {
+      // never throw from the error handler
+    }
+  });
+  window.addEventListener("unhandledrejection", (event) => {
+    try {
+      const reason = event?.reason;
+      if (reason?.marketEdgeCanceled) return;
+      if (!isOwnError("", reason?.stack || "")) return;
+      recordRuntime("error", `unhandled: ${reason?.message || reason}`);
+    } catch {
+      // ignore
+    }
+  });
+
+  function runtimeReportLines() {
+    const surfaces = {};
+    runtimeLog.filter((entry) => entry.kind === "scan" && entry.extra).forEach((entry) => {
+      const key = entry.extra.surface;
+      if (!surfaces[key]) surfaces[key] = { scans: 0, rows: 0, annotated: 0, ms: 0, worstMs: 0 };
+      const bucket = surfaces[key];
+      bucket.scans += 1;
+      bucket.rows = entry.extra.rows;
+      bucket.annotated = entry.extra.annotated;
+      bucket.ms += entry.extra.ms;
+      bucket.worstMs = Math.max(bucket.worstMs, entry.extra.ms);
+    });
+    const lines = [`runtime: ${runtimeStats.scans} scans, ${runtimeStats.errors} script errors since load (${formatAge(Math.floor((Date.now() - runtimeStats.startedAt) / 1000))} ago)`];
+    Object.entries(surfaces).forEach(([surface, bucket]) => {
+      lines.push(`  ${surface}: ${bucket.scans} scans, last pass ${bucket.annotated}/${bucket.rows} rows annotated, avg ${Math.round(bucket.ms / bucket.scans)} ms, worst ${bucket.worstMs} ms`);
+    });
+    lines.push(`overlays on page: ${document.querySelectorAll(".me-inline-analysis").length} (${document.querySelectorAll(".me-inline-analysis.RED").length} errors), pricing cards: ${document.querySelectorAll(".me-equip-card").length}`);
+    lines.push(`queue: ${api.scheduler.queue.length} waiting, ${api.scheduler.active} in flight, ${api.scheduler.requestTimes.length} requests in the last minute`);
+    runtimeLog.filter((entry) => entry.kind !== "scan").slice(-12).forEach((entry) => {
+      lines.push(`  [${entry.kind}] ${formatAge(Math.floor((Date.now() - entry.at) / 1000))} ago: ${entry.message}`);
+    });
+    return lines;
+  }
+
   function buildPageDiagnostics() {
     const surface = detectSurface();
     const lines = [`Market Edge ${APP.version} page structure`, `surface: ${surface}`, `path: ${location.pathname}${location.hash ? ` hash: ${location.hash.slice(0, 60)}` : ""}`, `pda: ${ENV.isPda}`, ""];
+    try {
+      lines.push(...runtimeReportLines(), "");
+    } catch (error) {
+      lines.push(`runtime report failed: ${error.message}`, "");
+    }
     try {
       const panels = findStatsPanels(document.body);
       lines.push(`stats panels found: ${panels.length}`);
@@ -1335,6 +1405,7 @@
         signature = listSurfaceSignature(surface);
       } catch (error) {
         log("Signature check failed", error?.message || error);
+        recordRuntime("error", `signature ${surface}: ${error?.message || error}`);
         return;
       }
       // Adapt the quiet period to how long the check itself took, so a slow
@@ -1381,6 +1452,7 @@
         await renderItemMarket();
       } catch (error) {
         log("Item Market render failed", error?.message || error);
+        recordRuntime("error", `item market render: ${error?.message || error}`);
         errorPanel(describeApiError(error, { feature: "Item Market analysis" }));
       }
     } else {
@@ -1436,6 +1508,7 @@
         scheduleSignatureCheck(false);
       } catch (error) {
         log("Observer callback failed", error?.message || error);
+        recordRuntime("error", `observer: ${error?.message || error}`);
       }
     });
 
@@ -1554,6 +1627,8 @@
       loadForeignCatalog,
       currentCityShopName,
       reloadSettings: () => { settings = Store.settings(); },
+      buildPageDiagnostics,
+      recordRuntime,
       ui
     });
   } else {

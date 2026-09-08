@@ -6,6 +6,12 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-09-08
+
+### Added
+
+- **Runtime self-check in the page structure report** (settings > Diagnostics). The report now opens with how the script actually behaved on this page: scans per surface with rows found versus rows annotated and average/worst pass duration, overlays and pricing cards present, request queue state, and the last errors raised by the script (row failures, scan, signature, observer or render errors, plus any uncaught error whose stack points at Market Edge). The API key is never included. One paste of this report from the inventory, the Bazaar add form or the Item Market sell form is enough to diagnose a misbehaving surface.
+
 ## [0.4.2] - 2026-09-08
 
 ### Fixed

@@ -203,6 +203,8 @@ Please include:
 - what you expected;
 - what happened instead.
 
+For a surface that looks wrong or slow, open **Market Edge settings > Diagnostics > Build page structure report** on that page and paste the report: it starts with a runtime self-check (rows found versus annotated, pass durations, captured errors) and never contains the API key.
+
 **Never post your Torn API key in an issue, screenshot, console log, or diagnostic.**
 
 ## Development and releases

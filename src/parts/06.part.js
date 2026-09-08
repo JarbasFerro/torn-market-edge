@@ -923,6 +923,7 @@
   }
 
   async function scanVisibleSurfaceNow(surface, { retryIfEmpty = false, force = false, cancelObsolete = false } = {}) {
+    const scanStartedAt = Date.now();
     removeFloatingUi();
     if (document.visibilityState !== "visible") return;
 

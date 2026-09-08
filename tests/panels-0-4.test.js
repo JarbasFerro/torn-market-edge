@@ -453,3 +453,17 @@ run("Item Market item page id is read from wai-itemInfo-{id}-0 controls", async 
   assert.equal(live[0].price, 820000);
   assert.equal(live[0].quantity, 3, "'N available' is the listing quantity");
 });
+
+run("Diagnostics report carries the runtime self-check: scan counts per surface and captured errors", async (t) => {
+  const env = boot(fixture("inventory-real.html"), "https://www.torn.com/item.php");
+  t.after(env.close);
+  env.document.querySelectorAll(".hidden-tab, .hidden-tab *").forEach((node) => { node.getBoundingClientRect = () => ({ width: 0, height: 0, top: 0, bottom: 0, left: 0, right: 0, x: 0, y: 0 }); });
+  await env.ME.scanVisibleSurface("inventory", { force: true });
+  env.ME.recordRuntime("error", "synthetic failure for the report");
+  const report = env.ME.buildPageDiagnostics();
+  assert.match(report, /runtime: 1 scans, 1 script errors/);
+  assert.match(report, /inventory: 1 scans, last pass 2\/2 rows annotated/);
+  assert.match(report, /\[error\] .* synthetic failure for the report/);
+  assert.match(report, /overlays on page: 2/);
+  assert.doesNotMatch(report, /ABCDEFGHIJKLMNOP/, "the API key never appears in the report");
+});
