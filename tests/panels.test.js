@@ -229,7 +229,7 @@ run("Inventory scan annotates commodity, plushie and unsupported rows end to end
   assert.equal(env.requests.filter((url) => url.includes("pointsmarket")).length, 1);
 });
 
-run("Bazaar add form prices a weapon as a plain copy with a fill button and AH evidence", async (t) => {
+run("Bazaar add form weapon rows show only a floor glance and point to the details panel", async (t) => {
   const env = boot(fixture("bazaar-add-weapons.html"), "https://www.torn.com/bazaar.php#/add");
   t.after(env.close);
   await env.ME.scanVisibleSurface("bazaar", { force: true });
@@ -238,19 +238,44 @@ run("Bazaar add form prices a weapon as a plain copy with a fill button and AH e
   const xanax = blocks.find((block) => block.dataset.meItemId === "206");
   assert.ok(rifle && xanax, "both rows are annotated");
   assert.match(rifle.textContent, /floor \$800k/);
-  assert.match(rifle.textContent, /AH \$950k/);
-  assert.match(rifle.textContent, /bonus \$9m\+/);
-  const button = rifle.querySelector(".me-bazaar-fill-btn");
-  assert.ok(button, "weapon rows get the ^ fill control");
-  assert.equal(button.textContent, "^");
-  assert.ok(env.requests.some((url) => url.includes("/market/1/auctionhouse")), "AH sales are fetched for sell-side equipment");
-  // Suggested plain price: reference min(plain median 1.02m, avg*1.05 1.05m, AH*1.05 997.5k) = 997.5k,
-  // haircut 1% -> 987,525, capped by the 800k floor, bazaar discount 1% -> 792,000.
-  assert.match(rifle.textContent, /\$792k/);
-  button.click();
-  const priceInput = env.document.querySelector("li:first-child input.input-money");
-  assert.equal(priceInput.value, "792000");
-  const checkbox = env.document.querySelector("li:first-child input[type='checkbox']");
-  assert.equal(checkbox.checked, true, "single-item quantity checkbox is selected");
+  assert.match(rifle.textContent, /open details to price/);
+  assert.equal(rifle.querySelector(".me-bazaar-fill-btn"), null, "no fill on the row: the copy is unknown there");
   assert.ok(xanax.querySelector(".me-bazaar-fill-btn"), "commodity rows keep their fill control");
+  assert.equal(env.document.querySelector(".me-equip-card"), null, "no details panel open, no card");
+});
+
+run("Expanded weapon details panel prices the exact copy and fills the row", async (t) => {
+  const env = boot(fixture("bazaar-add-weapon-details.html"), "https://www.torn.com/bazaar.php#/add");
+  t.after(env.close);
+  const details = env.ME.collectExpandedEquipmentDetails("bazaar");
+  assert.equal(details.length, 1);
+  assert.equal(details[0].itemId, 1);
+  assert.equal(details[0].copy.quality, 51);
+  assert.equal(details[0].copy.damage, 65.55);
+  assert.equal(details[0].copy.bonuses.length, 0);
+  assert.ok(details[0].row, "panel is matched to the preceding row");
+
+  await env.ME.scanVisibleSurface("bazaar", { force: true });
+  const card = env.document.querySelector(".me-equip-card");
+  assert.ok(card, "details panel receives a pricing card");
+  assert.equal(card.dataset.meComplete, "1");
+  assert.match(card.textContent, /Q 51\.0%/);
+  assert.match(card.textContent, /plain \(no bonus\)/);
+  // Plain group: 800k, 1.0m, 1.02m, 1.05m, 1.1m with qualities 50/52/49/51/53 -> all within +/-10 of Q51.
+  // Reference = min(median 1.02m, AH 950k*1.05=997.5k, avg 1.0m*1.05=1.05m) = 997,500; -1% = 987,525; capped by floor 800k; bazaar -1% = 792,000.
+  assert.match(card.textContent, /\$792k/);
+  assert.match(card.textContent, /5 listings within Q ±10/);
+  assert.match(card.textContent, /median \$950k over 1/);
+  assert.match(card.textContent, /Bonus copies/);
+  const button = card.querySelector(".me-bazaar-fill-btn");
+  assert.ok(button, "details card carries the ^ fill control");
+  button.click();
+  assert.equal(env.document.querySelector("li.clearfix input.input-money").value, "792000");
+  assert.equal(env.document.querySelector("li.clearfix input[type='checkbox']").checked, true);
+  assert.ok(env.requests.some((url) => url.includes("/market/1/itemmarket?limit=100")), "deep order book is used for comparables");
+  assert.ok(env.requests.some((url) => url.includes("/market/1/auctionhouse")));
+
+  // A second scan does not duplicate the card.
+  await env.ME.scanVisibleSurface("bazaar", { force: false });
+  assert.equal(env.document.querySelectorAll(".me-equip-card").length, 1);
 });

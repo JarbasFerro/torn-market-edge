@@ -508,6 +508,79 @@
     return Array.from(byId.values()).sort((a, b) => viewportPriority(b) - viewportPriority(a)).slice(0, clamp(settings.scanMaxVisibleItems, 1, 50));
   }
 
+  // Expanded item-details panels (Bazaar add form, inventory) show the exact
+  // copy's quality, damage/accuracy and bonus icons. Each panel is matched to
+  // its item id through the panel's own large image or the preceding row.
+  function detailsPanelHints(container) {
+    const hints = [];
+    container.querySelectorAll("[title],[aria-label],img[alt],[class*='bonus'],[class*='rarity'],[class*='yellow'],[class*='orange'],[class*='red']").forEach((node) => {
+      if (node.closest(".me-equip-card,#market-edge-root")) return;
+      ["title", "aria-label", "alt", "class", "data-bonus", "data-title"].forEach((attr) => {
+        const value = node.getAttribute?.(attr);
+        if (value) hints.push(String(value));
+      });
+    });
+    return hints;
+  }
+
+  function collectExpandedEquipmentDetails(surface) {
+    const results = [];
+    const candidates = [];
+    const root = (surface === "bazaar" ? bazaarAddSection() : document.querySelector(".items-cont, [class*='itemsCont'], [class*='items-cont']")) || document.body;
+    // textContent avoids forcing layout for every element; innerText is only
+    // read for the few panels that match.
+    root.querySelectorAll("div,li,section").forEach((element) => {
+      if (!(element instanceof HTMLElement) || element.closest("#market-edge-root")) return;
+      const text = (element.textContent || "").replace(/\s+/g, " ");
+      if (text.length > 2500) return;
+      if (!/Quality:\s*[^\d]*[\d.]+\s*%/i.test(text)) return;
+      if (!/Damage:|Accuracy:|Armou?r:/i.test(text)) return;
+      const rect = element.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      candidates.push(element);
+    });
+    // Keep the outermost panel per copy (nested wrappers repeat the text).
+    const panels = candidates.filter((element) => !candidates.some((other) => other !== element && other.contains(element)));
+
+    panels.forEach((panel) => {
+      let itemId = null;
+      const image = panel.querySelector("img[src*='/items/'], img[srcset*='/items/'], [style*='/items/']");
+      if (image) itemId = itemIdFromElement(image);
+      let row = null;
+      if (surface === "bazaar") {
+        const section = bazaarAddSection();
+        const rows = section ? knownBazaarAddRows(section) : [];
+        row = rows.find((candidate) => candidate.contains(panel)) || null;
+        if (!row) {
+          let sibling = panel.previousElementSibling;
+          for (let depth = 0; sibling && depth < 4 && !row; depth += 1, sibling = sibling.previousElementSibling) {
+            row = rows.find((candidate) => candidate === sibling || candidate.contains(sibling) || sibling.contains(candidate)) || null;
+          }
+        }
+        if (!row && panel.parentElement) {
+          const parentRow = rows.find((candidate) => candidate.contains(panel.parentElement));
+          if (parentRow) row = parentRow;
+        }
+        if (!itemId && row) {
+          const rowImage = row.querySelector("div.image-wrap img, img[src*='/items/'], img[srcset*='/items/']");
+          itemId = itemIdFromElement(rowImage || row);
+        }
+      } else if (surface === "inventory") {
+        let sibling = panel.previousElementSibling;
+        for (let depth = 0; sibling && depth < 4 && !row; depth += 1, sibling = sibling.previousElementSibling) {
+          const ids = directItemIdsWithin(sibling);
+          if (ids.size === 1) row = sibling;
+        }
+        if (!itemId && row) itemId = Array.from(directItemIdsWithin(row))[0] || null;
+      }
+      if (!itemId) return;
+      const copy = parseEquipmentDetailsText(panel.innerText || panel.textContent || "", detailsPanelHints(panel));
+      if (!copy) return;
+      results.push({ itemId, panel, row, copy, key: `${itemId}|${copy.quality}|${copy.damage}|${copy.armor}|${copy.bonuses.map((bonus) => bonus.title).join("+")}|${copy.rarity || ""}` });
+    });
+    return results;
+  }
+
   function collectOwnBazaarItems() {
     const combined = [...collectManagedBazaarItems(), ...collectBazaarAddItems()];
     const seenCards = new Set();

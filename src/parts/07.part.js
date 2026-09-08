@@ -76,6 +76,44 @@
     });
 
     await Promise.allSettled(tasks);
+    await scanExpandedEquipment(surface, ownBazaar, queueGroup);
+  }
+
+  // Expanded item-details panels on sell-side surfaces: price the exact copy
+  // against the deep order book (limit 100) and ended Auction House sales.
+  async function scanExpandedEquipment(surface, ownBazaar, queueGroup) {
+    if (settings.equipmentEnabled === false) return;
+    const sellSide = surface === "inventory" || (surface === "bazaar" && ownBazaar);
+    if (!sellSide || !Store.apiKey()) return;
+    let details = [];
+    try {
+      details = collectExpandedEquipmentDetails(surface);
+    } catch (error) {
+      log("Details panel scan failed", error.message);
+      return;
+    }
+    details = details.filter((detail) => detail.panel.querySelector(`:scope .me-equip-card[data-me-detail-key="${CSS.escape ? CSS.escape(detail.key) : detail.key}"][data-me-complete="1"]`) === null);
+    if (!details.length) return;
+
+    await Promise.allSettled(details.map(async (detail) => {
+      try {
+        renderEquipmentDetailCard(detail, null, { loading: true });
+        const bundle = await loadSnapshot(detail.itemId, { limit: API_DEEP_LIMIT, priority: 180, queueGroup });
+        if (!detail.panel.isConnected || detectSurface() !== surface) return;
+        if (!bundle.snapshot.equipment) {
+          detail.panel.querySelectorAll(":scope .me-equip-card").forEach((node) => node.remove());
+          return;
+        }
+        const auctionSales = await loadAuctionSales(detail.itemId, { priority: 170 });
+        if (!detail.panel.isConnected || detectSurface() !== surface) return;
+        const pricing = priceOwnedEquipment({ snapshot: bundle.snapshot, copy: detail.copy, auctionSales, settings });
+        renderEquipmentDetailCard(detail, pricing, { canFill: surface === "bazaar" && Boolean(detail.row) });
+      } catch (error) {
+        if (error?.marketEdgeCanceled) return;
+        log("Details pricing failed", detail.itemId, error.message);
+        detail.panel.querySelectorAll(":scope .me-equip-card").forEach((node) => node.remove());
+      }
+    }));
   }
 
   // ---------------------------------------------------------------------------
@@ -394,8 +432,15 @@
         if (itemId) entries.add(`${itemId}@${listRowIdentity(card)}`);
       });
     }
+    if (surface === "bazaar" || surface === "inventory") {
+      try {
+        collectExpandedEquipmentDetails(surface).forEach((detail) => entries.add(`detail:${detail.key}@${listRowIdentity(detail.panel)}`));
+      } catch {
+        // Details detection is best effort.
+      }
+    }
     document.querySelectorAll(itemIdentitySelector()).forEach((node) => {
-      if (node.closest?.("#market-edge-root,.me-inline-analysis")) return;
+      if (node.closest?.("#market-edge-root,.me-inline-analysis,.me-equip-card")) return;
       const itemId = itemIdFromElement(node);
       if (!itemId) return;
       const card = surface === "inventory" ? findInventoryRow(node) : findCompactCard(node, false);
@@ -573,6 +618,8 @@
       renderOwnListingsPanel,
       renderWatchlistPanel,
       scanVisibleSurface,
+      scanExpandedEquipment,
+      collectExpandedEquipmentDetails,
       watchTick,
       loadMuseumContext,
       showSettings,

@@ -376,7 +376,7 @@ test("v0.3.0 guards remain present in the assembled userscript", () => {
   assert.match(source, /\/key\/info/);
   assert.match(source, /#mainContainer, \.content-wrapper/);
   const clicks = source.match(/\.click\(\)/g) || [];
-  const checkboxClicks = source.match(/quantityCheckbox\.click\(\)/g) || [];
+  const checkboxClicks = source.match(/(?:quantityC|c)heckbox\.click\(\)/g) || [];
   assert.equal(clicks.length, checkboxClicks.length, "the only simulated click is the Bazaar max-quantity checkbox, inside the user's explicit fill tap");
   assert.doesNotMatch(source, /\.submit\(\)/, "the script must never submit forms");
   assert.doesNotMatch(source, /location\.reload/, "the script must never reload pages");
@@ -416,4 +416,67 @@ test("equipment sell pricing assumes a plain copy and never exceeds the plain fl
   const noFloor = ME.equipmentSellPricing({ itemId: 1, averagePrice: 0, equipmentSummary: { listingCount: 0, plainFloor: null, plainMedian: null, bonusFloor: 5_000 } }, settings(), []);
   assert.equal(noFloor, null, "without any plain evidence there is no sell price");
   assert.equal(ME.equipmentSellPricing({ itemId: 1 }, settings(), []), null);
+});
+
+// ---------------------------------------------------------------------------
+// Owned-copy pricing from an expanded details panel
+// ---------------------------------------------------------------------------
+
+test("details panel text parsing extracts quality, stats and recognised bonuses", () => {
+  const text = "The 9mm Uzi is a SMG Weapon. Buy: $1,100,000 (Mexico) Sell: $600,000 Value: $598,160 Circ: 64,028 Damage: 65.55 Accuracy: 44.21 Rate of Fire: 15-25 Stealth: 3.4 Quality: 17.61%";
+  const plain = ME.parseEquipmentDetailsText(text, ["bonus-attachment-empty", "9mm Uzi"]);
+  assert.equal(plain.quality, 17.61);
+  assert.equal(plain.damage, 65.55);
+  assert.equal(plain.accuracy, 44.21);
+  assert.deepEqual(plain.bonuses, []);
+  assert.equal(plain.rarity, null);
+
+  const bonus = ME.parseEquipmentDetailsText(text, ["bonus-attachment-bleed yellow", "Bleed 12%", "9mm Uzi"]);
+  assert.equal(bonus.bonuses.length, 1);
+  assert.equal(bonus.bonuses[0].title, "Bleed");
+  assert.equal(bonus.bonuses[0].value, 12);
+  assert.equal(bonus.rarity, "yellow");
+  assert.equal(ME.parseEquipmentDetailsText("Just a description without stats", []), null);
+});
+
+test("owned copy pricing matches quality within the same bonus group", () => {
+  const plainAt = (price, quality) => ({ price, quantity: 1, itemDetails: { uid: price, stats: { quality }, bonuses: [], rarity: null } });
+  const bleedAt = (price, quality) => ({ price, quantity: 1, itemDetails: { uid: price, stats: { quality }, bonuses: [{ id: 1, title: "Bleed", description: "", value: 10 }], rarity: "yellow" } });
+  const snapshot = {
+    itemId: 1,
+    averagePrice: 600_000,
+    equipment: true,
+    listings: [
+      plainAt(400_000, 12), plainAt(420_000, 18), plainAt(450_000, 22), plainAt(700_000, 80), plainAt(750_000, 85), plainAt(800_000, 90),
+      bleedAt(3_000_000, 60), bleedAt(3_500_000, 65), bleedAt(4_000_000, 70), bleedAt(9_000_000, 95),
+    ],
+    equipmentSummary: { listingCount: 10, plainFloor: 400_000, plainMedian: 575_000, bonusFloor: 3_000_000, groups: [] },
+  };
+  const low = ME.priceOwnedEquipment({ snapshot, copy: { quality: 17.61, bonuses: [], rarity: null }, settings: settings({ safetyHaircut: 0.01, bazaarDiscount: 0.01, itemMarketUndercut: 1 }) });
+  assert.equal(low.plain, true);
+  assert.equal(low.comparables.count, 3, "only the low-quality plain copies are comparable");
+  assert.equal(low.comparables.band, 10);
+  assert.equal(low.comparables.median, 420_000);
+  assert.equal(low.reference, 420_000, "low-quality comparables beat the Torn average");
+  assert.equal(low.bazaarSuggested, Math.floor(400_000 * 0.99));
+  assert.equal(low.cheaperAtSuggested, 0);
+  assert.equal(low.bonusFloor, 3_000_000);
+
+  const high = ME.priceOwnedEquipment({ snapshot, copy: { quality: 88, bonuses: [], rarity: null }, settings: settings() });
+  assert.equal(high.comparables.count, 3);
+  assert.equal(high.comparables.floor, 700_000);
+  assert.ok(high.bazaarSuggested > low.bazaarSuggested, "a high-quality copy is priced above a low-quality one");
+  assert.equal(high.cheaperAtSuggested, 3, "cheaper low-quality plain listings are flagged as selling first");
+
+  const bleed = ME.priceOwnedEquipment({ snapshot, copy: { quality: 66, bonuses: [{ title: "Bleed", value: 12 }], rarity: "yellow" }, settings: settings() });
+  assert.equal(bleed.plain, false);
+  assert.equal(bleed.groupLabel, "YELLOW bleed");
+  assert.equal(bleed.comparables.count, 3, "quality band excludes the 95% roll");
+  assert.equal(bleed.referenceSource, "listings", "Torn average is ignored for bonus rolls");
+  assert.equal(bleed.bazaarSuggested, 3_000_000, "test settings use no haircut/discount: capped by the cheapest comparable");
+  assert.equal(bleed.bonusFloor, null);
+
+  const unknown = ME.priceOwnedEquipment({ snapshot, copy: { quality: 50, bonuses: [{ title: "Wither", value: 5 }], rarity: "red" }, settings: settings() });
+  assert.equal(unknown.bazaarSuggested, null, "no comparables and no sales gives no price");
+  assert.equal(unknown.group.count, 0);
 });

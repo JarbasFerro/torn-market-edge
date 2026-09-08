@@ -81,6 +81,17 @@
     .me-pill.GREY { color:#aaa; }
     .me-pill.RED { color:#e27a7a; border-color:rgba(199,98,98,.5); }
     .me-inline-input { width:110px; padding:4px 6px; border:1px solid #555; border-radius:4px; background:#171719; color:#eee; font-size:11px; }
+    .me-equip-card { margin:8px 0 4px !important; padding:8px 10px !important; border:1px solid rgba(255,255,255,.16) !important; border-radius:6px !important; background:rgba(15,15,17,.72) !important; color:#ddd !important; font:11px/1.4 Arial,sans-serif !important; text-align:left !important; }
+    .me-equip-card .me-equip-head { display:flex !important; align-items:center !important; gap:8px !important; flex-wrap:wrap !important; margin-bottom:5px !important; }
+    .me-equip-card .me-equip-brand { font-weight:800 !important; color:#eee !important; letter-spacing:.04em !important; }
+    .me-equip-card .me-equip-price { font-size:14px !important; font-weight:800 !important; color:#fff !important; }
+    .me-equip-card .me-equip-alt { color:#aaa !important; }
+    .me-equip-card .me-equip-facts { display:grid !important; grid-template-columns:auto 1fr !important; gap:2px 10px !important; font-size:10.5px !important; }
+    .me-equip-card .me-equip-facts .label { color:#999 !important; }
+    .me-equip-card .me-equip-facts .value { color:#ddd !important; font-variant-numeric:tabular-nums !important; }
+    .me-equip-card .me-equip-note { margin-top:5px !important; color:#aaa !important; font-size:10px !important; }
+    .me-equip-card .me-equip-warn { color:#f0ca66 !important; }
+    .me-equip-card .me-bazaar-fill-btn { height:24px !important; min-width:30px !important; }
     .me-launcher { position:fixed; left:10px; bottom:10px; z-index:999997; padding:6px 9px; border-radius:16px; border:1px solid rgba(255,255,255,.25); background:rgba(28,28,30,.94); color:#eee; font:800 11px/1 Arial,sans-serif; cursor:pointer; box-shadow:0 4px 14px rgba(0,0,0,.4); }
     .me-toast-host { position:fixed; left:10px; bottom:48px; z-index:999999; display:flex; flex-direction:column; gap:6px; max-width:min(360px, calc(100vw - 20px)); }
     .me-toast { background:rgba(28,28,30,.97); border:1px solid rgba(74,165,100,.6); border-radius:6px; padding:8px 10px; color:#eee; font:12px/1.35 Arial,sans-serif; box-shadow:0 8px 24px rgba(0,0,0,.45); }
@@ -369,7 +380,7 @@
   }
 
   function clearInlineAnalysis() {
-    document.querySelectorAll(".me-inline-analysis").forEach((node) => node.remove());
+    document.querySelectorAll(".me-inline-analysis,.me-equip-card").forEach((node) => node.remove());
     document.querySelectorAll(".me-bazaar-add-controls,.me-bazaar-add-host").forEach((node) => {
       node.classList.remove("me-bazaar-add-controls", "me-bazaar-add-host");
     });

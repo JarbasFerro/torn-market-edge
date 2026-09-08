@@ -6,6 +6,13 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-09-08
+
+### Changed
+
+- **Weapon pricing moved into the expanded item-details panel.** Opening a weapon or armor on the Bazaar add form (or inventory) reveals the copy's quality, damage, accuracy and bonus icons; Market Edge now reads those and prices that exact copy against quality-matched comparables (same rarity and bonus set, quality within +/-10, then +/-20) from the deep Item Market book, capped by ended Auction House sales of the same group. The card shows the suggested Bazaar price with the `^` fill, comparables range, AH sales, Torn average (plain copies only), the Item Market alternative net of fees, and a warning when cheaper copies of the same group would sell first.
+- Weapon rows on the Bazaar add form now show only the plain floor and a hint to open the details; the per-row fill was removed because the copy's stats are unknown at row level.
+
 ## [0.3.1] - 2026-09-08
 
 ### Added

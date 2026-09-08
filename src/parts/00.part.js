@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.3.1
+// @version      0.3.2
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.3.1",
+    version: "0.3.2",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -123,6 +123,19 @@
       items: Object.freeze([260, 263, 264, 267, 271, 272, 276, 277, 282, 385, 617])
     })
   });
+
+  // Weapon/armor bonus names as Torn labels them. Used to recognise bonus
+  // icons in an expanded item-details panel; unknown names are ignored.
+  const KNOWN_BONUSES = Object.freeze([
+    "Achilles", "Assassinate", "Backstab", "Berserk", "Bleed", "Blindfire", "Bloodlust", "Burn", "Comeback",
+    "Conserve", "Cripple", "Crusher", "Cupid", "Deadeye", "Deadly", "Demoralize", "Disarm", "Double-edged",
+    "Double Tap", "Empower", "Eviscerate", "Execute", "Expose", "Finale", "Focus", "Freeze", "Frenzy", "Fury",
+    "Grace", "Hazardous", "Home Run", "Impenetrable", "Impregnable", "Insurmountable", "Invulnerable", "Irradiate",
+    "Lacerate", "Motivation", "Paralyze", "Parry", "Penetrate", "Plunder", "Poison", "Powerful", "Proficience",
+    "Puncture", "Quicken", "Rage", "Revitalize", "Roshambo", "Shock", "Sleep", "Slow", "Smash", "Smurf",
+    "Specialist", "Spray", "Stricken", "Storm", "Stun", "Suppress", "Sure Shot", "Throttle", "Toxin", "Warlord",
+    "Weaken", "Wind-up", "Wither"
+  ]);
 
   const KEY_ACCESS_RANK = Object.freeze({
     "Public Only": 1,

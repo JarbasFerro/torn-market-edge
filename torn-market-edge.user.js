@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.3.1
+// @version      0.3.2
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.3.1",
+    version: "0.3.2",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -123,6 +123,19 @@
       items: Object.freeze([260, 263, 264, 267, 271, 272, 276, 277, 282, 385, 617])
     })
   });
+
+  // Weapon/armor bonus names as Torn labels them. Used to recognise bonus
+  // icons in an expanded item-details panel; unknown names are ignored.
+  const KNOWN_BONUSES = Object.freeze([
+    "Achilles", "Assassinate", "Backstab", "Berserk", "Bleed", "Blindfire", "Bloodlust", "Burn", "Comeback",
+    "Conserve", "Cripple", "Crusher", "Cupid", "Deadeye", "Deadly", "Demoralize", "Disarm", "Double-edged",
+    "Double Tap", "Empower", "Eviscerate", "Execute", "Expose", "Finale", "Focus", "Freeze", "Frenzy", "Fury",
+    "Grace", "Hazardous", "Home Run", "Impenetrable", "Impregnable", "Insurmountable", "Invulnerable", "Irradiate",
+    "Lacerate", "Motivation", "Paralyze", "Parry", "Penetrate", "Plunder", "Poison", "Powerful", "Proficience",
+    "Puncture", "Quicken", "Rage", "Revitalize", "Roshambo", "Shock", "Sleep", "Slow", "Smash", "Smurf",
+    "Specialist", "Spray", "Stricken", "Storm", "Stun", "Suppress", "Sure Shot", "Throttle", "Toxin", "Warlord",
+    "Weaken", "Wind-up", "Wither"
+  ]);
 
   const KEY_ACCESS_RANK = Object.freeze({
     "Public Only": 1,
@@ -1020,6 +1033,159 @@
     };
   }
 
+  function normalizeBonusName(value) {
+    return String(value || "").toLowerCase().replace(/[^a-z]/g, "");
+  }
+
+  // Parse the stats of one owned copy from Torn's expanded item-details
+  // panel. `text` is the panel text; `hints` are attribute values (title,
+  // alt, aria-label, class names) collected from the panel's icons, which is
+  // where bonus names and rarity colours live.
+  function parseEquipmentDetailsText(text, hints = []) {
+    const source = String(text || "").replace(/\s+/g, " ");
+    const number = (pattern) => {
+      const match = source.match(pattern);
+      return match ? Number(match[1]) : null;
+    };
+    const quality = number(/Quality:\s*[^\d]*([\d.]+)\s*%/i);
+    const damage = number(/Damage:\s*[^\d]*([\d.]+)/i);
+    const accuracy = number(/Accuracy:\s*[^\d]*([\d.]+)/i);
+    const armor = number(/Armou?r:\s*[^\d]*([\d.]+)/i);
+    if (!Number.isFinite(quality) && !Number.isFinite(damage) && !Number.isFinite(armor)) return null;
+
+    const known = new Map(KNOWN_BONUSES.map((name) => [normalizeBonusName(name), name]));
+    const bonuses = [];
+    const seen = new Set();
+    let rarity = null;
+    hints.forEach((hint) => {
+      const raw = String(hint || "");
+      const lowered = raw.toLowerCase();
+      if (/\bred\b/.test(lowered)) rarity = "red";
+      else if (/\borange\b/.test(lowered) && rarity !== "red") rarity = "orange";
+      else if (/\byellow\b/.test(lowered) && !rarity) rarity = "yellow";
+      const normalized = normalizeBonusName(raw);
+      for (const [key, name] of known.entries()) {
+        if (normalized === key || (normalized.includes(key) && key.length >= 5)) {
+          const valueMatch = raw.match(/(\d+)\s*%/);
+          const value = valueMatch ? Number(valueMatch[1]) : 0;
+          const existing = bonuses.find((bonus) => bonus.title === name);
+          if (existing) {
+            if (value && !existing.value) existing.value = value;
+          } else {
+            bonuses.push({ title: name, value });
+            seen.add(name);
+          }
+        }
+      }
+    });
+    return {
+      quality: Number.isFinite(quality) ? quality : null,
+      damage: Number.isFinite(damage) ? damage : null,
+      accuracy: Number.isFinite(accuracy) ? accuracy : null,
+      armor: Number.isFinite(armor) ? armor : null,
+      bonuses,
+      rarity: bonuses.length ? rarity : null
+    };
+  }
+
+  // Price one owned weapon/armor whose stats are known (expanded details
+  // panel). Comparables come from the same rarity + bonus group of the deep
+  // order book, quality matched within +/-10 (then +/-20, then the whole
+  // group). Ended Auction House sales of the same group are transaction
+  // evidence. The sell price never exceeds the cheapest comparable listing.
+  function priceOwnedEquipment({ snapshot, copy, auctionSales = [], settings = {} }) {
+    if (!snapshot || !copy) return null;
+    const details = { bonuses: copy.bonuses || [], rarity: copy.rarity || null };
+    const groupKey = equipmentGroupKey(details);
+    const plain = !bonusSignature(details) && !details.rarity;
+    const listings = (snapshot.listings || []).filter((row) => row.itemDetails && equipmentGroupKey(row.itemDetails) === groupKey);
+    const quality = Number.isFinite(copy.quality) ? copy.quality : null;
+
+    let comparables = listings;
+    let band = null;
+    if (quality !== null) {
+      for (const width of [10, 20]) {
+        const matched = listings.filter((row) => {
+          const rowQuality = equipmentQuality(row.itemDetails);
+          return Number.isFinite(rowQuality) && Math.abs(rowQuality - quality) <= width;
+        });
+        if (matched.length >= 3) {
+          comparables = matched;
+          band = width;
+          break;
+        }
+      }
+    }
+
+    const compPrices = comparables.map((row) => row.price);
+    const compFloor = compPrices.length ? Math.min(...compPrices) : null;
+    const compMedian = median(compPrices);
+    const groupPrices = listings.map((row) => row.price);
+    const groupFloor = groupPrices.length ? Math.min(...groupPrices) : null;
+    const groupMedian = median(groupPrices);
+    const sales = (auctionSales || [])
+      .filter((sale) => sale?.details && sale.price > 0 && (!sale.itemId || !snapshot.itemId || sale.itemId === snapshot.itemId))
+      .filter((sale) => equipmentGroupKey(sale.details) === groupKey)
+      .map((sale) => sale.price);
+    const salesMedian = median(sales);
+    const averagePrice = asInt(snapshot.averagePrice, 0) || null;
+
+    const candidates = [
+      compMedian,
+      Number.isFinite(salesMedian) ? Math.round(salesMedian * 1.05) : null,
+      plain && averagePrice ? Math.round(averagePrice * 1.05) : null
+    ].filter((value) => Number.isFinite(value) && value > 0);
+    const reference = candidates.length ? Math.min(...candidates) : (compFloor || groupFloor || null);
+    const referenceSource = !candidates.length
+      ? (reference ? "cheapest listing only" : "none")
+      : [Number.isFinite(compMedian) ? "listings" : null, Number.isFinite(salesMedian) ? "AH sales" : null, plain && averagePrice ? "Torn average" : null].filter(Boolean).join(" + ");
+
+    const summary = snapshot.equipmentSummary || summarizeEquipmentListings(snapshot.listings || []);
+    if (!reference) {
+      return {
+        groupKey, groupLabel: describeEquipmentGroup(groupKey), plain, quality, bonuses: details.bonuses, rarity: details.rarity,
+        comparables: { count: 0, floor: null, median: null, band: null }, group: { count: listings.length, floor: groupFloor, median: groupMedian ? Math.round(groupMedian) : null },
+        sales: { count: sales.length, median: null }, averagePrice, reference: null, referenceSource: "none",
+        bazaarSuggested: null, itemMarketSuggested: null, itemMarketNet: null, feeBps: itemMarketFeeBps(settings), bestRoute: null,
+        cheaperAtSuggested: null, bonusFloor: plain ? summary?.bonusFloor || null : null
+      };
+    }
+
+    const haircut = clamp(Number.isFinite(settings.safetyHaircut) ? settings.safetyHaircut : DEFAULTS.safetyHaircut, 0, 0.10);
+    const bazaarDiscount = clamp(Number.isFinite(settings.bazaarDiscount) ? settings.bazaarDiscount : DEFAULTS.bazaarDiscount, 0, 0.5);
+    const undercut = Math.max(0, asInt(settings.itemMarketUndercut ?? DEFAULTS.itemMarketUndercut));
+    const conservative = Math.max(1, Math.floor(reference * (1 - haircut)));
+    const cap = compFloor ? Math.min(conservative, compFloor) : conservative;
+    const bazaarSuggested = Math.max(1, Math.floor(cap * (1 - bazaarDiscount)));
+    const itemMarketSuggested = Math.max(1, cap - undercut);
+    const feeBps = itemMarketFeeBps(settings);
+    const itemMarketNet = grossToNet(itemMarketSuggested, feeBps);
+    const bazaarNet = settings.bazaarEnabled === false ? Number.NEGATIVE_INFINITY : bazaarSuggested;
+
+    return {
+      groupKey,
+      groupLabel: describeEquipmentGroup(groupKey),
+      plain,
+      quality,
+      bonuses: details.bonuses,
+      rarity: details.rarity,
+      comparables: { count: comparables.length, floor: compFloor, median: Number.isFinite(compMedian) ? Math.round(compMedian) : null, band },
+      group: { count: listings.length, floor: groupFloor, median: Number.isFinite(groupMedian) ? Math.round(groupMedian) : null },
+      sales: { count: sales.length, median: Number.isFinite(salesMedian) ? Math.round(salesMedian) : null },
+      averagePrice,
+      reference,
+      referenceSource,
+      conservative,
+      bazaarSuggested,
+      itemMarketSuggested,
+      itemMarketNet,
+      feeBps,
+      bestRoute: bazaarNet >= itemMarketNet ? "Bazaar" : "Item Market",
+      cheaperAtSuggested: listings.filter((row) => row.price < bazaarSuggested).length,
+      bonusFloor: plain ? summary?.bonusFloor || null : null
+    };
+  }
+
   function museumSetFor(itemId) {
     const id = asInt(itemId, 0);
     if (!id) return null;
@@ -1237,6 +1403,8 @@
     equipmentGroupKey,
     analyzeEquipmentListings,
     equipmentSellPricing,
+    parseEquipmentDetailsText,
+    priceOwnedEquipment,
     normalizeAuctionSales,
     museumSetFor,
     museumValuation,
@@ -2594,6 +2762,79 @@
     return Array.from(byId.values()).sort((a, b) => viewportPriority(b) - viewportPriority(a)).slice(0, clamp(settings.scanMaxVisibleItems, 1, 50));
   }
 
+  // Expanded item-details panels (Bazaar add form, inventory) show the exact
+  // copy's quality, damage/accuracy and bonus icons. Each panel is matched to
+  // its item id through the panel's own large image or the preceding row.
+  function detailsPanelHints(container) {
+    const hints = [];
+    container.querySelectorAll("[title],[aria-label],img[alt],[class*='bonus'],[class*='rarity'],[class*='yellow'],[class*='orange'],[class*='red']").forEach((node) => {
+      if (node.closest(".me-equip-card,#market-edge-root")) return;
+      ["title", "aria-label", "alt", "class", "data-bonus", "data-title"].forEach((attr) => {
+        const value = node.getAttribute?.(attr);
+        if (value) hints.push(String(value));
+      });
+    });
+    return hints;
+  }
+
+  function collectExpandedEquipmentDetails(surface) {
+    const results = [];
+    const candidates = [];
+    const root = (surface === "bazaar" ? bazaarAddSection() : document.querySelector(".items-cont, [class*='itemsCont'], [class*='items-cont']")) || document.body;
+    // textContent avoids forcing layout for every element; innerText is only
+    // read for the few panels that match.
+    root.querySelectorAll("div,li,section").forEach((element) => {
+      if (!(element instanceof HTMLElement) || element.closest("#market-edge-root")) return;
+      const text = (element.textContent || "").replace(/\s+/g, " ");
+      if (text.length > 2500) return;
+      if (!/Quality:\s*[^\d]*[\d.]+\s*%/i.test(text)) return;
+      if (!/Damage:|Accuracy:|Armou?r:/i.test(text)) return;
+      const rect = element.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      candidates.push(element);
+    });
+    // Keep the outermost panel per copy (nested wrappers repeat the text).
+    const panels = candidates.filter((element) => !candidates.some((other) => other !== element && other.contains(element)));
+
+    panels.forEach((panel) => {
+      let itemId = null;
+      const image = panel.querySelector("img[src*='/items/'], img[srcset*='/items/'], [style*='/items/']");
+      if (image) itemId = itemIdFromElement(image);
+      let row = null;
+      if (surface === "bazaar") {
+        const section = bazaarAddSection();
+        const rows = section ? knownBazaarAddRows(section) : [];
+        row = rows.find((candidate) => candidate.contains(panel)) || null;
+        if (!row) {
+          let sibling = panel.previousElementSibling;
+          for (let depth = 0; sibling && depth < 4 && !row; depth += 1, sibling = sibling.previousElementSibling) {
+            row = rows.find((candidate) => candidate === sibling || candidate.contains(sibling) || sibling.contains(candidate)) || null;
+          }
+        }
+        if (!row && panel.parentElement) {
+          const parentRow = rows.find((candidate) => candidate.contains(panel.parentElement));
+          if (parentRow) row = parentRow;
+        }
+        if (!itemId && row) {
+          const rowImage = row.querySelector("div.image-wrap img, img[src*='/items/'], img[srcset*='/items/']");
+          itemId = itemIdFromElement(rowImage || row);
+        }
+      } else if (surface === "inventory") {
+        let sibling = panel.previousElementSibling;
+        for (let depth = 0; sibling && depth < 4 && !row; depth += 1, sibling = sibling.previousElementSibling) {
+          const ids = directItemIdsWithin(sibling);
+          if (ids.size === 1) row = sibling;
+        }
+        if (!itemId && row) itemId = Array.from(directItemIdsWithin(row))[0] || null;
+      }
+      if (!itemId) return;
+      const copy = parseEquipmentDetailsText(panel.innerText || panel.textContent || "", detailsPanelHints(panel));
+      if (!copy) return;
+      results.push({ itemId, panel, row, copy, key: `${itemId}|${copy.quality}|${copy.damage}|${copy.armor}|${copy.bonuses.map((bonus) => bonus.title).join("+")}|${copy.rarity || ""}` });
+    });
+    return results;
+  }
+
   function collectOwnBazaarItems() {
     const combined = [...collectManagedBazaarItems(), ...collectBazaarAddItems()];
     const seenCards = new Set();
@@ -2794,6 +3035,17 @@
     .me-pill.GREY { color:#aaa; }
     .me-pill.RED { color:#e27a7a; border-color:rgba(199,98,98,.5); }
     .me-inline-input { width:110px; padding:4px 6px; border:1px solid #555; border-radius:4px; background:#171719; color:#eee; font-size:11px; }
+    .me-equip-card { margin:8px 0 4px !important; padding:8px 10px !important; border:1px solid rgba(255,255,255,.16) !important; border-radius:6px !important; background:rgba(15,15,17,.72) !important; color:#ddd !important; font:11px/1.4 Arial,sans-serif !important; text-align:left !important; }
+    .me-equip-card .me-equip-head { display:flex !important; align-items:center !important; gap:8px !important; flex-wrap:wrap !important; margin-bottom:5px !important; }
+    .me-equip-card .me-equip-brand { font-weight:800 !important; color:#eee !important; letter-spacing:.04em !important; }
+    .me-equip-card .me-equip-price { font-size:14px !important; font-weight:800 !important; color:#fff !important; }
+    .me-equip-card .me-equip-alt { color:#aaa !important; }
+    .me-equip-card .me-equip-facts { display:grid !important; grid-template-columns:auto 1fr !important; gap:2px 10px !important; font-size:10.5px !important; }
+    .me-equip-card .me-equip-facts .label { color:#999 !important; }
+    .me-equip-card .me-equip-facts .value { color:#ddd !important; font-variant-numeric:tabular-nums !important; }
+    .me-equip-card .me-equip-note { margin-top:5px !important; color:#aaa !important; font-size:10px !important; }
+    .me-equip-card .me-equip-warn { color:#f0ca66 !important; }
+    .me-equip-card .me-bazaar-fill-btn { height:24px !important; min-width:30px !important; }
     .me-launcher { position:fixed; left:10px; bottom:10px; z-index:999997; padding:6px 9px; border-radius:16px; border:1px solid rgba(255,255,255,.25); background:rgba(28,28,30,.94); color:#eee; font:800 11px/1 Arial,sans-serif; cursor:pointer; box-shadow:0 4px 14px rgba(0,0,0,.4); }
     .me-toast-host { position:fixed; left:10px; bottom:48px; z-index:999999; display:flex; flex-direction:column; gap:6px; max-width:min(360px, calc(100vw - 20px)); }
     .me-toast { background:rgba(28,28,30,.97); border:1px solid rgba(74,165,100,.6); border-radius:6px; padding:8px 10px; color:#eee; font:12px/1.35 Arial,sans-serif; box-shadow:0 8px 24px rgba(0,0,0,.45); }
@@ -3082,7 +3334,7 @@
   }
 
   function clearInlineAnalysis() {
-    document.querySelectorAll(".me-inline-analysis").forEach((node) => node.remove());
+    document.querySelectorAll(".me-inline-analysis,.me-equip-card").forEach((node) => node.remove());
     document.querySelectorAll(".me-bazaar-add-controls,.me-bazaar-add-host").forEach((node) => {
       node.classList.remove("me-bazaar-add-controls", "me-bazaar-add-host");
     });
@@ -3238,6 +3490,102 @@
     return bits.map((bit) => `<span class="me-inline-sep">|</span>${bit}`).join("");
   }
 
+  function fillBazaarRowFromDetails(row, price) {
+    if (!row || !Number.isFinite(price) || price <= 0) return { priceFilled: false, quantityFilled: false };
+    const priceInput = findBazaarAddPriceInput(row);
+    if (!priceInput) return { priceFilled: false, quantityFilled: false };
+    const priceFilled = setBazaarInputValue(priceInput, price);
+    let quantityFilled = false;
+    const checkbox = findBazaarAddQuantityCheckbox(row);
+    if (checkbox?.isConnected) {
+      if (!checkbox.checked) checkbox.click();
+      quantityFilled = Boolean(checkbox.checked);
+    } else {
+      const quantityInput = findBazaarAddQuantityInput(row, priceInput);
+      if (quantityInput?.isConnected) {
+        quantityFilled = setBazaarInputValue(quantityInput, 1);
+        quantityInput.dispatchEvent(new Event("keyup", { bubbles: true, composed: true }));
+      }
+    }
+    return { priceFilled, quantityFilled };
+  }
+
+  function renderEquipmentDetailCard(detail, pricing, { canFill = false, loading = false } = {}) {
+    const panel = detail?.panel;
+    if (!panel?.isConnected) return null;
+    panel.querySelectorAll(":scope .me-equip-card").forEach((node) => node.remove());
+    const card = document.createElement("div");
+    card.className = "me-equip-card";
+    card.dataset.meDetailKey = detail.key;
+    card.dataset.meComplete = loading ? "0" : "1";
+
+    const copy = detail.copy;
+    const copyLabel = [
+      Number.isFinite(copy.quality) ? `Q ${copy.quality.toFixed(1)}%` : null,
+      copy.bonuses.length ? copy.bonuses.map((bonus) => `${bonus.title}${bonus.value ? ` ${bonus.value}%` : ""}`).join(" + ") : "plain (no bonus)",
+      copy.rarity ? copy.rarity.toUpperCase() : null
+    ].filter(Boolean).join(" · ");
+
+    if (loading) {
+      card.innerHTML = `<div class="me-equip-head"><span class="me-equip-brand">ME</span><span class="me-equip-alt">${escapeHtml(copyLabel)}</span><span class="me-equip-alt">pricing this copy...</span></div>`;
+      panel.appendChild(card);
+      return card;
+    }
+
+    if (!pricing || !pricing.bazaarSuggested) {
+      const groupCount = pricing?.group?.count || 0;
+      card.innerHTML = `<div class="me-equip-head"><span class="me-equip-brand">ME</span><span class="me-equip-alt">${escapeHtml(copyLabel)}</span></div>
+        <div class="me-equip-note">No comparable ${escapeHtml(pricing?.groupLabel || "listings")} ${groupCount ? "" : "are on the Item Market and no recent Auction House sales were found"}. Price this copy manually or check the Item Market page for the closest rolls.</div>`;
+      panel.appendChild(card);
+      return card;
+    }
+
+    const bandText = pricing.comparables.band
+      ? `${pricing.comparables.count} listings within Q ±${pricing.comparables.band}`
+      : `${pricing.comparables.count} listings in group (no quality match)`;
+    const facts = [
+      ["Comparables", `${pricing.comparables.floor ? `from ${formatMoney(pricing.comparables.floor)}, median ${formatMoney(pricing.comparables.median)}` : "-"} (${bandText})`],
+      ["AH sold (30d)", pricing.sales.count ? `median ${formatMoney(pricing.sales.median)} over ${pricing.sales.count}` : "none for this group"],
+      pricing.plain && pricing.averagePrice ? ["Torn average", formatMoney(pricing.averagePrice)] : null,
+      ["Item Market", `${formatMoney(pricing.itemMarketSuggested)} (net ${formatMoney(pricing.itemMarketNet)} after ${pricing.feeBps / 100}%)`],
+      pricing.plain && pricing.bonusFloor ? ["Bonus copies", `from ${formatMoney(pricing.bonusFloor)}`] : null
+    ].filter(Boolean);
+
+    const warn = pricing.cheaperAtSuggested > 0
+      ? `<div class="me-equip-note me-equip-warn">${pricing.cheaperAtSuggested} ${escapeHtml(pricing.groupLabel)} listing(s) are cheaper than this price; they sell first.</div>`
+      : "";
+    const fill = canFill
+      ? `<button class="me-bazaar-fill-btn" type="button" aria-label="Fill Bazaar price and select this item" title="Fill price with ${escapeHtml(formatMoney(pricing.bazaarSuggested, true))} and select this item">^</button>`
+      : "";
+
+    card.innerHTML = `
+      <div class="me-equip-head">
+        <span class="me-equip-brand">ME</span>
+        <span class="me-equip-alt">${escapeHtml(copyLabel)}</span>
+        <span class="me-equip-price" title="Suggested Bazaar price for this copy: ${escapeHtml(formatMoney(pricing.bazaarSuggested, true))}">${formatMoney(pricing.bazaarSuggested)}</span>
+        ${fill}
+        <span class="me-equip-alt">${escapeHtml(pricing.bestRoute)} is the better exit</span>
+      </div>
+      <div class="me-equip-facts">${facts.map(([label, value]) => `<span class="label">${escapeHtml(label)}</span><span class="value">${escapeHtml(value)}</span>`).join("")}</div>
+      ${warn}
+      <div class="me-equip-note">Reference ${formatMoney(pricing.reference)} from ${escapeHtml(pricing.referenceSource)}, minus safety haircut, never above the cheapest comparable. Estimates, not guarantees; ADD TO BAZAAR stays manual.</div>`;
+    panel.appendChild(card);
+
+    const button = card.querySelector(".me-bazaar-fill-btn");
+    if (button && detail.row) {
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const outcome = fillBazaarRowFromDetails(detail.row, pricing.bazaarSuggested);
+        if (!outcome.priceFilled) return;
+        card.classList.add("me-applied");
+        button.title = outcome.quantityFilled ? `Filled ${formatMoney(pricing.bazaarSuggested, true)} and selected this item` : `Price filled with ${formatMoney(pricing.bazaarSuggested, true)}; select the item manually`;
+        setTimeout(() => card.classList.remove("me-applied"), 700);
+      });
+    }
+    return card;
+  }
+
   function renderInlineResult(surface, result, ownBazaar) {
     const visible = result.visible;
     if (!visible || !visible.card?.isConnected) return null;
@@ -3250,7 +3598,15 @@
       const summary = result.equipment;
       const pricing = result.equipmentPricing || null;
       if (surface === "bazaar" && ownBazaar && visible.bazaarAdd) {
-        return renderBazaarAddSuggestion({ ...result, ownBazaar: { target: pricing?.bazaarSuggested, equipmentPricing: pricing } });
+        // The row only gets a floor glance. Per-copy pricing and the fill
+        // control live in the expanded item-details panel, where the copy's
+        // quality and bonuses are visible.
+        const plain = summary.plainFloor ? formatMoney(summary.plainFloor) : "-";
+        return renderInlineHtml(visible,
+          `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="Cheapest plain Item Market listing">floor ${plain}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Open this item's details to price this exact copy (quality and bonuses) and fill the form">open details to price</span>${stale}`,
+          "GREY",
+          "me-bazaar-add"
+        );
       }
       if (surface === "bazaar" && ownBazaar && pricing) {
         const delta = pricing.bazaarSuggested - visible.price;
@@ -3833,6 +4189,44 @@
     });
 
     await Promise.allSettled(tasks);
+    await scanExpandedEquipment(surface, ownBazaar, queueGroup);
+  }
+
+  // Expanded item-details panels on sell-side surfaces: price the exact copy
+  // against the deep order book (limit 100) and ended Auction House sales.
+  async function scanExpandedEquipment(surface, ownBazaar, queueGroup) {
+    if (settings.equipmentEnabled === false) return;
+    const sellSide = surface === "inventory" || (surface === "bazaar" && ownBazaar);
+    if (!sellSide || !Store.apiKey()) return;
+    let details = [];
+    try {
+      details = collectExpandedEquipmentDetails(surface);
+    } catch (error) {
+      log("Details panel scan failed", error.message);
+      return;
+    }
+    details = details.filter((detail) => detail.panel.querySelector(`:scope .me-equip-card[data-me-detail-key="${CSS.escape ? CSS.escape(detail.key) : detail.key}"][data-me-complete="1"]`) === null);
+    if (!details.length) return;
+
+    await Promise.allSettled(details.map(async (detail) => {
+      try {
+        renderEquipmentDetailCard(detail, null, { loading: true });
+        const bundle = await loadSnapshot(detail.itemId, { limit: API_DEEP_LIMIT, priority: 180, queueGroup });
+        if (!detail.panel.isConnected || detectSurface() !== surface) return;
+        if (!bundle.snapshot.equipment) {
+          detail.panel.querySelectorAll(":scope .me-equip-card").forEach((node) => node.remove());
+          return;
+        }
+        const auctionSales = await loadAuctionSales(detail.itemId, { priority: 170 });
+        if (!detail.panel.isConnected || detectSurface() !== surface) return;
+        const pricing = priceOwnedEquipment({ snapshot: bundle.snapshot, copy: detail.copy, auctionSales, settings });
+        renderEquipmentDetailCard(detail, pricing, { canFill: surface === "bazaar" && Boolean(detail.row) });
+      } catch (error) {
+        if (error?.marketEdgeCanceled) return;
+        log("Details pricing failed", detail.itemId, error.message);
+        detail.panel.querySelectorAll(":scope .me-equip-card").forEach((node) => node.remove());
+      }
+    }));
   }
 
   // ---------------------------------------------------------------------------
@@ -4151,8 +4545,15 @@
         if (itemId) entries.add(`${itemId}@${listRowIdentity(card)}`);
       });
     }
+    if (surface === "bazaar" || surface === "inventory") {
+      try {
+        collectExpandedEquipmentDetails(surface).forEach((detail) => entries.add(`detail:${detail.key}@${listRowIdentity(detail.panel)}`));
+      } catch {
+        // Details detection is best effort.
+      }
+    }
     document.querySelectorAll(itemIdentitySelector()).forEach((node) => {
-      if (node.closest?.("#market-edge-root,.me-inline-analysis")) return;
+      if (node.closest?.("#market-edge-root,.me-inline-analysis,.me-equip-card")) return;
       const itemId = itemIdFromElement(node);
       if (!itemId) return;
       const card = surface === "inventory" ? findInventoryRow(node) : findCompactCard(node, false);
@@ -4330,6 +4731,8 @@
       renderOwnListingsPanel,
       renderWatchlistPanel,
       scanVisibleSurface,
+      scanExpandedEquipment,
+      collectExpandedEquipmentDetails,
       watchTick,
       loadMuseumContext,
       showSettings,

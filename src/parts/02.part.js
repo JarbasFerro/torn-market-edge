@@ -217,6 +217,159 @@
     };
   }
 
+  function normalizeBonusName(value) {
+    return String(value || "").toLowerCase().replace(/[^a-z]/g, "");
+  }
+
+  // Parse the stats of one owned copy from Torn's expanded item-details
+  // panel. `text` is the panel text; `hints` are attribute values (title,
+  // alt, aria-label, class names) collected from the panel's icons, which is
+  // where bonus names and rarity colours live.
+  function parseEquipmentDetailsText(text, hints = []) {
+    const source = String(text || "").replace(/\s+/g, " ");
+    const number = (pattern) => {
+      const match = source.match(pattern);
+      return match ? Number(match[1]) : null;
+    };
+    const quality = number(/Quality:\s*[^\d]*([\d.]+)\s*%/i);
+    const damage = number(/Damage:\s*[^\d]*([\d.]+)/i);
+    const accuracy = number(/Accuracy:\s*[^\d]*([\d.]+)/i);
+    const armor = number(/Armou?r:\s*[^\d]*([\d.]+)/i);
+    if (!Number.isFinite(quality) && !Number.isFinite(damage) && !Number.isFinite(armor)) return null;
+
+    const known = new Map(KNOWN_BONUSES.map((name) => [normalizeBonusName(name), name]));
+    const bonuses = [];
+    const seen = new Set();
+    let rarity = null;
+    hints.forEach((hint) => {
+      const raw = String(hint || "");
+      const lowered = raw.toLowerCase();
+      if (/\bred\b/.test(lowered)) rarity = "red";
+      else if (/\borange\b/.test(lowered) && rarity !== "red") rarity = "orange";
+      else if (/\byellow\b/.test(lowered) && !rarity) rarity = "yellow";
+      const normalized = normalizeBonusName(raw);
+      for (const [key, name] of known.entries()) {
+        if (normalized === key || (normalized.includes(key) && key.length >= 5)) {
+          const valueMatch = raw.match(/(\d+)\s*%/);
+          const value = valueMatch ? Number(valueMatch[1]) : 0;
+          const existing = bonuses.find((bonus) => bonus.title === name);
+          if (existing) {
+            if (value && !existing.value) existing.value = value;
+          } else {
+            bonuses.push({ title: name, value });
+            seen.add(name);
+          }
+        }
+      }
+    });
+    return {
+      quality: Number.isFinite(quality) ? quality : null,
+      damage: Number.isFinite(damage) ? damage : null,
+      accuracy: Number.isFinite(accuracy) ? accuracy : null,
+      armor: Number.isFinite(armor) ? armor : null,
+      bonuses,
+      rarity: bonuses.length ? rarity : null
+    };
+  }
+
+  // Price one owned weapon/armor whose stats are known (expanded details
+  // panel). Comparables come from the same rarity + bonus group of the deep
+  // order book, quality matched within +/-10 (then +/-20, then the whole
+  // group). Ended Auction House sales of the same group are transaction
+  // evidence. The sell price never exceeds the cheapest comparable listing.
+  function priceOwnedEquipment({ snapshot, copy, auctionSales = [], settings = {} }) {
+    if (!snapshot || !copy) return null;
+    const details = { bonuses: copy.bonuses || [], rarity: copy.rarity || null };
+    const groupKey = equipmentGroupKey(details);
+    const plain = !bonusSignature(details) && !details.rarity;
+    const listings = (snapshot.listings || []).filter((row) => row.itemDetails && equipmentGroupKey(row.itemDetails) === groupKey);
+    const quality = Number.isFinite(copy.quality) ? copy.quality : null;
+
+    let comparables = listings;
+    let band = null;
+    if (quality !== null) {
+      for (const width of [10, 20]) {
+        const matched = listings.filter((row) => {
+          const rowQuality = equipmentQuality(row.itemDetails);
+          return Number.isFinite(rowQuality) && Math.abs(rowQuality - quality) <= width;
+        });
+        if (matched.length >= 3) {
+          comparables = matched;
+          band = width;
+          break;
+        }
+      }
+    }
+
+    const compPrices = comparables.map((row) => row.price);
+    const compFloor = compPrices.length ? Math.min(...compPrices) : null;
+    const compMedian = median(compPrices);
+    const groupPrices = listings.map((row) => row.price);
+    const groupFloor = groupPrices.length ? Math.min(...groupPrices) : null;
+    const groupMedian = median(groupPrices);
+    const sales = (auctionSales || [])
+      .filter((sale) => sale?.details && sale.price > 0 && (!sale.itemId || !snapshot.itemId || sale.itemId === snapshot.itemId))
+      .filter((sale) => equipmentGroupKey(sale.details) === groupKey)
+      .map((sale) => sale.price);
+    const salesMedian = median(sales);
+    const averagePrice = asInt(snapshot.averagePrice, 0) || null;
+
+    const candidates = [
+      compMedian,
+      Number.isFinite(salesMedian) ? Math.round(salesMedian * 1.05) : null,
+      plain && averagePrice ? Math.round(averagePrice * 1.05) : null
+    ].filter((value) => Number.isFinite(value) && value > 0);
+    const reference = candidates.length ? Math.min(...candidates) : (compFloor || groupFloor || null);
+    const referenceSource = !candidates.length
+      ? (reference ? "cheapest listing only" : "none")
+      : [Number.isFinite(compMedian) ? "listings" : null, Number.isFinite(salesMedian) ? "AH sales" : null, plain && averagePrice ? "Torn average" : null].filter(Boolean).join(" + ");
+
+    const summary = snapshot.equipmentSummary || summarizeEquipmentListings(snapshot.listings || []);
+    if (!reference) {
+      return {
+        groupKey, groupLabel: describeEquipmentGroup(groupKey), plain, quality, bonuses: details.bonuses, rarity: details.rarity,
+        comparables: { count: 0, floor: null, median: null, band: null }, group: { count: listings.length, floor: groupFloor, median: groupMedian ? Math.round(groupMedian) : null },
+        sales: { count: sales.length, median: null }, averagePrice, reference: null, referenceSource: "none",
+        bazaarSuggested: null, itemMarketSuggested: null, itemMarketNet: null, feeBps: itemMarketFeeBps(settings), bestRoute: null,
+        cheaperAtSuggested: null, bonusFloor: plain ? summary?.bonusFloor || null : null
+      };
+    }
+
+    const haircut = clamp(Number.isFinite(settings.safetyHaircut) ? settings.safetyHaircut : DEFAULTS.safetyHaircut, 0, 0.10);
+    const bazaarDiscount = clamp(Number.isFinite(settings.bazaarDiscount) ? settings.bazaarDiscount : DEFAULTS.bazaarDiscount, 0, 0.5);
+    const undercut = Math.max(0, asInt(settings.itemMarketUndercut ?? DEFAULTS.itemMarketUndercut));
+    const conservative = Math.max(1, Math.floor(reference * (1 - haircut)));
+    const cap = compFloor ? Math.min(conservative, compFloor) : conservative;
+    const bazaarSuggested = Math.max(1, Math.floor(cap * (1 - bazaarDiscount)));
+    const itemMarketSuggested = Math.max(1, cap - undercut);
+    const feeBps = itemMarketFeeBps(settings);
+    const itemMarketNet = grossToNet(itemMarketSuggested, feeBps);
+    const bazaarNet = settings.bazaarEnabled === false ? Number.NEGATIVE_INFINITY : bazaarSuggested;
+
+    return {
+      groupKey,
+      groupLabel: describeEquipmentGroup(groupKey),
+      plain,
+      quality,
+      bonuses: details.bonuses,
+      rarity: details.rarity,
+      comparables: { count: comparables.length, floor: compFloor, median: Number.isFinite(compMedian) ? Math.round(compMedian) : null, band },
+      group: { count: listings.length, floor: groupFloor, median: Number.isFinite(groupMedian) ? Math.round(groupMedian) : null },
+      sales: { count: sales.length, median: Number.isFinite(salesMedian) ? Math.round(salesMedian) : null },
+      averagePrice,
+      reference,
+      referenceSource,
+      conservative,
+      bazaarSuggested,
+      itemMarketSuggested,
+      itemMarketNet,
+      feeBps,
+      bestRoute: bazaarNet >= itemMarketNet ? "Bazaar" : "Item Market",
+      cheaperAtSuggested: listings.filter((row) => row.price < bazaarSuggested).length,
+      bonusFloor: plain ? summary?.bonusFloor || null : null
+    };
+  }
+
   function museumSetFor(itemId) {
     const id = asInt(itemId, 0);
     if (!id) return null;
@@ -434,6 +587,8 @@
     equipmentGroupKey,
     analyzeEquipmentListings,
     equipmentSellPricing,
+    parseEquipmentDetailsText,
+    priceOwnedEquipment,
     normalizeAuctionSales,
     museumSetFor,
     museumValuation,

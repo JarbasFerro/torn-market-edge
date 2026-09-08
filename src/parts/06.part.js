@@ -92,6 +92,102 @@
     return bits.map((bit) => `<span class="me-inline-sep">|</span>${bit}`).join("");
   }
 
+  function fillBazaarRowFromDetails(row, price) {
+    if (!row || !Number.isFinite(price) || price <= 0) return { priceFilled: false, quantityFilled: false };
+    const priceInput = findBazaarAddPriceInput(row);
+    if (!priceInput) return { priceFilled: false, quantityFilled: false };
+    const priceFilled = setBazaarInputValue(priceInput, price);
+    let quantityFilled = false;
+    const checkbox = findBazaarAddQuantityCheckbox(row);
+    if (checkbox?.isConnected) {
+      if (!checkbox.checked) checkbox.click();
+      quantityFilled = Boolean(checkbox.checked);
+    } else {
+      const quantityInput = findBazaarAddQuantityInput(row, priceInput);
+      if (quantityInput?.isConnected) {
+        quantityFilled = setBazaarInputValue(quantityInput, 1);
+        quantityInput.dispatchEvent(new Event("keyup", { bubbles: true, composed: true }));
+      }
+    }
+    return { priceFilled, quantityFilled };
+  }
+
+  function renderEquipmentDetailCard(detail, pricing, { canFill = false, loading = false } = {}) {
+    const panel = detail?.panel;
+    if (!panel?.isConnected) return null;
+    panel.querySelectorAll(":scope .me-equip-card").forEach((node) => node.remove());
+    const card = document.createElement("div");
+    card.className = "me-equip-card";
+    card.dataset.meDetailKey = detail.key;
+    card.dataset.meComplete = loading ? "0" : "1";
+
+    const copy = detail.copy;
+    const copyLabel = [
+      Number.isFinite(copy.quality) ? `Q ${copy.quality.toFixed(1)}%` : null,
+      copy.bonuses.length ? copy.bonuses.map((bonus) => `${bonus.title}${bonus.value ? ` ${bonus.value}%` : ""}`).join(" + ") : "plain (no bonus)",
+      copy.rarity ? copy.rarity.toUpperCase() : null
+    ].filter(Boolean).join(" · ");
+
+    if (loading) {
+      card.innerHTML = `<div class="me-equip-head"><span class="me-equip-brand">ME</span><span class="me-equip-alt">${escapeHtml(copyLabel)}</span><span class="me-equip-alt">pricing this copy...</span></div>`;
+      panel.appendChild(card);
+      return card;
+    }
+
+    if (!pricing || !pricing.bazaarSuggested) {
+      const groupCount = pricing?.group?.count || 0;
+      card.innerHTML = `<div class="me-equip-head"><span class="me-equip-brand">ME</span><span class="me-equip-alt">${escapeHtml(copyLabel)}</span></div>
+        <div class="me-equip-note">No comparable ${escapeHtml(pricing?.groupLabel || "listings")} ${groupCount ? "" : "are on the Item Market and no recent Auction House sales were found"}. Price this copy manually or check the Item Market page for the closest rolls.</div>`;
+      panel.appendChild(card);
+      return card;
+    }
+
+    const bandText = pricing.comparables.band
+      ? `${pricing.comparables.count} listings within Q ±${pricing.comparables.band}`
+      : `${pricing.comparables.count} listings in group (no quality match)`;
+    const facts = [
+      ["Comparables", `${pricing.comparables.floor ? `from ${formatMoney(pricing.comparables.floor)}, median ${formatMoney(pricing.comparables.median)}` : "-"} (${bandText})`],
+      ["AH sold (30d)", pricing.sales.count ? `median ${formatMoney(pricing.sales.median)} over ${pricing.sales.count}` : "none for this group"],
+      pricing.plain && pricing.averagePrice ? ["Torn average", formatMoney(pricing.averagePrice)] : null,
+      ["Item Market", `${formatMoney(pricing.itemMarketSuggested)} (net ${formatMoney(pricing.itemMarketNet)} after ${pricing.feeBps / 100}%)`],
+      pricing.plain && pricing.bonusFloor ? ["Bonus copies", `from ${formatMoney(pricing.bonusFloor)}`] : null
+    ].filter(Boolean);
+
+    const warn = pricing.cheaperAtSuggested > 0
+      ? `<div class="me-equip-note me-equip-warn">${pricing.cheaperAtSuggested} ${escapeHtml(pricing.groupLabel)} listing(s) are cheaper than this price; they sell first.</div>`
+      : "";
+    const fill = canFill
+      ? `<button class="me-bazaar-fill-btn" type="button" aria-label="Fill Bazaar price and select this item" title="Fill price with ${escapeHtml(formatMoney(pricing.bazaarSuggested, true))} and select this item">^</button>`
+      : "";
+
+    card.innerHTML = `
+      <div class="me-equip-head">
+        <span class="me-equip-brand">ME</span>
+        <span class="me-equip-alt">${escapeHtml(copyLabel)}</span>
+        <span class="me-equip-price" title="Suggested Bazaar price for this copy: ${escapeHtml(formatMoney(pricing.bazaarSuggested, true))}">${formatMoney(pricing.bazaarSuggested)}</span>
+        ${fill}
+        <span class="me-equip-alt">${escapeHtml(pricing.bestRoute)} is the better exit</span>
+      </div>
+      <div class="me-equip-facts">${facts.map(([label, value]) => `<span class="label">${escapeHtml(label)}</span><span class="value">${escapeHtml(value)}</span>`).join("")}</div>
+      ${warn}
+      <div class="me-equip-note">Reference ${formatMoney(pricing.reference)} from ${escapeHtml(pricing.referenceSource)}, minus safety haircut, never above the cheapest comparable. Estimates, not guarantees; ADD TO BAZAAR stays manual.</div>`;
+    panel.appendChild(card);
+
+    const button = card.querySelector(".me-bazaar-fill-btn");
+    if (button && detail.row) {
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const outcome = fillBazaarRowFromDetails(detail.row, pricing.bazaarSuggested);
+        if (!outcome.priceFilled) return;
+        card.classList.add("me-applied");
+        button.title = outcome.quantityFilled ? `Filled ${formatMoney(pricing.bazaarSuggested, true)} and selected this item` : `Price filled with ${formatMoney(pricing.bazaarSuggested, true)}; select the item manually`;
+        setTimeout(() => card.classList.remove("me-applied"), 700);
+      });
+    }
+    return card;
+  }
+
   function renderInlineResult(surface, result, ownBazaar) {
     const visible = result.visible;
     if (!visible || !visible.card?.isConnected) return null;
@@ -104,7 +200,15 @@
       const summary = result.equipment;
       const pricing = result.equipmentPricing || null;
       if (surface === "bazaar" && ownBazaar && visible.bazaarAdd) {
-        return renderBazaarAddSuggestion({ ...result, ownBazaar: { target: pricing?.bazaarSuggested, equipmentPricing: pricing } });
+        // The row only gets a floor glance. Per-copy pricing and the fill
+        // control live in the expanded item-details panel, where the copy's
+        // quality and bonuses are visible.
+        const plain = summary.plainFloor ? formatMoney(summary.plainFloor) : "-";
+        return renderInlineHtml(visible,
+          `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="Cheapest plain Item Market listing">floor ${plain}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Open this item's details to price this exact copy (quality and bonuses) and fill the form">open details to price</span>${stale}`,
+          "GREY",
+          "me-bazaar-add"
+        );
       }
       if (surface === "bazaar" && ownBazaar && pricing) {
         const delta = pricing.bazaarSuggested - visible.price;

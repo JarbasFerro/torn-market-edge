@@ -157,7 +157,7 @@ The engine separates:
 7. Bazaar, Item Market, Auction House and Museum-set net proceeds after fees;
 8. confidence and data freshness.
 
-For weapons and armor the engine instead groups listings by rarity and bonus set, matches quality softly, and caps the comparable median with ended Auction House sales from the last 30 days.
+For weapons and armor the engine instead groups listings by rarity and bonus set, matches quality softly, and caps the comparable median with ended Auction House sales from the last 30 days. To price a copy you own, open its item details on the Bazaar add form or inventory: the card that appears prices that exact quality and bonus roll and can fill the Bazaar form with `^`.
 
 Displayed profit values are estimates, not guarantees. Market liquidity and future prices are uncertain.
 
