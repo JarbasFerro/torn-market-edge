@@ -211,7 +211,12 @@ test("Bazaar add form suggestion is explicit and user-triggered", () => {
   assert.ok(source.includes("input.clear-all"));
   assert.ok(source.includes("function findBazaarAddQuantityCheckbox(card)"));
   assert.ok(source.includes("choiceContainer___"));
-  assert.ok(source.includes("me-bazaar-add-host"));
+  assert.ok(source.includes("me-bazaar-add-controls"));
+  assert.ok(source.includes("me-bazaar-add-row"));
+  assert.ok(source.includes("bazaar-below-controls"));
+  assert.ok(source.includes("flex:0 0 100%"));
+  assert.ok(source.includes("grid-column:1 / -1"));
+  assert.ok(source.includes(">^</button>"));
   assert.ok(source.includes("visible.quantityCheckbox.checked"));
   assert.ok(source.includes("knownBazaarAddRows(addSection)"));
   assert.ok(source.includes("function findBazaarAddPriceInput(card)"));

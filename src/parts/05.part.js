@@ -50,8 +50,9 @@
     .me-inline-analysis.RED .me-inline-status { color:#e27a7a !important; }
     .me-inline-metric { white-space:nowrap !important; font-variant-numeric:tabular-nums !important; }
     .me-inline-analysis.me-loading { opacity:.65 !important; font-weight:400 !important; }
-    .me-bazaar-add-host { display:flex !important; align-items:center !important; min-width:0 !important; overflow:visible !important; }
-    .me-bazaar-add-host > .me-inline-analysis { flex:0 0 auto !important; flex-shrink:0 !important; margin-left:auto !important; z-index:10 !important; }
+    .me-bazaar-add-row { height:auto !important; min-height:72px !important; overflow:visible !important; }
+    .me-bazaar-add-controls { flex-wrap:wrap !important; overflow:visible !important; }
+    .me-bazaar-add-controls > .me-inline-analysis { display:flex !important; flex:0 0 100% !important; width:100% !important; max-width:none !important; grid-column:1 / -1 !important; justify-content:flex-end !important; margin:4px 0 1px !important; z-index:10 !important; }
     .me-inline-analysis.me-bazaar-add { pointer-events:auto !important; padding-right:3px !important; }
     .me-bazaar-fill-btn { display:inline-flex !important; align-items:center !important; justify-content:center !important; min-width:25px !important; height:22px !important; margin:0 0 0 2px !important; padding:0 7px !important; border:1px solid rgba(255,255,255,.24) !important; border-radius:4px !important; background:rgba(255,255,255,.08) !important; color:#eee !important; font:800 13px/1 Arial,sans-serif !important; cursor:pointer !important; pointer-events:auto !important; touch-action:manipulation !important; }
     .me-bazaar-fill-btn:hover, .me-bazaar-fill-btn:focus { background:rgba(255,255,255,.16) !important; border-color:rgba(255,255,255,.4) !important; outline:none !important; }
@@ -260,6 +261,10 @@
 
   function clearInlineAnalysis() {
     document.querySelectorAll(".me-inline-analysis").forEach((node) => node.remove());
+    document.querySelectorAll(".me-bazaar-add-controls,.me-bazaar-add-host").forEach((node) => {
+      node.classList.remove("me-bazaar-add-controls", "me-bazaar-add-host");
+    });
+    document.querySelectorAll(".me-bazaar-add-row").forEach((node) => node.classList.remove("me-bazaar-add-row"));
   }
 
   function removeFloatingUi() {
@@ -271,11 +276,16 @@
   }
 
   function inlineHostFor(visible) {
-    const anchor = visible?.inlineAnchor;
-    if (anchor?.isConnected) {
-      if (visible?.bazaarAdd) anchor.classList?.add("me-bazaar-add-host");
-      return { mode: "append", node: anchor };
+    if (visible?.bazaarAdd) {
+      const controls = visible?.bazaarControls || visible?.inlineAnchor;
+      if (controls?.isConnected) {
+        controls.classList?.add("me-bazaar-add-controls");
+        visible.card?.classList?.add("me-bazaar-add-row");
+        return { mode: "append", node: controls };
+      }
     }
+    const anchor = visible?.inlineAnchor;
+    if (anchor?.isConnected) return { mode: "append", node: anchor };
     if (visible?.card?.isConnected) return { mode: "append", node: visible.card };
     return null;
   }

@@ -291,7 +291,7 @@
       if (!(row instanceof HTMLElement) || row.classList.contains("disabled")) return false;
       if (String(row.className || "").includes("item___UN3Mg")) return false;
       const rect = row.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0 || rect.height > 220) return false;
+      if (rect.width <= 0 || rect.height <= 0 || rect.height > 300) return false;
       const image = row.querySelector("div.image-wrap img, img[src*='/items/'], img[srcset*='/items/']");
       const amount = row.querySelector("div[class*='amount___'], div.amount-main-wrap") || row;
       const input = Array.from(amount.querySelectorAll("input")).find((candidate) => {
@@ -317,7 +317,7 @@
     for (let depth = 0; node && depth < 12 && node !== section.parentElement; depth += 1, node = node.parentElement) {
       if (!(node instanceof HTMLElement) || !section.contains(node)) continue;
       const rect = node.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0 || rect.height > 180) continue;
+      if (rect.width <= 0 || rect.height <= 0 || rect.height > 280) continue;
       const text = (node.innerText || "").replace(/\s+/g, " ").trim();
       if (!text || text.length > 500) continue;
       const ids = directItemIdsWithin(node);
@@ -436,7 +436,7 @@
       const quantityCheckbox = findBazaarAddQuantityCheckbox(card);
       const quantityInput = quantityCheckbox ? null : findBazaarAddQuantityInput(card, priceInput);
       const title = card.querySelector("div[class*='name___'], div.title-wrap");
-      const controlHost = card.querySelector("div[class*='description___'], div.title-wrap") || title || findItemTextHost(card, elementItemName(card, node));
+      const controlHost = card.querySelector("div[class*='amount___'], div.amount-main-wrap") || card;
       const text = `${title?.innerText || ""} ${card.innerText || ""}`.trim();
       const quantity = parseQuantity(text);
       const maxFromInput = parseIntegerField(quantityInput?.getAttribute("max"));
@@ -456,8 +456,9 @@
           quantityInput,
           quantityCheckbox,
           bazaarAdd: true,
-          inlineAnchor: controlHost || findItemTextHost(card, name),
-          inlineMode: "inline",
+          bazaarControls: controlHost,
+          inlineAnchor: controlHost,
+          inlineMode: "bazaar-below-controls",
           domTextLength: score
         });
       }

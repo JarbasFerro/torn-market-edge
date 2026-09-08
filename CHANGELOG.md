@@ -6,6 +6,15 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-09-08
+
+### Changed
+
+- Bazaar add-form intelligence now uses a dedicated second line below Torn's `Qty` and price controls, leaving the item-name cell untouched.
+- Bazaar add rows expand vertically as needed so the Market Edge suggestion does not compete with or truncate Torn's native fields.
+- The explicit fill button now uses `^` instead of `>`.
+- The `^` action still fills the suggested price and maximum available quantity only; **ADD TO BAZAAR** remains manual.
+
 ## [0.2.5] - 2026-09-08
 
 ### Fixed

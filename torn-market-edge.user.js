@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.2.5
+// @version      0.2.6
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -23,13 +23,13 @@
 (function marketEdgeBootstrap(global) {
   "use strict";
 
-  // v0.2.5: Bazaar add controls use Torn's visible description/title host so
-  // mobile ellipsis clipping cannot hide them, and Qty checkbox controls are
-  // supported alongside normal quantity inputs.
+  // v0.2.6: Bazaar add intelligence occupies a dedicated second line below
+  // Torn's Qty/price controls, preserving the full item-name area. The explicit
+  // fill control uses ^ and still never submits the Bazaar form.
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.2.5",
+    version: "0.2.6",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -1510,7 +1510,7 @@
       if (!(row instanceof HTMLElement) || row.classList.contains("disabled")) return false;
       if (String(row.className || "").includes("item___UN3Mg")) return false;
       const rect = row.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0 || rect.height > 220) return false;
+      if (rect.width <= 0 || rect.height <= 0 || rect.height > 300) return false;
       const image = row.querySelector("div.image-wrap img, img[src*='/items/'], img[srcset*='/items/']");
       const amount = row.querySelector("div[class*='amount___'], div.amount-main-wrap") || row;
       const input = Array.from(amount.querySelectorAll("input")).find((candidate) => {
@@ -1536,7 +1536,7 @@
     for (let depth = 0; node && depth < 12 && node !== section.parentElement; depth += 1, node = node.parentElement) {
       if (!(node instanceof HTMLElement) || !section.contains(node)) continue;
       const rect = node.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0 || rect.height > 180) continue;
+      if (rect.width <= 0 || rect.height <= 0 || rect.height > 280) continue;
       const text = (node.innerText || "").replace(/\s+/g, " ").trim();
       if (!text || text.length > 500) continue;
       const ids = directItemIdsWithin(node);
@@ -1655,7 +1655,7 @@
       const quantityCheckbox = findBazaarAddQuantityCheckbox(card);
       const quantityInput = quantityCheckbox ? null : findBazaarAddQuantityInput(card, priceInput);
       const title = card.querySelector("div[class*='name___'], div.title-wrap");
-      const controlHost = card.querySelector("div[class*='description___'], div.title-wrap") || title || findItemTextHost(card, elementItemName(card, node));
+      const controlHost = card.querySelector("div[class*='amount___'], div.amount-main-wrap") || card;
       const text = `${title?.innerText || ""} ${card.innerText || ""}`.trim();
       const quantity = parseQuantity(text);
       const maxFromInput = parseIntegerField(quantityInput?.getAttribute("max"));
@@ -1675,8 +1675,9 @@
           quantityInput,
           quantityCheckbox,
           bazaarAdd: true,
-          inlineAnchor: controlHost || findItemTextHost(card, name),
-          inlineMode: "inline",
+          bazaarControls: controlHost,
+          inlineAnchor: controlHost,
+          inlineMode: "bazaar-below-controls",
           domTextLength: score
         });
       }
@@ -1893,8 +1894,9 @@
     .me-inline-analysis.RED .me-inline-status { color:#e27a7a !important; }
     .me-inline-metric { white-space:nowrap !important; font-variant-numeric:tabular-nums !important; }
     .me-inline-analysis.me-loading { opacity:.65 !important; font-weight:400 !important; }
-    .me-bazaar-add-host { display:flex !important; align-items:center !important; min-width:0 !important; overflow:visible !important; }
-    .me-bazaar-add-host > .me-inline-analysis { flex:0 0 auto !important; flex-shrink:0 !important; margin-left:auto !important; z-index:10 !important; }
+    .me-bazaar-add-row { height:auto !important; min-height:72px !important; overflow:visible !important; }
+    .me-bazaar-add-controls { flex-wrap:wrap !important; overflow:visible !important; }
+    .me-bazaar-add-controls > .me-inline-analysis { display:flex !important; flex:0 0 100% !important; width:100% !important; max-width:none !important; grid-column:1 / -1 !important; justify-content:flex-end !important; margin:4px 0 1px !important; z-index:10 !important; }
     .me-inline-analysis.me-bazaar-add { pointer-events:auto !important; padding-right:3px !important; }
     .me-bazaar-fill-btn { display:inline-flex !important; align-items:center !important; justify-content:center !important; min-width:25px !important; height:22px !important; margin:0 0 0 2px !important; padding:0 7px !important; border:1px solid rgba(255,255,255,.24) !important; border-radius:4px !important; background:rgba(255,255,255,.08) !important; color:#eee !important; font:800 13px/1 Arial,sans-serif !important; cursor:pointer !important; pointer-events:auto !important; touch-action:manipulation !important; }
     .me-bazaar-fill-btn:hover, .me-bazaar-fill-btn:focus { background:rgba(255,255,255,.16) !important; border-color:rgba(255,255,255,.4) !important; outline:none !important; }
@@ -2103,6 +2105,10 @@
 
   function clearInlineAnalysis() {
     document.querySelectorAll(".me-inline-analysis").forEach((node) => node.remove());
+    document.querySelectorAll(".me-bazaar-add-controls,.me-bazaar-add-host").forEach((node) => {
+      node.classList.remove("me-bazaar-add-controls", "me-bazaar-add-host");
+    });
+    document.querySelectorAll(".me-bazaar-add-row").forEach((node) => node.classList.remove("me-bazaar-add-row"));
   }
 
   function removeFloatingUi() {
@@ -2114,11 +2120,16 @@
   }
 
   function inlineHostFor(visible) {
-    const anchor = visible?.inlineAnchor;
-    if (anchor?.isConnected) {
-      if (visible?.bazaarAdd) anchor.classList?.add("me-bazaar-add-host");
-      return { mode: "append", node: anchor };
+    if (visible?.bazaarAdd) {
+      const controls = visible?.bazaarControls || visible?.inlineAnchor;
+      if (controls?.isConnected) {
+        controls.classList?.add("me-bazaar-add-controls");
+        visible.card?.classList?.add("me-bazaar-add-row");
+        return { mode: "append", node: controls };
+      }
     }
+    const anchor = visible?.inlineAnchor;
+    if (anchor?.isConnected) return { mode: "append", node: anchor };
     if (visible?.card?.isConnected) return { mode: "append", node: visible.card };
     return null;
   }
@@ -2186,7 +2197,7 @@
     const targetText = formatMoney(target);
     const block = renderInlineHtml(
       visible,
-      `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="Suggested Bazaar selling price">${targetText}</span><button class="me-bazaar-fill-btn" type="button" aria-label="Fill Bazaar price and maximum quantity" title="Fill price with ${escapeHtml(targetText)} and quantity with max available">&gt;</button>${stale}`,
+      `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="Suggested Bazaar selling price">${targetText}</span><button class="me-bazaar-fill-btn" type="button" aria-label="Fill Bazaar price and maximum quantity" title="Fill price with ${escapeHtml(targetText)} and quantity with max available">^</button>${stale}`,
       "GREY",
       "me-bazaar-add"
     );
