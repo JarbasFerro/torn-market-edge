@@ -115,7 +115,7 @@
     return { priceFilled, quantityFilled };
   }
 
-  function renderEquipmentDetailCard(detail, pricing, { canFill = false, loading = false } = {}) {
+  function renderEquipmentDetailCard(detail, pricing, { canFill = false, loading = false, error = "" } = {}) {
     const panel = detail?.panel;
     if (!panel?.isConnected) return null;
     removeDetailCards(panel);
@@ -123,6 +123,9 @@
     card.className = "me-equip-card";
     card.dataset.meDetailKey = detail.key;
     card.dataset.meComplete = loading ? "0" : "1";
+    // Torn's details wrapper may be a grid or flex container; make the card a
+    // full-width block regardless of the parent's layout.
+    card.style.cssText = "display:block;width:100%;box-sizing:border-box;grid-column:1 / -1;flex:0 0 100%;order:999;";
 
     const copy = detail.copy;
     const copyLabel = [
@@ -133,6 +136,12 @@
 
     if (loading) {
       card.innerHTML = `<div class="me-equip-head"><span class="me-equip-brand">ME</span><span class="me-equip-alt">${escapeHtml(copyLabel)}</span><span class="me-equip-alt">pricing this copy...</span></div>`;
+      panel.insertAdjacentElement("afterend", card);
+      return card;
+    }
+
+    if (error) {
+      card.innerHTML = `<div class="me-equip-head"><span class="me-equip-brand">ME</span><span class="me-equip-alt">${escapeHtml(copyLabel)}</span></div><div class="me-equip-note me-equip-warn">${escapeHtml(error)} Collapse and reopen the details to retry.</div>`;
       panel.insertAdjacentElement("afterend", card);
       return card;
     }
@@ -701,7 +710,7 @@
           }
         }, 650);
       }
-      await scanExpandedEquipment(surface, ownBazaar, queueGroup);
+      await scanExpandedEquipment(surface, ownBazaar);
       return;
     }
 
@@ -721,7 +730,7 @@
     if (!items.length) {
       // Every row is already annotated; an expanded details panel may still
       // be new (opening one does not change the rows).
-      await scanExpandedEquipment(surface, ownBazaar, queueGroup);
+      await scanExpandedEquipment(surface, ownBazaar);
       return;
     }
 

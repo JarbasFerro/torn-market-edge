@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.3.9
+// @version      0.3.10
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.3.9",
+    version: "0.3.10",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -3683,7 +3683,7 @@
     return { priceFilled, quantityFilled };
   }
 
-  function renderEquipmentDetailCard(detail, pricing, { canFill = false, loading = false } = {}) {
+  function renderEquipmentDetailCard(detail, pricing, { canFill = false, loading = false, error = "" } = {}) {
     const panel = detail?.panel;
     if (!panel?.isConnected) return null;
     removeDetailCards(panel);
@@ -3691,6 +3691,9 @@
     card.className = "me-equip-card";
     card.dataset.meDetailKey = detail.key;
     card.dataset.meComplete = loading ? "0" : "1";
+    // Torn's details wrapper may be a grid or flex container; make the card a
+    // full-width block regardless of the parent's layout.
+    card.style.cssText = "display:block;width:100%;box-sizing:border-box;grid-column:1 / -1;flex:0 0 100%;order:999;";
 
     const copy = detail.copy;
     const copyLabel = [
@@ -3701,6 +3704,12 @@
 
     if (loading) {
       card.innerHTML = `<div class="me-equip-head"><span class="me-equip-brand">ME</span><span class="me-equip-alt">${escapeHtml(copyLabel)}</span><span class="me-equip-alt">pricing this copy...</span></div>`;
+      panel.insertAdjacentElement("afterend", card);
+      return card;
+    }
+
+    if (error) {
+      card.innerHTML = `<div class="me-equip-head"><span class="me-equip-brand">ME</span><span class="me-equip-alt">${escapeHtml(copyLabel)}</span></div><div class="me-equip-note me-equip-warn">${escapeHtml(error)} Collapse and reopen the details to retry.</div>`;
       panel.insertAdjacentElement("afterend", card);
       return card;
     }
@@ -4269,7 +4278,7 @@
           }
         }, 650);
       }
-      await scanExpandedEquipment(surface, ownBazaar, queueGroup);
+      await scanExpandedEquipment(surface, ownBazaar);
       return;
     }
 
@@ -4289,7 +4298,7 @@
     if (!items.length) {
       // Every row is already annotated; an expanded details panel may still
       // be new (opening one does not change the rows).
-      await scanExpandedEquipment(surface, ownBazaar, queueGroup);
+      await scanExpandedEquipment(surface, ownBazaar);
       return;
     }
 
@@ -4387,7 +4396,7 @@
     });
 
     await Promise.allSettled(tasks);
-    await scanExpandedEquipment(surface, ownBazaar, queueGroup);
+    await scanExpandedEquipment(surface, ownBazaar);
   }
 
   function describeNode(node) {
@@ -4424,6 +4433,10 @@
       });
       const details = collectExpandedEquipmentDetails(surface);
       lines.push("", `resolved details: ${details.length}`);
+      lines.push(`pricing cards on page: ${document.querySelectorAll(".me-equip-card").length}`);
+      document.querySelectorAll(".me-equip-card").forEach((card, index) => lines.push(`card ${index + 1} [complete=${card.dataset.meComplete}] parent: ${describeNode(card.parentElement)} text: ${(card.textContent || "").replace(/\s+/g, " ").trim().slice(0, 160)}`));
+      lines.push(`last details outcome: ${lastDetailsOutcome || "none yet"}`);
+      lines.push(`api key present: ${Boolean(Store.apiKey())}, equipment enabled: ${settings.equipmentEnabled !== false}`);
       details.slice(0, 3).forEach((detail, index) => {
         lines.push(`detail ${index + 1}: item ${detail.itemId}, copy ${JSON.stringify(detail.copy)}, row: ${detail.row ? describeNode(detail.row) : "none"}`);
       });
@@ -4484,7 +4497,18 @@
     });
   }
 
-  async function scanExpandedEquipment(surface, ownBazaar, queueGroup) {
+  let lastDetailsOutcome = "";
+  const detailsInFlight = new Set();
+
+  // Re-find a panel by key after an await: React may have re-rendered the
+  // details block while the API request was pending.
+  function relocateDetail(surface, detail) {
+    if (detail.panel.isConnected) return detail;
+    const again = collectExpandedEquipmentDetails(surface).find((candidate) => candidate.key === detail.key);
+    return again || null;
+  }
+
+  async function scanExpandedEquipment(surface, ownBazaar) {
     cleanupOrphanedDetailCards();
     if (settings.equipmentEnabled === false) return;
     const sellSide = surface === "inventory" || (surface === "bazaar" && ownBazaar);
@@ -4493,33 +4517,55 @@
     try {
       details = collectExpandedEquipmentDetails(surface);
     } catch (error) {
+      lastDetailsOutcome = `panel scan failed: ${error.message}`;
       log("Details panel scan failed", error.message);
       return;
     }
     details = details.filter((detail) => {
+      if (detailsInFlight.has(detail.key)) return false;
       const card = findDetailCard(detail.panel);
       return !(card && card.dataset.meDetailKey === detail.key && card.dataset.meComplete === "1");
     });
     if (!details.length) return;
 
-    await Promise.allSettled(details.map(async (detail) => {
+    await Promise.allSettled(details.map(async (initial) => {
+      let detail = initial;
+      detailsInFlight.add(detail.key);
       try {
         renderEquipmentDetailCard(detail, null, { loading: true });
-        const bundle = await loadSnapshot(detail.itemId, { limit: API_DEEP_LIMIT, priority: 180, queueGroup });
-        if (!detail.panel.isConnected || detectSurface() !== surface) return;
+        // Details requests use their own queue group so list-scan
+        // cancellations (frequent on the inventory page) cannot kill them.
+        const bundle = await loadSnapshot(detail.itemId, { limit: API_DEEP_LIMIT, priority: 180, queueGroup: "details" });
+        if (detectSurface() !== surface) return;
+        detail = relocateDetail(surface, detail);
+        if (!detail) {
+          lastDetailsOutcome = "details panel disappeared before pricing";
+          return;
+        }
         if (!bundle.snapshot.equipment) {
-          removeDetailCards(detail.panel);
+          renderEquipmentDetailCard(detail, null, { error: "Torn lists this item without stats; the commodity model applies." });
+          lastDetailsOutcome = `item ${detail.itemId} is not equipment`;
           return;
         }
         const auctionSales = await loadAuctionSales(detail.itemId, { priority: 170 });
-        if (!detail.panel.isConnected || detectSurface() !== surface) return;
+        if (detectSurface() !== surface) return;
+        detail = relocateDetail(surface, detail);
+        if (!detail) {
+          lastDetailsOutcome = "details panel disappeared before rendering";
+          return;
+        }
         const pricing = priceOwnedEquipment({ snapshot: bundle.snapshot, copy: detail.copy, auctionSales, settings });
         renderEquipmentDetailCard(detail, pricing, { canFill: surface === "bazaar" && Boolean(detail.row) });
         promoteCopyPriceToRow(surface, ownBazaar, detail, pricing, bundle.snapshot);
+        lastDetailsOutcome = `priced item ${detail.itemId}: ${pricing?.bazaarSuggested ? formatMoney(pricing.bazaarSuggested, true) : "no comparables"}`;
       } catch (error) {
-        if (error?.marketEdgeCanceled) return;
-        log("Details pricing failed", detail.itemId, error.message);
-        removeDetailCards(detail.panel);
+        const message = describeApiError(error, { feature: "Copy pricing" });
+        lastDetailsOutcome = `pricing failed for item ${detail.itemId}: ${message}`;
+        log("Details pricing failed", detail.itemId, message);
+        const current = relocateDetail(surface, detail);
+        if (current) renderEquipmentDetailCard(current, null, { error: message });
+      } finally {
+        detailsInFlight.delete(initial.key);
       }
     }));
   }

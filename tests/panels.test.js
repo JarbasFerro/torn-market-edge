@@ -84,7 +84,7 @@ function responder(url) {
   return {};
 }
 
-function boot(html, url, { pda = false } = {}) {
+function boot(html, url, { pda = false, delayMs = 0, fail = () => false } = {}) {
   const dom = new JSDOM(html, { url, runScripts: "outside-only", pretendToBeVisual: true });
   const window = dom.window;
   const store = new Map();
@@ -96,11 +96,11 @@ function boot(html, url, { pda = false } = {}) {
   window.GM_deleteValue = (key) => { store.delete(key); };
   window.GM_addStyle = () => {};
   window.GM_registerMenuCommand = () => {};
-  const answer = (requestUrl) => ({ status: 200, responseText: JSON.stringify(responder(requestUrl)) });
+  const answer = (requestUrl) => ({ status: 200, responseText: JSON.stringify(fail(requestUrl) ? { error: { code: 5, error: "Too many requests" } } : responder(requestUrl)) });
   if (pda) {
-    window.PDA_httpGet = (requestUrl, headers) => { requests.push(requestUrl); return Promise.resolve(answer(requestUrl)); };
+    window.PDA_httpGet = (requestUrl, headers) => { requests.push(requestUrl); return new Promise((resolve) => setTimeout(() => resolve(answer(requestUrl)), delayMs)); };
   } else {
-    window.GM_xmlhttpRequest = (options) => { requests.push(options.url); options.onload(answer(options.url)); };
+    window.GM_xmlhttpRequest = (options) => { requests.push(options.url); setTimeout(() => options.onload(answer(options.url)), delayMs); };
   }
   window.__MARKET_EDGE_EXPOSE_DOM__ = true;
   window.eval(SOURCE);
@@ -399,4 +399,45 @@ run("Settings modal builds a page structure report without the API key", (t) => 
   assert.match(report, /resolved details: 1/);
   assert.match(report, /ul\.details/);
   assert.doesNotMatch(report, /ABCDEFGHIJKLMNOP/);
+});
+
+run("Details pricing survives a list rescan and a re-rendered panel while its request is pending", async (t) => {
+  const env = boot(fixture("inventory-weapon-details.html"), "https://www.torn.com/item.php", { delayMs: 30 });
+  t.after(env.close);
+  const scheduled = [];
+  const originalSchedule = env.ME.api.scheduler.schedule.bind(env.ME.api.scheduler);
+  env.ME.api.scheduler.schedule = (task, priority, meta) => { scheduled.push(meta); return originalSchedule(task, priority, meta); };
+
+  const first = env.ME.scanVisibleSurface("inventory", { force: true });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  // Torn re-renders the stats list while the request is pending.
+  const oldPanel = env.document.querySelector("ul.details");
+  const fresh = oldPanel.cloneNode(true);
+  oldPanel.replaceWith(fresh);
+  // ...and the list mutates, triggering another scan that cancels stale list requests.
+  const second = env.ME.scanVisibleSurface("inventory", { force: false, cancelObsolete: true });
+  await Promise.all([first, second]);
+  await new Promise((resolve) => setTimeout(resolve, 120));
+
+  const detailRequests = scheduled.filter((meta) => String(meta?.path || "").includes("/market/1/itemmarket?limit=100"));
+  assert.ok(detailRequests.length >= 1);
+  assert.ok(detailRequests.every((meta) => meta.queueGroup === "details"), "details requests never share the cancellable list queue group");
+  const cards = env.document.querySelectorAll(".me-equip-card");
+  assert.equal(cards.length, 1, "exactly one card after the panel was replaced");
+  assert.equal(cards[0].previousElementSibling, fresh, "card is attached to the new panel");
+  assert.match(cards[0].textContent, /\$792k/);
+});
+
+run("Details pricing shows the error instead of vanishing when the API fails", async (t) => {
+  const env = boot(fixture("inventory-weapon-details.html"), "https://www.torn.com/item.php", { fail: (url) => url.includes("/market/1/itemmarket") });
+  t.after(env.close);
+  await env.ME.scanVisibleSurface("inventory", { force: true });
+  const card = env.document.querySelector(".me-equip-card");
+  assert.ok(card, "an error card stays visible");
+  assert.equal(card.dataset.meComplete, "1");
+  assert.match(card.textContent, /rate limit/i);
+  assert.match(card.textContent, /Collapse and reopen/);
+  env.ME.showSettings();
+  env.document.querySelector("#me-build-diagnostics").click();
+  assert.match(env.document.querySelector("#me-diagnostics").value, /last details outcome: pricing failed for item 1/);
 });

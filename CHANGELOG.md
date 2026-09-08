@@ -6,6 +6,17 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.3.10] - 2026-09-08
+
+### Fixed
+
+- **Inventory details pricing could be cancelled or lost silently.** The details request shared the list scan's cancellable queue group, so Torn's frequent inventory mutations could cancel it mid-flight, and a React re-render of the stats block orphaned the pending card. Details requests now use their own queue group, the panel is re-located by key after each await, and any failure renders an error card (with the Torn error translated) instead of removing the card.
+- The pricing card is forced to a full-width block so grid/flex details wrappers cannot hide it.
+
+### Changed
+
+- The page structure report now includes the pricing cards present, the last details outcome and whether an API key is available, so a failed pricing step can be diagnosed from the report alone.
+
 ## [0.3.9] - 2026-09-08
 
 ### Fixed
