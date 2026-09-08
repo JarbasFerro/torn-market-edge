@@ -204,5 +204,7 @@ test("hardening guards remain present in the assembled userscript", () => {
   assert.match(source, /listRowIds = new WeakMap/);
   assert.match(source, /priceForSurfaceCard/);
   assert.match(source, /liveMatchesApi/);
+  assert.match(source, /listRowIdentity\(node\)/);
+  assert.match(source, /liveRows\[index\]\?\.quantity === snapshot\.listings\[index\]\?\.quantity/);
   assert.doesNotMatch(source, /evaluatePrefixes\(analysisSnapshot/);
 });

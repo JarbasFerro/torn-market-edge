@@ -88,7 +88,7 @@
       if (surface === "inventory" && !isInventoryListCandidate(card, marker)) return;
       const rect = card?.getBoundingClientRect?.();
       if (rect && (rect.width <= 0 || rect.height <= 0)) return;
-      entries.add(`${itemId}@${listRowIdentity(card)}`);
+      entries.add(`${itemId}@${listRowIdentity(node)}`);
     });
     const structuralEntries = Array.from(entries).sort();
     const heading = surface === "inventory"

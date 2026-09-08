@@ -115,18 +115,20 @@
       }
 
       const liveRows = parseLiveItemMarketListings();
-      const compareCount = Math.min(5, liveRows.length, snapshot.listings.length);
-      const liveMatchesApi = compareCount >= 2 && Array.from({ length: compareCount }, (_, index) => (
-        liveRows[index]?.price === snapshot.listings[index]?.price
-      )).every(Boolean);
-      const liveConfirmation = liveRows.length < 2
-        ? "API"
-        : (liveMatchesApi ? "PAGE MATCHES API" : "API - PAGE DIFFERS");
 
       // The official Torn API is the authoritative valuation source. The live
       // DOM is used only to confirm/highlight what the player currently sees.
       const evaluated = evaluatePrefixes(snapshot, historyStats, settings);
       const best = evaluated.best;
+      const compareCount = Math.max(2, best?.prefixCount || Math.min(5, snapshot.listings.length));
+      const liveMatchesApi = liveRows.length >= compareCount && snapshot.listings.length >= compareCount &&
+        Array.from({ length: compareCount }, (_, index) => (
+          liveRows[index]?.price === snapshot.listings[index]?.price &&
+          liveRows[index]?.quantity === snapshot.listings[index]?.quantity
+        )).every(Boolean);
+      const liveConfirmation = liveRows.length < 2
+        ? "API"
+        : (liveMatchesApi ? "PAGE MATCHES API" : "API - PAGE DIFFERS");
       const fresh = freshness(snapshot.cacheTimestamp);
       const reference = chooseReference(snapshot, historyStats);
       const learning = historyStats.oneDay.count < 5;
@@ -163,7 +165,7 @@
         ${decisionHtml(best)}
         ${diagnosticsHtml(best)}
         ${learning ? `<div class="me-note me-learning">Learning market... ${historyStats.oneDay.count} observations collected. Until 5 observations, Market Edge applies an extra 2% safety haircut and does not treat current lowest as fair value.</div>` : ""}
-        <div class="me-note">Facts: visible/API asks and 5% Item Market fee. Local data: observed anchors. Exit, profit and confidence are estimates - not guarantees.</div>
+        <div class="me-note">Facts: official API asks and 5% Item Market fee. The visible page is used only for confirmation/highlighting. Local data: observed anchors. Exit, profit and confidence are estimates - not guarantees.</div>
       `, fresh.label);
 
       if (liveMatchesApi) highlightItemMarketRows(liveRows, best);
