@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.3.8
+// @version      0.3.9
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.3.8",
+    version: "0.3.9",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -2428,6 +2428,11 @@
       const itemId = itemIdFromElement(node);
       if (!itemId) continue;
       const card = detectSurface() === "inventory" ? findInventoryRow(node) : findCompactCard(node, requireMoney);
+      // A bare image (for example the large picture inside an expanded
+      // details block) is not a row: it would hijack the item entry and
+      // swallow the annotation.
+      if (!card || card === node || card.tagName === "IMG" || !(card.textContent || "").trim()) continue;
+      if (node.closest?.(".me-equip-card")) continue;
       if (!isInventoryListCandidate(card, inventoryMarker)) continue;
       const rect = card?.getBoundingClientRect?.();
       if (rect && (rect.width <= 0 || rect.height <= 0)) continue;
@@ -2906,40 +2911,54 @@
         knownRows = collectVisibleItems({ requireMoney: false }).map((item) => item.card);
       }
     }
-    const isKnown = (element) => knownRows.find((known) => known === element || known.contains(element) || element.contains(known)) || null;
+    const rowsWithin = (element) => knownRows.filter((known) => element === known || element.contains(known) || known.contains(element));
 
     panels.forEach((panel) => {
       let row = null;
-      if (resolveRows) {
-        for (let ancestor = panel.parentElement, depth = 0; ancestor && ancestor !== document.body && depth < 12 && !row; depth += 1, ancestor = ancestor.parentElement) {
-          const known = knownRows.find((candidate) => candidate === ancestor);
-          if (known) row = known;
+      if (resolveRows && knownRows.length) {
+        // 1) Nested layout: climb until an ancestor holds exactly one known
+        //    row card (the expanded row). Stop as soon as several are inside.
+        for (let ancestor = panel.parentElement, depth = 0; ancestor && ancestor !== document.body && depth < 12; depth += 1, ancestor = ancestor.parentElement) {
+          const contained = rowsWithin(ancestor);
+          if (contained.length === 1) {
+            row = contained[0];
+            break;
+          }
+          if (contained.length > 1) break;
         }
+        // 2) Sibling layout: from the panel's top-level wrapper (the child of
+        //    the list holding several rows), look at the rows just before it.
         if (!row) {
           let top = panel;
-          while (top.parentElement && top.parentElement !== document.body && !isKnown(top.parentElement) && !top.parentElement.querySelector?.(BAZAAR_ADD_ROW_SELECTOR)) top = top.parentElement;
+          while (top.parentElement && top.parentElement !== document.body && rowsWithin(top.parentElement).length <= 1) top = top.parentElement;
           let sibling = top.previousElementSibling;
           for (let depth = 0; sibling && depth < 4 && !row; depth += 1, sibling = sibling.previousElementSibling) {
-            row = isKnown(sibling);
-          }
-        }
-        if (!row && surface === "inventory") {
-          let sibling = panel.closest("li,tr,[role='row']")?.previousElementSibling || null;
-          for (let depth = 0; sibling && depth < 4 && !row; depth += 1, sibling = sibling.previousElementSibling) {
-            if (directItemIdsWithin(sibling).size === 1) row = sibling;
+            const contained = rowsWithin(sibling);
+            if (contained.length === 1) row = contained[0];
+            else if (contained.length > 1) break;
           }
         }
       }
-      // Item id: prefer the row image (unambiguous), then the panel's own image.
+      if (!row && resolveRows && surface === "inventory") {
+        // No known cards nearby (row failed collection): fall back to the
+        // nearest preceding element holding a single item id.
+        let sibling = panel.closest("li,tr,[role='row']")?.previousElementSibling || null;
+        for (let depth = 0; sibling && depth < 4 && !row; depth += 1, sibling = sibling.previousElementSibling) {
+          if (directItemIdsWithin(sibling).size === 1) row = sibling;
+        }
+      }
+      // Item id: prefer the row image (unambiguous), then the closest image
+      // around the panel (Torn shows a large item image in the details).
       let itemId = null;
       if (row) {
         const rowImage = row.querySelector("div.image-wrap img, img[src*='/items/'], img[srcset*='/items/']");
         itemId = itemIdFromElement(rowImage || row);
       }
-      if (!itemId) {
-        const scope = row || panel.parentElement || panel;
-        const image = scope.querySelector("img[src*='/items/'], img[srcset*='/items/'], [style*='/items/']");
-        if (image) itemId = itemIdFromElement(image);
+      for (let scope = panel.parentElement, depth = 0; !itemId && scope && scope !== document.body && depth < 8; depth += 1, scope = scope.parentElement) {
+        const images = Array.from(scope.querySelectorAll("img[src*='/items/'], img[srcset*='/items/'], [style*='/items/']")).filter((node) => !node.closest(".me-equip-card,#market-edge-root"));
+        const ids = new Set(images.map((image) => itemIdFromElement(image)).filter(Boolean));
+        if (ids.size === 1) itemId = Array.from(ids)[0];
+        else if (ids.size > 1) break;
       }
       if (!itemId) return;
       const hintScope = row && row.contains(panel) ? row : (panel.parentElement || panel);
@@ -3342,6 +3361,10 @@
           <label>Check interval (seconds, min ${WATCHLIST_MIN_INTERVAL_SEC})</label><input data-setting="watchlistIntervalSeconds" type="number" min="${WATCHLIST_MIN_INTERVAL_SEC}" max="3600" step="5" value="${current.watchlistIntervalSeconds}">
         </div>
         <div id="me-watchlist-rows"></div>
+        <div class="me-section-title">Diagnostics</div>
+        <div class="me-actions"><button class="me-btn" id="me-build-diagnostics" type="button">Build page structure report</button><button class="me-btn" id="me-copy-diagnostics" type="button" hidden>Copy</button></div>
+        <textarea id="me-diagnostics" class="me-inline-input" style="width:100%;min-height:90px;display:none;font:10px/1.3 monospace" readonly></textarea>
+        <div class="me-form-help">The report describes the page's structure around item rows and expanded details (tags, classes, short text). It never includes the API key.</div>
         <div class="me-actions">
           <input id="me-watch-item" class="me-inline-input" type="number" min="1" placeholder="Item ID">
           <input id="me-watch-target" class="me-inline-input" type="number" min="1" placeholder="Alert at or below $">
@@ -3385,6 +3408,29 @@
       });
     };
     renderWatchRows();
+    backdrop.querySelector("#me-build-diagnostics").addEventListener("click", async () => {
+      const area = backdrop.querySelector("#me-diagnostics");
+      const copy = backdrop.querySelector("#me-copy-diagnostics");
+      area.style.display = "block";
+      area.value = buildPageDiagnostics();
+      copy.hidden = false;
+      try {
+        await navigator.clipboard?.writeText?.(area.value);
+        copy.textContent = "Copied";
+      } catch {
+        copy.textContent = "Copy";
+      }
+    });
+    backdrop.querySelector("#me-copy-diagnostics").addEventListener("click", async () => {
+      const area = backdrop.querySelector("#me-diagnostics");
+      area.select();
+      try {
+        await navigator.clipboard?.writeText?.(area.value);
+        backdrop.querySelector("#me-copy-diagnostics").textContent = "Copied";
+      } catch {
+        // Selection is left in place for a manual copy.
+      }
+    });
     backdrop.querySelector("#me-watch-add").addEventListener("click", async () => {
       const itemId = asInt(backdrop.querySelector("#me-watch-item").value, 0);
       const target = asInt(backdrop.querySelector("#me-watch-target").value, 0);
@@ -4342,6 +4388,55 @@
 
     await Promise.allSettled(tasks);
     await scanExpandedEquipment(surface, ownBazaar, queueGroup);
+  }
+
+  function describeNode(node) {
+    if (!(node instanceof Element)) return String(node?.nodeName || "?");
+    const id = node.id ? `#${node.id}` : "";
+    const classes = String(node.className || "").split(/\s+/).filter(Boolean).slice(0, 4).map((name) => `.${name}`).join("");
+    const data = Array.from(node.attributes || []).filter((attr) => attr.name.startsWith("data-") && !attr.name.startsWith("data-me")).slice(0, 3).map((attr) => `[${attr.name}=${String(attr.value).slice(0, 20)}]`).join("");
+    const text = (node.textContent || "").replace(/\s+/g, " ").trim().slice(0, 40);
+    return `${node.tagName.toLowerCase()}${id}${classes}${data} (${node.childElementCount} children) "${text}"`;
+  }
+
+  function ancestorChain(node, depth = 10) {
+    const chain = [];
+    for (let current = node, level = 0; current && current !== document.body && level < depth; level += 1, current = current.parentElement) {
+      chain.push(`${"  ".repeat(level)}${describeNode(current)}`);
+    }
+    return chain.join("\n");
+  }
+
+  // Structure report for bug reports: what the script sees around item rows
+  // and expanded details on the current page. Contains no API key.
+  function buildPageDiagnostics() {
+    const surface = detectSurface();
+    const lines = [`Market Edge ${APP.version} page structure`, `surface: ${surface}`, `path: ${location.pathname}${location.hash ? ` hash: ${location.hash.slice(0, 60)}` : ""}`, `pda: ${ENV.isPda}`, ""];
+    try {
+      const panels = findStatsPanels(document.body);
+      lines.push(`stats panels found: ${panels.length}`);
+      panels.slice(0, 3).forEach((panel, index) => {
+        lines.push(`--- panel ${index + 1} ancestors (innermost first)`);
+        lines.push(ancestorChain(panel, 12));
+        lines.push(`panel text: ${(panel.textContent || "").replace(/\s+/g, " ").trim().slice(0, 300)}`);
+        const previous = panel.closest("li,tr,[role='row']")?.previousElementSibling;
+        if (previous) lines.push(`previous sibling of closest row-like ancestor: ${describeNode(previous)}`);
+      });
+      const details = collectExpandedEquipmentDetails(surface);
+      lines.push("", `resolved details: ${details.length}`);
+      details.slice(0, 3).forEach((detail, index) => {
+        lines.push(`detail ${index + 1}: item ${detail.itemId}, copy ${JSON.stringify(detail.copy)}, row: ${detail.row ? describeNode(detail.row) : "none"}`);
+      });
+      const rows = surface === "bazaar" ? collectBazaarAddItems() : collectVisibleItems({ requireMoney: surface !== "inventory" });
+      lines.push("", `rows collected: ${rows.length}`);
+      rows.slice(0, 3).forEach((item, index) => {
+        lines.push(`--- row ${index + 1}: item ${item.itemId} "${item.name}"`);
+        lines.push(ancestorChain(item.card, 6));
+      });
+    } catch (error) {
+      lines.push(`report failed: ${error.message}`);
+    }
+    return lines.join("\n");
   }
 
   // Once a copy has been priced from its details panel, its value (and the

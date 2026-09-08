@@ -366,3 +366,37 @@ run("Inventory details block placed after the row prices the copy and promotes i
   assert.match(rowBlock.textContent, /Q 51\.0% plain/);
   assert.ok(env.requests.some((url) => url.includes("/market/1/itemmarket?limit=100")));
 });
+
+run("Inventory details nested inside a tall row resolve to that row's inner card", async (t) => {
+  const env = boot(fixture("inventory-weapon-details-nested.html"), "https://www.torn.com/item.php");
+  t.after(env.close);
+  const tallRow = env.document.querySelector("li.expanded");
+  tallRow.getBoundingClientRect = () => ({ width: 320, height: 1200, top: 60, bottom: 1260, left: 0, right: 320, x: 0, y: 60 });
+  await env.ME.scanVisibleSurface("inventory", { force: true });
+  const details = env.ME.collectExpandedEquipmentDetails("inventory");
+  assert.equal(details.length, 1);
+  assert.equal(details[0].itemId, 1, "the rifle, not the uzi above");
+  assert.ok(tallRow.contains(details[0].row), "row card lives inside the expanded list item");
+  assert.ok(!details[0].row.contains(details[0].panel), "row card is the inner wrapper, not the whole item");
+  const card = env.document.querySelector(".me-equip-card");
+  assert.ok(card, "pricing card rendered");
+  assert.match(card.textContent, /\$792k/);
+  const rowBlock = tallRow.querySelector(".me-inline-analysis");
+  assert.ok(rowBlock);
+  assert.match(rowBlock.textContent, /BZ \$792k/);
+  const uziRow = env.document.querySelector("li.item-row");
+  assert.doesNotMatch(uziRow.textContent, /\$792k/, "the row above is untouched");
+});
+
+run("Settings modal builds a page structure report without the API key", (t) => {
+  const env = boot(fixture("inventory-weapon-details.html"), "https://www.torn.com/item.php");
+  t.after(env.close);
+  env.ME.showSettings();
+  env.document.querySelector("#me-build-diagnostics").click();
+  const report = env.document.querySelector("#me-diagnostics").value;
+  assert.match(report, /surface: inventory/);
+  assert.match(report, /stats panels found: 1/);
+  assert.match(report, /resolved details: 1/);
+  assert.match(report, /ul\.details/);
+  assert.doesNotMatch(report, /ABCDEFGHIJKLMNOP/);
+});

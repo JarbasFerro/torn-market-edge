@@ -265,6 +265,10 @@
           <label>Check interval (seconds, min ${WATCHLIST_MIN_INTERVAL_SEC})</label><input data-setting="watchlistIntervalSeconds" type="number" min="${WATCHLIST_MIN_INTERVAL_SEC}" max="3600" step="5" value="${current.watchlistIntervalSeconds}">
         </div>
         <div id="me-watchlist-rows"></div>
+        <div class="me-section-title">Diagnostics</div>
+        <div class="me-actions"><button class="me-btn" id="me-build-diagnostics" type="button">Build page structure report</button><button class="me-btn" id="me-copy-diagnostics" type="button" hidden>Copy</button></div>
+        <textarea id="me-diagnostics" class="me-inline-input" style="width:100%;min-height:90px;display:none;font:10px/1.3 monospace" readonly></textarea>
+        <div class="me-form-help">The report describes the page's structure around item rows and expanded details (tags, classes, short text). It never includes the API key.</div>
         <div class="me-actions">
           <input id="me-watch-item" class="me-inline-input" type="number" min="1" placeholder="Item ID">
           <input id="me-watch-target" class="me-inline-input" type="number" min="1" placeholder="Alert at or below $">
@@ -308,6 +312,29 @@
       });
     };
     renderWatchRows();
+    backdrop.querySelector("#me-build-diagnostics").addEventListener("click", async () => {
+      const area = backdrop.querySelector("#me-diagnostics");
+      const copy = backdrop.querySelector("#me-copy-diagnostics");
+      area.style.display = "block";
+      area.value = buildPageDiagnostics();
+      copy.hidden = false;
+      try {
+        await navigator.clipboard?.writeText?.(area.value);
+        copy.textContent = "Copied";
+      } catch {
+        copy.textContent = "Copy";
+      }
+    });
+    backdrop.querySelector("#me-copy-diagnostics").addEventListener("click", async () => {
+      const area = backdrop.querySelector("#me-diagnostics");
+      area.select();
+      try {
+        await navigator.clipboard?.writeText?.(area.value);
+        backdrop.querySelector("#me-copy-diagnostics").textContent = "Copied";
+      } catch {
+        // Selection is left in place for a manual copy.
+      }
+    });
     backdrop.querySelector("#me-watch-add").addEventListener("click", async () => {
       const itemId = asInt(backdrop.querySelector("#me-watch-item").value, 0);
       const target = asInt(backdrop.querySelector("#me-watch-target").value, 0);

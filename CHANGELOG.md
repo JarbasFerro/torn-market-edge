@@ -6,6 +6,17 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-09-08
+
+### Fixed
+
+- **Inventory details were priced but shown nowhere.** The large item picture inside Torn's details block is itself an item-identity node; with no readable row around it, the collector fell back to the image element as the item's row card, so the annotation was appended to an image and the details were tied to the wrong element. Bare-image cards are now rejected.
+- Details panels are matched to their row by containment, which handles both layouts Torn uses: details nested inside the row (Bazaar add form, some inventory views) and details placed after the row (inventory).
+
+### Added
+
+- **Page structure report** in settings (Diagnostics). It lists what the script sees around item rows and expanded details (tags, classes, short text) so layout problems can be reported without developer tools. It never includes the API key.
+
 ## [0.3.8] - 2026-09-08
 
 ### Fixed

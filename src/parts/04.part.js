@@ -141,6 +141,11 @@
       const itemId = itemIdFromElement(node);
       if (!itemId) continue;
       const card = detectSurface() === "inventory" ? findInventoryRow(node) : findCompactCard(node, requireMoney);
+      // A bare image (for example the large picture inside an expanded
+      // details block) is not a row: it would hijack the item entry and
+      // swallow the annotation.
+      if (!card || card === node || card.tagName === "IMG" || !(card.textContent || "").trim()) continue;
+      if (node.closest?.(".me-equip-card")) continue;
       if (!isInventoryListCandidate(card, inventoryMarker)) continue;
       const rect = card?.getBoundingClientRect?.();
       if (rect && (rect.width <= 0 || rect.height <= 0)) continue;
@@ -619,40 +624,54 @@
         knownRows = collectVisibleItems({ requireMoney: false }).map((item) => item.card);
       }
     }
-    const isKnown = (element) => knownRows.find((known) => known === element || known.contains(element) || element.contains(known)) || null;
+    const rowsWithin = (element) => knownRows.filter((known) => element === known || element.contains(known) || known.contains(element));
 
     panels.forEach((panel) => {
       let row = null;
-      if (resolveRows) {
-        for (let ancestor = panel.parentElement, depth = 0; ancestor && ancestor !== document.body && depth < 12 && !row; depth += 1, ancestor = ancestor.parentElement) {
-          const known = knownRows.find((candidate) => candidate === ancestor);
-          if (known) row = known;
+      if (resolveRows && knownRows.length) {
+        // 1) Nested layout: climb until an ancestor holds exactly one known
+        //    row card (the expanded row). Stop as soon as several are inside.
+        for (let ancestor = panel.parentElement, depth = 0; ancestor && ancestor !== document.body && depth < 12; depth += 1, ancestor = ancestor.parentElement) {
+          const contained = rowsWithin(ancestor);
+          if (contained.length === 1) {
+            row = contained[0];
+            break;
+          }
+          if (contained.length > 1) break;
         }
+        // 2) Sibling layout: from the panel's top-level wrapper (the child of
+        //    the list holding several rows), look at the rows just before it.
         if (!row) {
           let top = panel;
-          while (top.parentElement && top.parentElement !== document.body && !isKnown(top.parentElement) && !top.parentElement.querySelector?.(BAZAAR_ADD_ROW_SELECTOR)) top = top.parentElement;
+          while (top.parentElement && top.parentElement !== document.body && rowsWithin(top.parentElement).length <= 1) top = top.parentElement;
           let sibling = top.previousElementSibling;
           for (let depth = 0; sibling && depth < 4 && !row; depth += 1, sibling = sibling.previousElementSibling) {
-            row = isKnown(sibling);
-          }
-        }
-        if (!row && surface === "inventory") {
-          let sibling = panel.closest("li,tr,[role='row']")?.previousElementSibling || null;
-          for (let depth = 0; sibling && depth < 4 && !row; depth += 1, sibling = sibling.previousElementSibling) {
-            if (directItemIdsWithin(sibling).size === 1) row = sibling;
+            const contained = rowsWithin(sibling);
+            if (contained.length === 1) row = contained[0];
+            else if (contained.length > 1) break;
           }
         }
       }
-      // Item id: prefer the row image (unambiguous), then the panel's own image.
+      if (!row && resolveRows && surface === "inventory") {
+        // No known cards nearby (row failed collection): fall back to the
+        // nearest preceding element holding a single item id.
+        let sibling = panel.closest("li,tr,[role='row']")?.previousElementSibling || null;
+        for (let depth = 0; sibling && depth < 4 && !row; depth += 1, sibling = sibling.previousElementSibling) {
+          if (directItemIdsWithin(sibling).size === 1) row = sibling;
+        }
+      }
+      // Item id: prefer the row image (unambiguous), then the closest image
+      // around the panel (Torn shows a large item image in the details).
       let itemId = null;
       if (row) {
         const rowImage = row.querySelector("div.image-wrap img, img[src*='/items/'], img[srcset*='/items/']");
         itemId = itemIdFromElement(rowImage || row);
       }
-      if (!itemId) {
-        const scope = row || panel.parentElement || panel;
-        const image = scope.querySelector("img[src*='/items/'], img[srcset*='/items/'], [style*='/items/']");
-        if (image) itemId = itemIdFromElement(image);
+      for (let scope = panel.parentElement, depth = 0; !itemId && scope && scope !== document.body && depth < 8; depth += 1, scope = scope.parentElement) {
+        const images = Array.from(scope.querySelectorAll("img[src*='/items/'], img[srcset*='/items/'], [style*='/items/']")).filter((node) => !node.closest(".me-equip-card,#market-edge-root"));
+        const ids = new Set(images.map((image) => itemIdFromElement(image)).filter(Boolean));
+        if (ids.size === 1) itemId = Array.from(ids)[0];
+        else if (ids.size > 1) break;
       }
       if (!itemId) return;
       const hintScope = row && row.contains(panel) ? row : (panel.parentElement || panel);

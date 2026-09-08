@@ -103,6 +103,10 @@ At minimum, preserve these cases:
 - On inventory, confirm weapon rows show nothing and trigger no `/market/` request (developer diagnostics log requests) until a copy's details are opened.
 - Expand a weapon's details on the Bazaar add form; confirm a Market Edge card appears below the stats with the copy's quality, a suggested price, comparables and `^`; confirm `^` fills the price and selects the item without submitting.
 
+### Diagnostics
+
+- Open settings, press **Build page structure report**; confirm the report lists the surface, stats panels and rows and contains no API key.
+
 ### Watchlist
 
 - Add an item with a target above the current floor; confirm a toast and `[ME]` title marker appear within one interval.
