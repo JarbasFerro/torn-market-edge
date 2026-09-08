@@ -1,0 +1,43 @@
+name: Apply v0.2.6 Bazaar second-line UI
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/apply-v026-bazaar-second-line.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Apply v0.2.6 patch
+        run: python3 .github/apply_v026_bazaar_second_line.py
+
+      - name: Build userscript
+        run: cat src/parts/*.part.js > torn-market-edge.user.js
+
+      - name: Validate JavaScript
+        run: node --check torn-market-edge.user.js
+
+      - name: Run regression tests
+        run: node --test tests/*.test.js
+
+      - name: Remove one-time patch files
+        run: |
+          rm .github/apply_v026_bazaar_second_line.py
+          rm .github/workflows/apply-v026-bazaar-second-line.yml
+
+      - name: Commit v0.2.6 to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "ui: move Bazaar suggestion below controls v0.2.6"
+          git push
