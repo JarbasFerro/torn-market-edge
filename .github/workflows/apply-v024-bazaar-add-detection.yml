@@ -1,0 +1,43 @@
+name: Apply v0.2.4 Bazaar add detection
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/apply-v024-bazaar-add-detection.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Apply v0.2.4 patch
+        run: python3 .github/apply_v024_bazaar_add_detection.py
+
+      - name: Build userscript
+        run: cat src/parts/*.part.js > torn-market-edge.user.js
+
+      - name: Validate JavaScript
+        run: node --check torn-market-edge.user.js
+
+      - name: Run regression tests
+        run: node --test tests/*.test.js
+
+      - name: Remove one-time patch files
+        run: |
+          rm .github/apply_v024_bazaar_add_detection.py
+          rm .github/workflows/apply-v024-bazaar-add-detection.yml
+
+      - name: Commit v0.2.4 to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: detect Bazaar add rows on mobile v0.2.4"
+          git push
