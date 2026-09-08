@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.2.4
+// @version      0.2.5
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -23,13 +23,13 @@
 (function marketEdgeBootstrap(global) {
   "use strict";
 
-  // v0.2.4: Bazaar add-form detection follows Torn's current desktop/mobile
-  // item containers directly, with the older heading heuristic retained as a
-  // fallback. Price/quantity filling remains explicitly user-triggered.
+  // v0.2.5: Bazaar add controls use Torn's visible description/title host so
+  // mobile ellipsis clipping cannot hide them, and Qty checkbox controls are
+  // supported alongside normal quantity inputs.
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.2.4",
+    version: "0.2.5",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -1566,9 +1566,8 @@
   function findBazaarAddPriceInput(card) {
     if (!card) return null;
     const amount = card.querySelector("div[class*='amount___'], div.amount-main-wrap") || card;
-    const explicit = amount.querySelector(
-      "div[class*='price___'] input.input-money, div[class*='price___'] input, div.price input.input-money, div.price input, input.input-money, input[name*='price' i]"
-    );
+    const priceWrap = amount.querySelector("div[class*='price___'], div.price");
+    const explicit = priceWrap?.querySelector("input.input-money, input") || amount.querySelector("input[name*='price' i]");
     if (explicit) {
       const rect = explicit.getBoundingClientRect();
       if (rect.width > 0 && rect.height > 0 && explicit.type !== "hidden") return explicit;
@@ -1588,6 +1587,16 @@
     });
     scored.sort((a, b) => b.score - a.score || b.left - a.left);
     return scored[0]?.input || null;
+  }
+
+  function findBazaarAddQuantityCheckbox(card) {
+    if (!card) return null;
+    const amount = card.querySelector("div[class*='amount___'], div.amount-main-wrap") || card;
+    const control = amount.querySelector("div.choice-container, [class*='choiceContainer___']");
+    const checkbox = control?.querySelector?.("input[type='checkbox'], input");
+    if (!(checkbox instanceof HTMLInputElement)) return null;
+    const rect = control.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 ? checkbox : null;
   }
 
   function findBazaarAddQuantityInput(card, priceInput = null) {
@@ -1643,8 +1652,10 @@
       if (!itemId) continue;
       const priceInput = findBazaarAddPriceInput(card);
       if (!priceInput) continue;
-      const quantityInput = findBazaarAddQuantityInput(card, priceInput);
+      const quantityCheckbox = findBazaarAddQuantityCheckbox(card);
+      const quantityInput = quantityCheckbox ? null : findBazaarAddQuantityInput(card, priceInput);
       const title = card.querySelector("div[class*='name___'], div.title-wrap");
+      const controlHost = card.querySelector("div[class*='description___'], div.title-wrap") || title || findItemTextHost(card, elementItemName(card, node));
       const text = `${title?.innerText || ""} ${card.innerText || ""}`.trim();
       const quantity = parseQuantity(text);
       const maxFromInput = parseIntegerField(quantityInput?.getAttribute("max"));
@@ -1662,8 +1673,9 @@
           card,
           priceInput,
           quantityInput,
+          quantityCheckbox,
           bazaarAdd: true,
-          inlineAnchor: findItemTextHost(card, name),
+          inlineAnchor: controlHost || findItemTextHost(card, name),
           inlineMode: "inline",
           domTextLength: score
         });
@@ -1881,6 +1893,8 @@
     .me-inline-analysis.RED .me-inline-status { color:#e27a7a !important; }
     .me-inline-metric { white-space:nowrap !important; font-variant-numeric:tabular-nums !important; }
     .me-inline-analysis.me-loading { opacity:.65 !important; font-weight:400 !important; }
+    .me-bazaar-add-host { display:flex !important; align-items:center !important; min-width:0 !important; overflow:visible !important; }
+    .me-bazaar-add-host > .me-inline-analysis { flex:0 0 auto !important; flex-shrink:0 !important; margin-left:auto !important; z-index:10 !important; }
     .me-inline-analysis.me-bazaar-add { pointer-events:auto !important; padding-right:3px !important; }
     .me-bazaar-fill-btn { display:inline-flex !important; align-items:center !important; justify-content:center !important; min-width:25px !important; height:22px !important; margin:0 0 0 2px !important; padding:0 7px !important; border:1px solid rgba(255,255,255,.24) !important; border-radius:4px !important; background:rgba(255,255,255,.08) !important; color:#eee !important; font:800 13px/1 Arial,sans-serif !important; cursor:pointer !important; pointer-events:auto !important; touch-action:manipulation !important; }
     .me-bazaar-fill-btn:hover, .me-bazaar-fill-btn:focus { background:rgba(255,255,255,.16) !important; border-color:rgba(255,255,255,.4) !important; outline:none !important; }
@@ -2101,7 +2115,10 @@
 
   function inlineHostFor(visible) {
     const anchor = visible?.inlineAnchor;
-    if (anchor?.isConnected) return { mode: "append", node: anchor };
+    if (anchor?.isConnected) {
+      if (visible?.bazaarAdd) anchor.classList?.add("me-bazaar-add-host");
+      return { mode: "append", node: anchor };
+    }
     if (visible?.card?.isConnected) return { mode: "append", node: visible.card };
     return null;
   }
@@ -2182,9 +2199,14 @@
       if (!visible.priceInput?.isConnected) return;
       const priceFilled = setBazaarInputValue(visible.priceInput, target);
       const maxAvailable = Math.max(1, asInt(visible.maxAvailable || visible.quantity, 1));
-      const quantityFilled = visible.quantityInput?.isConnected
-        ? setBazaarInputValue(visible.quantityInput, maxAvailable)
-        : false;
+      let quantityFilled = false;
+      if (visible.quantityCheckbox?.isConnected) {
+        if (!visible.quantityCheckbox.checked) visible.quantityCheckbox.click();
+        quantityFilled = Boolean(visible.quantityCheckbox.checked);
+      } else if (visible.quantityInput?.isConnected) {
+        quantityFilled = setBazaarInputValue(visible.quantityInput, maxAvailable);
+        visible.quantityInput.dispatchEvent(new Event("keyup", { bubbles: true, composed: true }));
+      }
       if (!priceFilled) return;
       visible.price = target;
       block.classList.add("me-applied");
@@ -2603,6 +2625,14 @@
     if (!["bazaar", "auction", "travel", "inventory"].includes(surface)) return "";
     const entries = new Set();
     const marker = surface === "inventory" ? inventoryListMarker() : null;
+    if (surface === "bazaar") {
+      const addSection = bazaarAddSection();
+      knownBazaarAddRows(addSection).forEach((card) => {
+        const image = card.querySelector("div.image-wrap img, img[src*='/items/'], img[srcset*='/items/']");
+        const itemId = itemIdFromElement(image || card);
+        if (itemId) entries.add(`${itemId}@${listRowIdentity(card)}`);
+      });
+    }
     document.querySelectorAll(itemIdentitySelector()).forEach((node) => {
       if (node.closest?.("#market-edge-root,.me-inline-analysis")) return;
       const itemId = itemIdFromElement(node);

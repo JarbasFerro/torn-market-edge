@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.2.4
+// @version      0.2.5
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -23,13 +23,13 @@
 (function marketEdgeBootstrap(global) {
   "use strict";
 
-  // v0.2.4: Bazaar add-form detection follows Torn's current desktop/mobile
-  // item containers directly, with the older heading heuristic retained as a
-  // fallback. Price/quantity filling remains explicitly user-triggered.
+  // v0.2.5: Bazaar add controls use Torn's visible description/title host so
+  // mobile ellipsis clipping cannot hide them, and Qty checkbox controls are
+  // supported alongside normal quantity inputs.
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.2.4",
+    version: "0.2.5",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });

@@ -347,9 +347,8 @@
   function findBazaarAddPriceInput(card) {
     if (!card) return null;
     const amount = card.querySelector("div[class*='amount___'], div.amount-main-wrap") || card;
-    const explicit = amount.querySelector(
-      "div[class*='price___'] input.input-money, div[class*='price___'] input, div.price input.input-money, div.price input, input.input-money, input[name*='price' i]"
-    );
+    const priceWrap = amount.querySelector("div[class*='price___'], div.price");
+    const explicit = priceWrap?.querySelector("input.input-money, input") || amount.querySelector("input[name*='price' i]");
     if (explicit) {
       const rect = explicit.getBoundingClientRect();
       if (rect.width > 0 && rect.height > 0 && explicit.type !== "hidden") return explicit;
@@ -369,6 +368,16 @@
     });
     scored.sort((a, b) => b.score - a.score || b.left - a.left);
     return scored[0]?.input || null;
+  }
+
+  function findBazaarAddQuantityCheckbox(card) {
+    if (!card) return null;
+    const amount = card.querySelector("div[class*='amount___'], div.amount-main-wrap") || card;
+    const control = amount.querySelector("div.choice-container, [class*='choiceContainer___']");
+    const checkbox = control?.querySelector?.("input[type='checkbox'], input");
+    if (!(checkbox instanceof HTMLInputElement)) return null;
+    const rect = control.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 ? checkbox : null;
   }
 
   function findBazaarAddQuantityInput(card, priceInput = null) {
@@ -424,8 +433,10 @@
       if (!itemId) continue;
       const priceInput = findBazaarAddPriceInput(card);
       if (!priceInput) continue;
-      const quantityInput = findBazaarAddQuantityInput(card, priceInput);
+      const quantityCheckbox = findBazaarAddQuantityCheckbox(card);
+      const quantityInput = quantityCheckbox ? null : findBazaarAddQuantityInput(card, priceInput);
       const title = card.querySelector("div[class*='name___'], div.title-wrap");
+      const controlHost = card.querySelector("div[class*='description___'], div.title-wrap") || title || findItemTextHost(card, elementItemName(card, node));
       const text = `${title?.innerText || ""} ${card.innerText || ""}`.trim();
       const quantity = parseQuantity(text);
       const maxFromInput = parseIntegerField(quantityInput?.getAttribute("max"));
@@ -443,8 +454,9 @@
           card,
           priceInput,
           quantityInput,
+          quantityCheckbox,
           bazaarAdd: true,
-          inlineAnchor: findItemTextHost(card, name),
+          inlineAnchor: controlHost || findItemTextHost(card, name),
           inlineMode: "inline",
           domTextLength: score
         });

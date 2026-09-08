@@ -80,6 +80,14 @@
     if (!["bazaar", "auction", "travel", "inventory"].includes(surface)) return "";
     const entries = new Set();
     const marker = surface === "inventory" ? inventoryListMarker() : null;
+    if (surface === "bazaar") {
+      const addSection = bazaarAddSection();
+      knownBazaarAddRows(addSection).forEach((card) => {
+        const image = card.querySelector("div.image-wrap img, img[src*='/items/'], img[srcset*='/items/']");
+        const itemId = itemIdFromElement(image || card);
+        if (itemId) entries.add(`${itemId}@${listRowIdentity(card)}`);
+      });
+    }
     document.querySelectorAll(itemIdentitySelector()).forEach((node) => {
       if (node.closest?.("#market-edge-root,.me-inline-analysis")) return;
       const itemId = itemIdFromElement(node);

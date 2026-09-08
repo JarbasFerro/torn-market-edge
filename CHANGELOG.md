@@ -6,6 +6,15 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-09-08
+
+### Fixed
+
+- Bazaar add-form Market Edge controls now render in Torn's description/title container instead of the ellipsis-clipped item-name text host, so the suggestion and `>` button stay visible on mobile.
+- The `>` action now supports Torn's checkbox-style `Qty` control (select-max behavior) as well as normal quantity inputs.
+- Bazaar add rows are included directly in the SPA signature so late-rendered/remounted rows trigger analysis even if Torn changes generic item-identity markup.
+- Price-input detection is scoped to Torn's price wrapper before falling back to heuristic input scoring.
+
 ## [0.2.4] - 2026-09-08
 
 ### Fixed

@@ -47,9 +47,14 @@
       if (!visible.priceInput?.isConnected) return;
       const priceFilled = setBazaarInputValue(visible.priceInput, target);
       const maxAvailable = Math.max(1, asInt(visible.maxAvailable || visible.quantity, 1));
-      const quantityFilled = visible.quantityInput?.isConnected
-        ? setBazaarInputValue(visible.quantityInput, maxAvailable)
-        : false;
+      let quantityFilled = false;
+      if (visible.quantityCheckbox?.isConnected) {
+        if (!visible.quantityCheckbox.checked) visible.quantityCheckbox.click();
+        quantityFilled = Boolean(visible.quantityCheckbox.checked);
+      } else if (visible.quantityInput?.isConnected) {
+        quantityFilled = setBazaarInputValue(visible.quantityInput, maxAvailable);
+        visible.quantityInput.dispatchEvent(new Event("keyup", { bubbles: true, composed: true }));
+      }
       if (!priceFilled) return;
       visible.price = target;
       block.classList.add("me-applied");
