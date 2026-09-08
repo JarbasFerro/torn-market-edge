@@ -4,6 +4,20 @@ All notable changes to Torn Market Edge are documented here.
 
 The project uses semantic-style version numbers for public userscript releases.
 
+## [Unreleased]
+
+### Fixed
+
+- Detect same-item SPA row remounts and re-annotate without requiring a refresh.
+- Cancel obsolete queued list-price requests before they consume the API budget.
+- Keep the official Torn Item Market API authoritative when visible page listings differ from the API cache.
+- Use safer surface-specific price extraction on other Bazaars and travel shops instead of falling back to arbitrary dollar values.
+- Protect newer row scans from cleanup performed by superseded async tasks.
+
+### Testing
+
+- Added executable economic regression coverage and hardening guard checks.
+
 ## [0.2.0] - 2026-09-07
 
 ### Added
