@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.3.3
+// @version      0.3.4
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.3.3",
+    version: "0.3.4",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -3012,6 +3012,7 @@
     .me-inline-analysis.RED .me-inline-status { color:#e27a7a !important; }
     .me-inline-metric { white-space:nowrap !important; font-variant-numeric:tabular-nums !important; }
     .me-inline-analysis.me-loading { opacity:.65 !important; font-weight:400 !important; }
+    .me-inline-analysis.me-hidden { display:none !important; }
     .me-bazaar-add-row { height:auto !important; min-height:72px !important; overflow:visible !important; }
     .me-bazaar-add-controls { flex-wrap:wrap !important; overflow:visible !important; }
     .me-bazaar-add-controls > .me-inline-analysis { display:flex !important; flex:0 0 100% !important; width:100% !important; max-width:none !important; grid-column:1 / -1 !important; justify-content:flex-end !important; margin:4px 0 1px !important; z-index:10 !important; }
@@ -3633,6 +3634,11 @@
           "GREY"
         );
       }
+      if (surface === "inventory" || (surface === "bazaar" && ownBazaar)) {
+        // Sell-side equipment without a priced copy: nothing to show. An
+        // invisible completed marker stops rescans from re-processing the row.
+        return renderInlineHtml(visible, "", "GREY", "me-hidden");
+      }
       if (surface === "bazaar" && ownBazaar && pricing) {
         const delta = pricing.bazaarSuggested - visible.price;
         const state = delta > 0 ? "YELLOW" : "GREY";
@@ -3996,12 +4002,12 @@
     return 200 - index;
   }
 
-  function resultForSurface(surface, visible, snapshot, historyStats, ownBazaar, renderMeta = {}, museum = null, auctionSales = []) {
+  function resultForSurface(surface, visible, snapshot, historyStats, ownBazaar, renderMeta = {}, museum = null) {
     if (!snapshot?.supportedCommodity) {
       if (settings.equipmentEnabled !== false && snapshot?.equipment && snapshot.equipmentSummary) {
-        const sellSide = surface === "inventory" || (surface === "bazaar" && ownBazaar);
-        const equipmentPricing = sellSide ? equipmentSellPricing(snapshot, settings, auctionSales) : null;
-        return { visible, snapshot, equipment: snapshot.equipmentSummary, equipmentPricing, renderMeta };
+        // Buy-side surfaces get plain/bonus floors. Sell-side rows are priced
+        // only from an expanded details panel (see promoteCopyPriceToRow).
+        return { visible, snapshot, equipment: snapshot.equipmentSummary, renderMeta };
       }
       return { visible, snapshot, unsupported: true, renderMeta };
     }
@@ -4160,6 +4166,13 @@
           renderInlineResult(surface, { visible, unsupported: true, renderMeta: { stale: false } }, ownBazaar);
           return;
         }
+        const sellSide = surface === "inventory" || (surface === "bazaar" && ownBazaar);
+        if (meta && !metadataSupportsCommodity(meta) && sellSide) {
+          // Sell-side equipment is priced only from its expanded details
+          // panel. No market request is spent on the row itself.
+          renderInlineResult(surface, { visible, equipment: {}, equipmentRowOnly: true, renderMeta: { stale: false } }, ownBazaar);
+          return;
+        }
         const museum = museumContext.get(visible.itemId) || null;
 
         const bundle = await loadSnapshot(visible.itemId, {
@@ -4183,23 +4196,16 @@
         });
 
         if (!visible.card?.isConnected || detectSurface() !== surface) return;
-        // Sell-side equipment rows get ended Auction House sales as real
-        // transaction evidence. One request per item type, cached ten minutes.
-        let auctionSales = [];
-        const sellSideEquipment = bundle.snapshot?.equipment && settings.equipmentEnabled !== false &&
-          (surface === "inventory" || (surface === "bazaar" && ownBazaar));
-        if (sellSideEquipment) {
-          renderInlineResult(surface, resultForSurface(surface, visible, bundle.snapshot, bundle.historyStats, ownBazaar, {
-            stale: true,
-            cacheAgeSeconds: bundle.cacheState?.ageSeconds
-          }, museum), ownBazaar);
-          auctionSales = await loadAuctionSales(visible.itemId, { priority: priority - 200 });
-          if (!visible.card?.isConnected || detectSurface() !== surface) return;
+        // Metadata was unavailable and the order book revealed equipment on a
+        // sell-side surface: stop here, no further requests for this row.
+        if (bundle.snapshot?.equipment && sellSide) {
+          renderInlineResult(surface, { visible, equipment: {}, equipmentRowOnly: true, renderMeta: { stale: false } }, ownBazaar);
+          return;
         }
         const result = resultForSurface(surface, visible, bundle.snapshot, bundle.historyStats, ownBazaar, {
           stale: false,
           cacheAgeSeconds: bundle.cacheState?.ageSeconds
-        }, museum, auctionSales);
+        }, museum);
         renderInlineResult(surface, result, ownBazaar);
       } catch (error) {
         if (error?.marketEdgeCanceled) return;

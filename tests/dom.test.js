@@ -213,15 +213,19 @@ run("Inline inventory result shows the museum set route", (t) => {
   assert.match(block.textContent, /BZ/);
 });
 
-run("Equipment snapshots render floors on list pages instead of unsupported", (t) => {
+run("Equipment snapshots render floors on buy-side pages and nothing on sell-side rows", (t) => {
   const env = boot(fixture("inventory.html"), "https://www.torn.com/item.php");
   t.after(env.close);
   const items = env.ME.collectVisibleItems({ requireMoney: false });
   const visible = items[0];
   const snapshot = { itemId: 1, supportedCommodity: false, equipment: true, equipmentSummary: { plainFloor: 900000, bonusFloor: 5000000, groups: [] } };
-  const result = env.ME.resultForSurface("inventory", visible, snapshot, null, false, {});
-  assert.ok(result.equipment);
-  const block = env.ME.renderInlineResult("inventory", result, false);
+  const buySide = env.ME.resultForSurface("auction", visible, snapshot, null, false, {});
+  assert.ok(buySide.equipment);
+  const block = env.ME.renderInlineResult("auction", buySide, false);
   assert.match(block.textContent, /floor \$900k/);
   assert.match(block.textContent, /bonus \$5m/);
+  const sellSide = env.ME.resultForSurface("inventory", visible, snapshot, null, false, {});
+  const hidden = env.ME.renderInlineResult("inventory", sellSide, false);
+  assert.ok(hidden.classList.contains("me-hidden"));
+  assert.equal(hidden.textContent.trim(), "");
 });

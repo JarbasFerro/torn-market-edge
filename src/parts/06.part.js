@@ -227,6 +227,11 @@
           "GREY"
         );
       }
+      if (surface === "inventory" || (surface === "bazaar" && ownBazaar)) {
+        // Sell-side equipment without a priced copy: nothing to show. An
+        // invisible completed marker stops rescans from re-processing the row.
+        return renderInlineHtml(visible, "", "GREY", "me-hidden");
+      }
       if (surface === "bazaar" && ownBazaar && pricing) {
         const delta = pricing.bazaarSuggested - visible.price;
         const state = delta > 0 ? "YELLOW" : "GREY";
@@ -590,12 +595,12 @@
     return 200 - index;
   }
 
-  function resultForSurface(surface, visible, snapshot, historyStats, ownBazaar, renderMeta = {}, museum = null, auctionSales = []) {
+  function resultForSurface(surface, visible, snapshot, historyStats, ownBazaar, renderMeta = {}, museum = null) {
     if (!snapshot?.supportedCommodity) {
       if (settings.equipmentEnabled !== false && snapshot?.equipment && snapshot.equipmentSummary) {
-        const sellSide = surface === "inventory" || (surface === "bazaar" && ownBazaar);
-        const equipmentPricing = sellSide ? equipmentSellPricing(snapshot, settings, auctionSales) : null;
-        return { visible, snapshot, equipment: snapshot.equipmentSummary, equipmentPricing, renderMeta };
+        // Buy-side surfaces get plain/bonus floors. Sell-side rows are priced
+        // only from an expanded details panel (see promoteCopyPriceToRow).
+        return { visible, snapshot, equipment: snapshot.equipmentSummary, renderMeta };
       }
       return { visible, snapshot, unsupported: true, renderMeta };
     }

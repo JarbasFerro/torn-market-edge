@@ -79,7 +79,7 @@ function responder(url) {
   }
   if (url.includes("/items")) {
     const ids = (url.match(/\/torn\/([\d,]+)\/items/) || [])[1] || "";
-    return { items: ids.split(",").filter(Boolean).map((id) => ({ id: Number(id), name: `Item ${id}`, type: Number(id) === 206 ? "Drug" : "Plushie", is_tradable: true, value: { market_price: 100000, shops: [] } })) };
+    return { items: ids.split(",").filter(Boolean).map((id) => ({ id: Number(id), name: `Item ${id}`, type: Number(id) === 206 ? "Drug" : (Number(id) === 1 ? "Weapon" : "Plushie"), is_tradable: true, value: { market_price: 100000, shops: [] } })) };
   }
   return {};
 }
@@ -242,6 +242,21 @@ run("Bazaar add form weapon rows carry no price until the copy is priced from it
   assert.equal(rifle.querySelector(".me-bazaar-fill-btn"), null, "no fill on the row: the copy is unknown there");
   assert.ok(xanax.querySelector(".me-bazaar-fill-btn"), "commodity rows keep their fill control");
   assert.equal(env.document.querySelector(".me-equip-card"), null, "no details panel open, no card");
+  assert.ok(!env.requests.some((url) => url.includes("/market/1/")), "no market or auction request is spent on a weapon row");
+});
+
+run("Inventory weapon rows make no market request and show nothing until priced from details", async (t) => {
+  const env = boot(fixture("inventory-weapon.html"), "https://www.torn.com/item.php");
+  t.after(env.close);
+  await env.ME.scanVisibleSurface("inventory", { force: true });
+  const rifle = Array.from(env.document.querySelectorAll(".me-inline-analysis")).find((block) => block.dataset.meItemId === "1");
+  assert.ok(rifle, "row gets a completed marker so rescans skip it");
+  assert.ok(rifle.classList.contains("me-hidden"), "marker is invisible");
+  assert.equal(rifle.textContent.trim(), "");
+  assert.ok(!env.requests.some((url) => url.includes("/market/1/")), "no market or auction request for the weapon row");
+  assert.ok(env.requests.some((url) => url.includes("/market/206/itemmarket")), "commodity rows are still priced");
+  await env.ME.scanVisibleSurface("inventory", { force: false });
+  assert.ok(!env.requests.some((url) => url.includes("/market/1/")), "rescans stay silent for weapon rows");
 });
 
 run("Expanded weapon details panel prices the exact copy and fills the row", async (t) => {

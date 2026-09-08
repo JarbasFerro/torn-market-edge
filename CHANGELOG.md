@@ -6,6 +6,13 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-09-08
+
+### Changed
+
+- **No market requests for weapons and armor on inventory or your own Bazaar.** Item metadata (one cached batch) identifies equipment, and those rows are skipped: no order-book request, no Auction House request, no floor line. Inventory weapon rows show nothing until a copy is priced from its expanded details; Bazaar add rows only show "open details to price". Buy-side surfaces (Auction House, other Bazaars, travel) keep their plain/bonus floors.
+- Removed the plain-assumption sell pricing on list rows entirely; the details-panel card is the only equipment sell pricing.
+
 ## [0.3.3] - 2026-09-08
 
 ### Changed

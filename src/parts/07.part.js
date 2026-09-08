@@ -22,6 +22,13 @@
           renderInlineResult(surface, { visible, unsupported: true, renderMeta: { stale: false } }, ownBazaar);
           return;
         }
+        const sellSide = surface === "inventory" || (surface === "bazaar" && ownBazaar);
+        if (meta && !metadataSupportsCommodity(meta) && sellSide) {
+          // Sell-side equipment is priced only from its expanded details
+          // panel. No market request is spent on the row itself.
+          renderInlineResult(surface, { visible, equipment: {}, equipmentRowOnly: true, renderMeta: { stale: false } }, ownBazaar);
+          return;
+        }
         const museum = museumContext.get(visible.itemId) || null;
 
         const bundle = await loadSnapshot(visible.itemId, {
@@ -45,23 +52,16 @@
         });
 
         if (!visible.card?.isConnected || detectSurface() !== surface) return;
-        // Sell-side equipment rows get ended Auction House sales as real
-        // transaction evidence. One request per item type, cached ten minutes.
-        let auctionSales = [];
-        const sellSideEquipment = bundle.snapshot?.equipment && settings.equipmentEnabled !== false &&
-          (surface === "inventory" || (surface === "bazaar" && ownBazaar));
-        if (sellSideEquipment) {
-          renderInlineResult(surface, resultForSurface(surface, visible, bundle.snapshot, bundle.historyStats, ownBazaar, {
-            stale: true,
-            cacheAgeSeconds: bundle.cacheState?.ageSeconds
-          }, museum), ownBazaar);
-          auctionSales = await loadAuctionSales(visible.itemId, { priority: priority - 200 });
-          if (!visible.card?.isConnected || detectSurface() !== surface) return;
+        // Metadata was unavailable and the order book revealed equipment on a
+        // sell-side surface: stop here, no further requests for this row.
+        if (bundle.snapshot?.equipment && sellSide) {
+          renderInlineResult(surface, { visible, equipment: {}, equipmentRowOnly: true, renderMeta: { stale: false } }, ownBazaar);
+          return;
         }
         const result = resultForSurface(surface, visible, bundle.snapshot, bundle.historyStats, ownBazaar, {
           stale: false,
           cacheAgeSeconds: bundle.cacheState?.ageSeconds
-        }, museum, auctionSales);
+        }, museum);
         renderInlineResult(surface, result, ownBazaar);
       } catch (error) {
         if (error?.marketEdgeCanceled) return;
