@@ -116,6 +116,7 @@
       lines.push(`pricing cards on page: ${document.querySelectorAll(".me-equip-card").length}`);
       document.querySelectorAll(".me-equip-card").forEach((card, index) => lines.push(`card ${index + 1} [complete=${card.dataset.meComplete}] parent: ${describeNode(card.parentElement)} text: ${(card.textContent || "").replace(/\s+/g, " ").trim().slice(0, 160)}`));
       lines.push(`last details outcome: ${lastDetailsOutcome || "none yet"}`);
+      lines.push(`details in flight: ${detailsInFlight.size}, retry counters: ${JSON.stringify(Array.from(detailRetries.entries()))}`);
       lines.push(`api key present: ${Boolean(Store.apiKey())}, equipment enabled: ${settings.equipmentEnabled !== false}`);
       details.slice(0, 3).forEach((detail, index) => {
         lines.push(`detail ${index + 1}: item ${detail.itemId}, copy ${JSON.stringify(detail.copy)}, row: ${detail.row ? describeNode(detail.row) : "none"}`);
@@ -184,8 +185,28 @@
   // details block while the API request was pending.
   function relocateDetail(surface, detail) {
     if (detail.panel.isConnected) return detail;
-    const again = collectExpandedEquipmentDetails(surface).find((candidate) => candidate.key === detail.key);
-    return again || null;
+    const candidates = collectExpandedEquipmentDetails(surface);
+    // Exact key first; otherwise the same item whose panel is still open
+    // (bonus/quality text may be mid-render when React swaps the block).
+    return candidates.find((candidate) => candidate.key === detail.key)
+      || candidates.find((candidate) => candidate.itemId === detail.itemId && candidate.copy.quality === detail.copy.quality)
+      || candidates.find((candidate) => candidate.itemId === detail.itemId)
+      || null;
+  }
+
+  const detailRetries = new Map();
+
+  // Transient failures (panel swapped mid-request, surface briefly undetected)
+  // get a few delayed retries; opening the details again always resets.
+  function scheduleDetailRetry(surface, ownBazaar, key, reason) {
+    const attempts = (detailRetries.get(key) || 0) + 1;
+    detailRetries.set(key, attempts);
+    lastDetailsOutcome = `${reason}; retry ${attempts}/3`;
+    if (attempts > 3) return;
+    setTimeout(() => {
+      if (document.visibilityState !== "visible" || detectSurface() !== surface) return;
+      scanExpandedEquipment(surface, ownBazaar).catch((error) => log("Details retry failed", error.message));
+    }, 1200 * attempts);
   }
 
   async function scanExpandedEquipment(surface, ownBazaar) {
@@ -216,10 +237,13 @@
         // Details requests use their own queue group so list-scan
         // cancellations (frequent on the inventory page) cannot kill them.
         const bundle = await loadSnapshot(detail.itemId, { limit: API_DEEP_LIMIT, priority: 180, queueGroup: "details" });
-        if (detectSurface() !== surface) return;
+        if (detectSurface() !== surface) {
+          scheduleDetailRetry(surface, ownBazaar, initial.key, "surface changed during pricing");
+          return;
+        }
         detail = relocateDetail(surface, detail);
         if (!detail) {
-          lastDetailsOutcome = "details panel disappeared before pricing";
+          scheduleDetailRetry(surface, ownBazaar, initial.key, "details panel disappeared before pricing");
           return;
         }
         if (!bundle.snapshot.equipment) {
@@ -228,15 +252,19 @@
           return;
         }
         const auctionSales = await loadAuctionSales(detail.itemId, { priority: 170 });
-        if (detectSurface() !== surface) return;
+        if (detectSurface() !== surface) {
+          scheduleDetailRetry(surface, ownBazaar, initial.key, "surface changed during pricing");
+          return;
+        }
         detail = relocateDetail(surface, detail);
         if (!detail) {
-          lastDetailsOutcome = "details panel disappeared before rendering";
+          scheduleDetailRetry(surface, ownBazaar, initial.key, "details panel disappeared before rendering");
           return;
         }
         const pricing = priceOwnedEquipment({ snapshot: bundle.snapshot, copy: detail.copy, auctionSales, settings });
         renderEquipmentDetailCard(detail, pricing, { canFill: surface === "bazaar" && Boolean(detail.row) });
         promoteCopyPriceToRow(surface, ownBazaar, detail, pricing, bundle.snapshot);
+        detailRetries.delete(initial.key);
         lastDetailsOutcome = `priced item ${detail.itemId}: ${pricing?.bazaarSuggested ? formatMoney(pricing.bazaarSuggested, true) : "no comparables"}`;
       } catch (error) {
         const message = describeApiError(error, { feature: "Copy pricing" });

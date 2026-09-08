@@ -441,3 +441,21 @@ run("Details pricing shows the error instead of vanishing when the API fails", a
   env.document.querySelector("#me-build-diagnostics").click();
   assert.match(env.document.querySelector("#me-diagnostics").value, /last details outcome: pricing failed for item 1/);
 });
+
+run("Details pricing retries when the panel is swapped with slightly different text mid-request", async (t) => {
+  const env = boot(fixture("inventory-weapon-details.html"), "https://www.torn.com/item.php", { delayMs: 30 });
+  t.after(env.close);
+  const first = env.ME.scanVisibleSurface("inventory", { force: true });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  // React swaps the stats block and, for a moment, the quality reads differently.
+  const oldPanel = env.document.querySelector("ul.details");
+  const fresh = oldPanel.cloneNode(true);
+  fresh.querySelector("li:last-child .value").textContent = " 51.00% Yellow";
+  oldPanel.replaceWith(fresh);
+  await first;
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const card = env.document.querySelector(".me-equip-card");
+  assert.ok(card, "the swapped panel still receives a card");
+  assert.equal(card.previousElementSibling, fresh);
+  assert.match(card.textContent, /\$792k/);
+});

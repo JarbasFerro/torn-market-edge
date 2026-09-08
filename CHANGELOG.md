@@ -6,6 +6,13 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.3.11] - 2026-09-08
+
+### Fixed
+
+- **A details panel that React swapped mid-request could end up never priced.** If the stats block was replaced while the market request was pending, and its text briefly differed, the panel could not be re-located and the attempt ended without a card. Re-location now falls back to the same item (and quality) whose panel is still open, and transient failures (panel swapped, surface briefly undetected) are retried up to three times with a short delay.
+- The page structure report lists retry counters and in-flight details for diagnosis.
+
 ## [0.3.10] - 2026-09-08
 
 ### Fixed
