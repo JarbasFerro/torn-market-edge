@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.3.6
+// @version      0.3.7
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.3.6",
+    version: "0.3.7",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -136,6 +136,12 @@
     "Specialist", "Spray", "Stricken", "Storm", "Stun", "Suppress", "Sure Shot", "Throttle", "Toxin", "Warlord",
     "Weaken", "Wind-up", "Wither"
   ]);
+
+  // Torn renders stat labels and values in separate nodes, sometimes with the
+  // colon supplied by CSS, so the patterns tolerate a missing colon and a
+  // short run of icon/whitespace characters before the number.
+  const QUALITY_PATTERN = /Quality\s*:?\s*[^\d%]{0,24}([\d.]+)\s*%/i;
+  const STATS_PATTERN = /Damage|Accuracy|Armou?r/i;
 
   const KEY_ACCESS_RANK = Object.freeze({
     "Public Only": 1,

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.3.6
+// @version      0.3.7
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.3.6",
+    version: "0.3.7",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -136,6 +136,12 @@
     "Specialist", "Spray", "Stricken", "Storm", "Stun", "Suppress", "Sure Shot", "Throttle", "Toxin", "Warlord",
     "Weaken", "Wind-up", "Wither"
   ]);
+
+  // Torn renders stat labels and values in separate nodes, sometimes with the
+  // colon supplied by CSS, so the patterns tolerate a missing colon and a
+  // short run of icon/whitespace characters before the number.
+  const QUALITY_PATTERN = /Quality\s*:?\s*[^\d%]{0,24}([\d.]+)\s*%/i;
+  const STATS_PATTERN = /Damage|Accuracy|Armou?r/i;
 
   const KEY_ACCESS_RANK = Object.freeze({
     "Public Only": 1,
@@ -1047,35 +1053,62 @@
       const match = source.match(pattern);
       return match ? Number(match[1]) : null;
     };
-    const quality = number(/Quality:\s*[^\d]*([\d.]+)\s*%/i);
-    const damage = number(/Damage:\s*[^\d]*([\d.]+)/i);
-    const accuracy = number(/Accuracy:\s*[^\d]*([\d.]+)/i);
-    const armor = number(/Armou?r:\s*[^\d]*([\d.]+)/i);
+    const quality = number(QUALITY_PATTERN);
+    const damage = number(/Damage\s*:?\s*[^\d%]{0,24}([\d.]+)/i);
+    const accuracy = number(/Accuracy\s*:?\s*[^\d%]{0,24}([\d.]+)/i);
+    const armor = number(/Armou?r\s*:?\s*[^\d%]{0,24}([\d.]+)/i);
     if (!Number.isFinite(quality) && !Number.isFinite(damage) && !Number.isFinite(armor)) return null;
 
     const known = new Map(KNOWN_BONUSES.map((name) => [normalizeBonusName(name), name]));
     const bonuses = [];
     const seen = new Set();
     let rarity = null;
+    const addBonus = (name, value) => {
+      const existing = bonuses.find((bonus) => bonus.title === name);
+      if (existing) {
+        if (value && !existing.value) existing.value = value;
+        return;
+      }
+      bonuses.push({ title: name, value: value || 0 });
+      seen.add(name);
+    };
+    const matchKnown = (raw) => {
+      const normalized = normalizeBonusName(raw);
+      for (const [key, name] of known.entries()) {
+        if (normalized === key || (normalized.includes(key) && key.length >= 5)) return name;
+      }
+      return null;
+    };
+
+    // Text form, as Torn's item panel shows it: "Bonus: 24% Proficience" and
+    // "Quality: 124.26% Yellow". Several bonuses appear as repeated rows or a
+    // comma-separated list.
+    const bonusText = /Bonus(?:es)?\s*:?\s*([^]*?)(?=\s*(?:Bonus(?:es)?\s*:|Quality|Damage|Accuracy|Armou?r|Rate of Fire|Stealth|Caliber|Ammo|Buy|Sell|Value|Circ|$))/gi;
+    let bonusMatch = bonusText.exec(source);
+    while (bonusMatch) {
+      bonusMatch[1].split(/,|\band\b/i).forEach((chunk) => {
+        const valueMatch = chunk.match(/(\d+)\s*%/);
+        const name = matchKnown(chunk.replace(/\d+\s*%/g, ""));
+        if (name) addBonus(name, valueMatch ? Number(valueMatch[1]) : 0);
+      });
+      bonusMatch = bonusText.exec(source);
+    }
+    const rarityText = source.match(/Quality\s*:?\s*[^%]{0,30}%\s*(Yellow|Orange|Red)\b/i);
+    if (rarityText) rarity = rarityText[1].toLowerCase();
+
+    // Icon form: titles, alt text and class names of bonus icons.
     hints.forEach((hint) => {
       const raw = String(hint || "");
       const lowered = raw.toLowerCase();
-      if (/\bred\b/.test(lowered)) rarity = "red";
-      else if (/\borange\b/.test(lowered) && rarity !== "red") rarity = "orange";
-      else if (/\byellow\b/.test(lowered) && !rarity) rarity = "yellow";
-      const normalized = normalizeBonusName(raw);
-      for (const [key, name] of known.entries()) {
-        if (normalized === key || (normalized.includes(key) && key.length >= 5)) {
-          const valueMatch = raw.match(/(\d+)\s*%/);
-          const value = valueMatch ? Number(valueMatch[1]) : 0;
-          const existing = bonuses.find((bonus) => bonus.title === name);
-          if (existing) {
-            if (value && !existing.value) existing.value = value;
-          } else {
-            bonuses.push({ title: name, value });
-            seen.add(name);
-          }
-        }
+      if (!rarity || rarity === "yellow") {
+        if (/\bred\b/.test(lowered)) rarity = "red";
+        else if (/\borange\b/.test(lowered)) rarity = "orange";
+        else if (/\byellow\b/.test(lowered) && !rarity) rarity = "yellow";
+      }
+      const name = matchKnown(raw);
+      if (name) {
+        const valueMatch = raw.match(/(\d+)\s*%/);
+        addBonus(name, valueMatch ? Number(valueMatch[1]) : 0);
       }
     });
     return {
@@ -2569,7 +2602,7 @@
       if (rect.width <= 0 || rect.height <= 0) return false;
       // Expanded rows carry Torn's item-details panel and grow well past the
       // normal row height; they must stay recognisable.
-      if (rect.height > 300 && !/Quality:\s*[^\d]*[\d.]+\s*%/i.test(row.textContent || "")) return false;
+      if (rect.height > 300 && !QUALITY_PATTERN.test(row.textContent || "")) return false;
       const image = row.querySelector("div.image-wrap img, img[src*='/items/'], img[srcset*='/items/']");
       const amount = row.querySelector("div[class*='amount___'], div.amount-main-wrap") || row;
       const input = Array.from(amount.querySelectorAll("input")).find((candidate) => {
@@ -2830,7 +2863,7 @@
     const panels = new Set();
     if (!root || typeof document.createTreeWalker !== "function") return [];
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-      acceptNode: (node) => (/Quality:/i.test(node.textContent || "") ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP)
+      acceptNode: (node) => (/Quality/i.test(node.textContent || "") ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP)
     });
     let textNode = walker.nextNode();
     while (textNode) {
@@ -2839,7 +2872,7 @@
         if (element.closest("#market-edge-root,.me-equip-card")) break;
         const text = element.textContent || "";
         if (text.length > 2500) break;
-        if (/Quality:\s*[^\d]*[\d.]+\s*%/i.test(text) && /Damage:|Accuracy:|Armou?r:/i.test(text)) {
+        if (QUALITY_PATTERN.test(text) && STATS_PATTERN.test(text)) {
           panels.add(element);
           break;
         }
@@ -2854,7 +2887,9 @@
 
   function collectExpandedEquipmentDetails(surface) {
     const results = [];
-    const root = (surface === "bazaar" ? bazaarAddSection() : document.querySelector(".items-cont, [class*='itemsCont'], [class*='items-cont']")) || document.body;
+    // The walker is linear and cheap, so the whole page is scanned; the row
+    // association below keeps panels tied to their own item.
+    const root = document.body;
     const panels = findStatsPanels(root);
 
     panels.forEach((panel) => {
@@ -4323,7 +4358,7 @@
   function cleanupOrphanedDetailCards() {
     document.querySelectorAll(".me-equip-card").forEach((card) => {
       const previous = card.previousElementSibling;
-      const anchored = previous && !previous.classList.contains("me-equip-card") && /Quality:\s*[^\d]*[\d.]+\s*%/i.test(previous.textContent || "");
+      const anchored = previous && !previous.classList.contains("me-equip-card") && QUALITY_PATTERN.test(previous.textContent || "");
       if (!anchored) card.remove();
     });
   }

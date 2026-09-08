@@ -480,3 +480,23 @@ test("owned copy pricing matches quality within the same bonus group", () => {
   assert.equal(unknown.bazaarSuggested, null, "no comparables and no sales gives no price");
   assert.equal(unknown.group.count, 0);
 });
+
+test("details text parsing reads Torn's text-form bonus and rarity", () => {
+  const p90 = "The P90 is a SMG Weapon. Buy: $9,800 (Big Al's Gun Shop) Sell: $6,600 Value: $5,921 Circ: 408,027 Damage: 55.86 Accuracy: 55.56 Rate of Fire: 10-30 Stealth: 3.4 Caliber: 5.7mm High Vel. R... Ammo: 3 x 50 Bonus: 24% Proficience Quality: 124.26% Yellow";
+  const copy = ME.parseEquipmentDetailsText(p90, []);
+  assert.equal(copy.quality, 124.26);
+  assert.equal(copy.damage, 55.86);
+  assert.equal(copy.accuracy, 55.56);
+  assert.deepEqual(copy.bonuses, [{ title: "Proficience", value: 24 }]);
+  assert.equal(copy.rarity, "yellow");
+
+  const split = ME.parseEquipmentDetailsText("Damage : 58.34 Accuracy : 54.69 Quality : 50.39 %", []);
+  assert.equal(split.quality, 50.39, "colon and value may be separate nodes");
+  assert.equal(split.damage, 58.34);
+  assert.equal(split.bonuses.length, 0);
+  assert.equal(split.rarity, null);
+
+  const two = ME.parseEquipmentDetailsText("Damage: 60 Accuracy: 50 Bonus: 12% Bleed Bonus: 8% Cripple Quality: 88.10% Orange", []);
+  assert.deepEqual(two.bonuses.map((bonus) => bonus.title), ["Bleed", "Cripple"]);
+  assert.equal(two.rarity, "orange");
+});

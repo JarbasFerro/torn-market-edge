@@ -231,35 +231,62 @@
       const match = source.match(pattern);
       return match ? Number(match[1]) : null;
     };
-    const quality = number(/Quality:\s*[^\d]*([\d.]+)\s*%/i);
-    const damage = number(/Damage:\s*[^\d]*([\d.]+)/i);
-    const accuracy = number(/Accuracy:\s*[^\d]*([\d.]+)/i);
-    const armor = number(/Armou?r:\s*[^\d]*([\d.]+)/i);
+    const quality = number(QUALITY_PATTERN);
+    const damage = number(/Damage\s*:?\s*[^\d%]{0,24}([\d.]+)/i);
+    const accuracy = number(/Accuracy\s*:?\s*[^\d%]{0,24}([\d.]+)/i);
+    const armor = number(/Armou?r\s*:?\s*[^\d%]{0,24}([\d.]+)/i);
     if (!Number.isFinite(quality) && !Number.isFinite(damage) && !Number.isFinite(armor)) return null;
 
     const known = new Map(KNOWN_BONUSES.map((name) => [normalizeBonusName(name), name]));
     const bonuses = [];
     const seen = new Set();
     let rarity = null;
+    const addBonus = (name, value) => {
+      const existing = bonuses.find((bonus) => bonus.title === name);
+      if (existing) {
+        if (value && !existing.value) existing.value = value;
+        return;
+      }
+      bonuses.push({ title: name, value: value || 0 });
+      seen.add(name);
+    };
+    const matchKnown = (raw) => {
+      const normalized = normalizeBonusName(raw);
+      for (const [key, name] of known.entries()) {
+        if (normalized === key || (normalized.includes(key) && key.length >= 5)) return name;
+      }
+      return null;
+    };
+
+    // Text form, as Torn's item panel shows it: "Bonus: 24% Proficience" and
+    // "Quality: 124.26% Yellow". Several bonuses appear as repeated rows or a
+    // comma-separated list.
+    const bonusText = /Bonus(?:es)?\s*:?\s*([^]*?)(?=\s*(?:Bonus(?:es)?\s*:|Quality|Damage|Accuracy|Armou?r|Rate of Fire|Stealth|Caliber|Ammo|Buy|Sell|Value|Circ|$))/gi;
+    let bonusMatch = bonusText.exec(source);
+    while (bonusMatch) {
+      bonusMatch[1].split(/,|\band\b/i).forEach((chunk) => {
+        const valueMatch = chunk.match(/(\d+)\s*%/);
+        const name = matchKnown(chunk.replace(/\d+\s*%/g, ""));
+        if (name) addBonus(name, valueMatch ? Number(valueMatch[1]) : 0);
+      });
+      bonusMatch = bonusText.exec(source);
+    }
+    const rarityText = source.match(/Quality\s*:?\s*[^%]{0,30}%\s*(Yellow|Orange|Red)\b/i);
+    if (rarityText) rarity = rarityText[1].toLowerCase();
+
+    // Icon form: titles, alt text and class names of bonus icons.
     hints.forEach((hint) => {
       const raw = String(hint || "");
       const lowered = raw.toLowerCase();
-      if (/\bred\b/.test(lowered)) rarity = "red";
-      else if (/\borange\b/.test(lowered) && rarity !== "red") rarity = "orange";
-      else if (/\byellow\b/.test(lowered) && !rarity) rarity = "yellow";
-      const normalized = normalizeBonusName(raw);
-      for (const [key, name] of known.entries()) {
-        if (normalized === key || (normalized.includes(key) && key.length >= 5)) {
-          const valueMatch = raw.match(/(\d+)\s*%/);
-          const value = valueMatch ? Number(valueMatch[1]) : 0;
-          const existing = bonuses.find((bonus) => bonus.title === name);
-          if (existing) {
-            if (value && !existing.value) existing.value = value;
-          } else {
-            bonuses.push({ title: name, value });
-            seen.add(name);
-          }
-        }
+      if (!rarity || rarity === "yellow") {
+        if (/\bred\b/.test(lowered)) rarity = "red";
+        else if (/\borange\b/.test(lowered)) rarity = "orange";
+        else if (/\byellow\b/.test(lowered) && !rarity) rarity = "yellow";
+      }
+      const name = matchKnown(raw);
+      if (name) {
+        const valueMatch = raw.match(/(\d+)\s*%/);
+        addBonus(name, valueMatch ? Number(valueMatch[1]) : 0);
       }
     });
     return {

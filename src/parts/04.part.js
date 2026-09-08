@@ -315,7 +315,7 @@
       if (rect.width <= 0 || rect.height <= 0) return false;
       // Expanded rows carry Torn's item-details panel and grow well past the
       // normal row height; they must stay recognisable.
-      if (rect.height > 300 && !/Quality:\s*[^\d]*[\d.]+\s*%/i.test(row.textContent || "")) return false;
+      if (rect.height > 300 && !QUALITY_PATTERN.test(row.textContent || "")) return false;
       const image = row.querySelector("div.image-wrap img, img[src*='/items/'], img[srcset*='/items/']");
       const amount = row.querySelector("div[class*='amount___'], div.amount-main-wrap") || row;
       const input = Array.from(amount.querySelectorAll("input")).find((candidate) => {
@@ -576,7 +576,7 @@
     const panels = new Set();
     if (!root || typeof document.createTreeWalker !== "function") return [];
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-      acceptNode: (node) => (/Quality:/i.test(node.textContent || "") ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP)
+      acceptNode: (node) => (/Quality/i.test(node.textContent || "") ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP)
     });
     let textNode = walker.nextNode();
     while (textNode) {
@@ -585,7 +585,7 @@
         if (element.closest("#market-edge-root,.me-equip-card")) break;
         const text = element.textContent || "";
         if (text.length > 2500) break;
-        if (/Quality:\s*[^\d]*[\d.]+\s*%/i.test(text) && /Damage:|Accuracy:|Armou?r:/i.test(text)) {
+        if (QUALITY_PATTERN.test(text) && STATS_PATTERN.test(text)) {
           panels.add(element);
           break;
         }
@@ -600,7 +600,9 @@
 
   function collectExpandedEquipmentDetails(surface) {
     const results = [];
-    const root = (surface === "bazaar" ? bazaarAddSection() : document.querySelector(".items-cont, [class*='itemsCont'], [class*='items-cont']")) || document.body;
+    // The walker is linear and cheap, so the whole page is scanned; the row
+    // association below keeps panels tied to their own item.
+    const root = document.body;
     const panels = findStatsPanels(root);
 
     panels.forEach((panel) => {

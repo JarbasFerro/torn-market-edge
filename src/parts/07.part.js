@@ -119,7 +119,7 @@
   function cleanupOrphanedDetailCards() {
     document.querySelectorAll(".me-equip-card").forEach((card) => {
       const previous = card.previousElementSibling;
-      const anchored = previous && !previous.classList.contains("me-equip-card") && /Quality:\s*[^\d]*[\d.]+\s*%/i.test(previous.textContent || "");
+      const anchored = previous && !previous.classList.contains("me-equip-card") && QUALITY_PATTERN.test(previous.textContent || "");
       if (!anchored) card.remove();
     });
   }

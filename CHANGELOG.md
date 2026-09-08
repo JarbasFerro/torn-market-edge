@@ -6,6 +6,13 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-09-08
+
+### Fixed
+
+- **Details pricing card disappeared in 0.3.6.** The new text-node walker required "Quality:" inside one text node, but Torn splits the label, the colon and the value across nodes. Detection and parsing now tolerate a missing colon and separated nodes, and the walker scans the whole page instead of guessing the list container.
+- **Bonus and rarity are now read from Torn's text**, as the panel shows them ("Bonus: 24% Proficience", "Quality: 124.26% Yellow"), including several bonus rows. Icon titles remain a secondary source. Bonus copies are therefore priced against their own bonus group instead of as plain.
+
 ## [0.3.6] - 2026-09-08
 
 ### Fixed
