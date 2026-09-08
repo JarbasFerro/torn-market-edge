@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.4.0
+// @version      0.4.1
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.4.0",
+    version: "0.4.1",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -63,7 +63,7 @@
   const WATCHLIST_MAX_ITEMS = 25;
   const WATCHLIST_ALERT_COOLDOWN_MS = 10 * ONE_MINUTE_MS;
   const OWN_LISTINGS_MAX = 25;
-  // v0.4.0 surfaces: portfolio, shop runs, travel planner, auction guidance.
+  // v0.4.1 surfaces: portfolio, shop runs, travel planner, auction guidance.
   const INVENTORY_TTL_MS = 60 * ONE_MINUTE_MS;
   const INVENTORY_PAGE_LIMIT = 250;
   const INVENTORY_MAX_PAGES = 8;
@@ -2828,7 +2828,14 @@
     const sid = String(url.searchParams.get("sid") || "").toLowerCase();
     const path = url.pathname.toLowerCase();
     const hash = location.hash.toLowerCase();
-    if (sid === "itemmarket" || hash.includes("itemmarket")) return "itemmarket";
+    if (sid === "itemmarket" || hash.includes("itemmarket")) {
+      // Item Market 2.0 sell flow: the "add listing" view lists inventory
+      // rows with price and quantity fields. Recognised by its route or, when
+      // Torn changes the route, by the presence of those rows.
+      const hasItemId = /(?:itemID|itemId|item_id)=\d+/i.test(`${location.search}${location.hash}`);
+      if (!hasItemId && (/addlisting|add-listing|sellitems|sell-items|view=add|p=add|\/add\b/i.test(hash) || sellFormRowsPresent())) return "imsell";
+      return "itemmarket";
+    }
     if (path.endsWith("/bazaar.php") || path.endsWith("bazaar.php")) return "bazaar";
     if (path.endsWith("/amarket.php") || path.endsWith("amarket.php") || sid.includes("auction")) return "auction";
     if (sid === "travel" || path.endsWith("travelagency.php")) return "travel";
@@ -2843,6 +2850,37 @@
     if (url.pathname.toLowerCase().endsWith("bigalgunshop.php")) return CITY_SHOP_STEPS.bigalgunshop;
     const step = String(url.searchParams.get("step") || "").toLowerCase();
     return CITY_SHOP_STEPS[step] || "";
+  }
+
+  let sellFormProbeCache = { at: 0, href: "", present: false };
+
+  // Cheap probe: is there an item image with a visible text/number input in a
+  // small container around it (a sell/add form row)? Cached briefly because
+  // detectSurface() runs on every mutation.
+  function sellFormRowsPresent() {
+    const now = Date.now();
+    if (sellFormProbeCache.href === location.href && now - sellFormProbeCache.at < 700) return sellFormProbeCache.present;
+    let present = false;
+    try {
+      const images = document.querySelectorAll("img[src*='/items/'], img[srcset*='/items/']");
+      const limit = Math.min(images.length, 40);
+      for (let index = 0; index < limit && !present; index += 1) {
+        let node = images[index].parentElement;
+        for (let depth = 0; node && depth < 7 && node !== document.body; depth += 1, node = node.parentElement) {
+          if (node.closest("#market-edge-root")) break;
+          if ((node.textContent || "").length > 700) break;
+          const input = node.querySelector("input:not([type='hidden']):not([type='checkbox']):not([type='radio']):not([type='search'])");
+          if (input && !/search|filter/i.test(`${input.name || ""} ${input.placeholder || ""} ${input.className || ""}`)) {
+            present = true;
+            break;
+          }
+        }
+      }
+    } catch {
+      present = false;
+    }
+    sellFormProbeCache = { at: now, href: location.href, present };
+    return present;
   }
 
   function getItemIdFromLocation() {
@@ -2860,7 +2898,26 @@
     return ids?.length ? asInt(ids[ids.length - 1]) : null;
   }
 
+  // Item ids are resolved for every identity node on every signature pass;
+  // memoise per node, keyed by the attributes that could change the answer.
+  const itemIdCache = new WeakMap();
+
+  function itemIdFingerprint(element) {
+    return `${element.getAttribute?.("data-item") || ""}|${element.getAttribute?.("data-itemid") || ""}|${element.getAttribute?.("item") || ""}|${element.getAttribute?.("src") || ""}|${element.getAttribute?.("href") || ""}|${element.getAttribute?.("aria-controls") || ""}`;
+  }
+
   function itemIdFromElement(element) {
+    if (!element) return null;
+    if (typeof element !== "object") return null;
+    const fingerprint = itemIdFingerprint(element);
+    const cached = itemIdCache.get(element);
+    if (cached && cached.fingerprint === fingerprint) return cached.id;
+    const id = itemIdFromElementUncached(element);
+    itemIdCache.set(element, { fingerprint, id });
+    return id;
+  }
+
+  function itemIdFromElementUncached(element) {
     if (!element) return null;
     const attrNames = ["data-itemid", "data-item-id", "data-id", "item"];
     let node = element;
@@ -3476,7 +3533,7 @@
 
   function collectBazaarAddItems() {
     const section = bazaarAddSection();
-    if (!section) return [];
+    if (!section) return bazaarAddRouteActive() ? collectSellFormRows() : [];
 
     const byCard = new Map();
     const directRows = knownBazaarAddRows(section);
@@ -3544,9 +3601,117 @@
       }
     }
 
+    if (!byCard.size && bazaarAddRouteActive()) return collectSellFormRows();
     return Array.from(byCard.values())
       .sort((a, b) => viewportPriority(b) - viewportPriority(a))
       .slice(0, clamp(settings.scanMaxVisibleItems, 1, 50));
+  }
+
+  // Generic sell-form rows: any small container holding one item image and a
+  // visible price/quantity field. Serves the Item Market "add listing" view
+  // and is the fallback for the Bazaar add form when Torn's class names
+  // change. Rows are shaped like Bazaar add rows so the same renderer and
+  // fill controls apply.
+  function collectSellFormRows({ root = document, limit = clamp(settings.scanMaxVisibleItems, 1, 50) } = {}) {
+    const byCard = new Map();
+    const images = Array.from(root.querySelectorAll("img[src*='/items/'], img[srcset*='/items/'], [style*='/items/']"))
+      .filter((node) => !node.closest("#market-edge-root,.me-inline-analysis,.me-equip-card"));
+    const nearest = images
+      .map((node) => ({ node, priority: viewportPriority({ card: node }) }))
+      .sort((a, b) => b.priority - a.priority)
+      .slice(0, limit * 2);
+    for (const { node } of nearest) {
+      const itemId = itemIdFromElement(node);
+      if (!itemId) continue;
+      let card = null;
+      let probe = node.parentElement;
+      for (let depth = 0; probe && depth < 9 && probe !== document.body; depth += 1, probe = probe.parentElement) {
+        if (!(probe instanceof HTMLElement)) continue;
+        const textLength = (probe.textContent || "").length;
+        if (textLength > 700) break;
+        const ids = directItemIdsWithin(probe);
+        if (ids.size > 1) break;
+        const input = Array.from(probe.querySelectorAll("input")).find((candidate) => {
+          if (["hidden", "checkbox", "radio", "search", "submit", "button"].includes(candidate.type)) return false;
+          if (/search|filter/i.test(`${candidate.name || ""} ${candidate.placeholder || ""} ${candidate.className || ""}`)) return false;
+          const rect = candidate.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        });
+        if (!input) continue;
+        if (/price per unit\s*:/i.test(probe.textContent || "")) break;
+        card = probe;
+        break;
+      }
+      if (!card || byCard.has(card)) continue;
+      const rect = card.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      const priceInput = findBazaarAddPriceInput(card);
+      if (!priceInput) continue;
+      const quantityCheckbox = findBazaarAddQuantityCheckbox(card);
+      const quantityInput = quantityCheckbox ? null : findBazaarAddQuantityInput(card, priceInput);
+      // Text nodes joined with spaces: adjacent inline spans ("Xanax" + "x12")
+      // must not merge into one token.
+      const text = spacedText(card);
+      const quantity = parseQuantity(text);
+      const maxFromInput = parseIntegerField(quantityInput?.getAttribute("max"));
+      const controlHost = priceInput.closest("div[class*='amount___'], div.amount-main-wrap, div[class*='price___'], div[class*='controls'], div[class*='actions']") || priceInput.parentElement || card;
+      byCard.set(card, {
+        itemId,
+        name: elementItemName(card, node),
+        price: parseIntegerField(priceInput.value) || 0,
+        quantity,
+        maxAvailable: Math.max(1, Math.min(quantity, maxFromInput || quantity)),
+        card,
+        priceInput,
+        quantityInput,
+        quantityCheckbox,
+        bazaarAdd: true,
+        sellForm: true,
+        bazaarControls: controlHost,
+        inlineAnchor: controlHost,
+        inlineMode: "bazaar-below-controls",
+        domTextLength: Math.min(text.length, 1200)
+      });
+    }
+    return Array.from(byCard.values()).sort((a, b) => viewportPriority(b) - viewportPriority(a)).slice(0, limit);
+  }
+
+  function spacedText(element) {
+    if (!element) return "";
+    const parts = [];
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    let node = walker.nextNode();
+    while (node) {
+      if (!node.parentElement?.closest?.(".me-inline-analysis,.me-equip-card")) {
+        const value = String(node.textContent || "").trim();
+        if (value) parts.push(value);
+      }
+      node = walker.nextNode();
+    }
+    return parts.join(" ");
+  }
+
+  // Torn exposes the copy's uid on some inventory rows; when present the
+  // exact copy can be priced through /torn/{uids}/itemdetails without
+  // opening its details panel.
+  function rowUid(card) {
+    if (!card?.getAttribute) return null;
+    const read = (element) => {
+      for (const attr of Array.from(element.attributes || [])) {
+        if (!/uid|armoury|armory/i.test(attr.name)) continue;
+        const digits = String(attr.value || "").match(/\d{3,}/);
+        if (digits) return asInt(digits[0], 0) || null;
+      }
+      return null;
+    };
+    const own = read(card);
+    if (own) return own;
+    const nodes = card.querySelectorAll("[data-uid],[data-item-uid],[data-itemuid],[data-armoury],[data-armouryid],[data-armoury-id],[uid]");
+    for (const node of Array.from(nodes).slice(0, 5)) {
+      const value = read(node);
+      if (value) return value;
+    }
+    return null;
   }
 
   function collectManagedBazaarItems() {
@@ -4450,28 +4615,33 @@
 
   function renderBazaarAddSuggestion(result) {
     const visible = result.visible;
-    const target = result?.ownBazaar?.target;
+    const source = result?.sellForm || result?.ownBazaar || {};
+    const target = source.target;
     const stale = staleMarker(result);
+    const venue = result?.sellForm ? "Item Market" : "Bazaar";
     if (!Number.isFinite(target) || target <= 0) {
       return renderInlineHtml(
         visible,
-        `<span class="me-inline-brand">ME</span><span class="me-inline-secondary">price unavailable</span>${stale}`,
+        `<span class="me-inline-brand">ME</span><span class="me-inline-secondary">${escapeHtml(source.reason || "price unavailable")}</span>${stale}`,
         "GREY"
       );
     }
 
     const targetText = formatMoney(target);
-    const pricing = result?.ownBazaar?.equipmentPricing || null;
-    const copyLabel = result?.ownBazaar?.copyLabel || "";
+    const pricing = source.equipmentPricing || null;
+    const copyLabel = source.copyLabel || "";
+    const netHtml = result?.sellForm && Number.isFinite(source.net)
+      ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Net per unit after the ${source.feeBps / 100}% Item Market fee">net ${formatMoney(source.net)}</span>`
+      : "";
     const equipmentHtml = pricing
       ? equipmentContextHtml(pricing)
       : (copyLabel ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Priced from this copy's details">${escapeHtml(copyLabel)}</span>` : "");
     const priceTitle = pricing
-      ? `Suggested Bazaar price for a plain (no bonus) copy: ${formatMoney(target, true)}. ${equipmentContextTitle(pricing)}`
-      : (copyLabel ? `Suggested Bazaar price for this copy (${copyLabel}): ${formatMoney(target, true)}` : "Suggested Bazaar selling price");
+      ? `Suggested ${venue} price for a plain (no bonus) copy: ${formatMoney(target, true)}. ${equipmentContextTitle(pricing)}`
+      : (copyLabel ? `Suggested ${venue} price for this copy (${copyLabel}): ${formatMoney(target, true)}` : `Suggested ${venue} selling price${source.floor ? ` (Item Market floor ${formatMoney(source.floor, true)})` : ""}`);
     const block = renderInlineHtml(
       visible,
-      `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="${escapeHtml(priceTitle)}">${targetText}</span><button class="me-bazaar-fill-btn" type="button" aria-label="Fill Bazaar price and maximum quantity" title="Fill price with ${escapeHtml(targetText)} and quantity with max available">^</button>${equipmentHtml}${stale}`,
+      `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="${escapeHtml(priceTitle)}">${targetText}</span><button class="me-bazaar-fill-btn" type="button" aria-label="Fill price and maximum quantity" title="Fill price with ${escapeHtml(targetText)} and quantity with max available; ${escapeHtml(venue === "Bazaar" ? "ADD TO BAZAAR" : "listing")} stays manual">^</button>${netHtml}${equipmentHtml}${stale}`,
       "GREY",
       "me-bazaar-add"
     );
@@ -4648,6 +4818,53 @@
     if (!visible || !visible.card?.isConnected) return null;
     const stale = staleMarker(result);
     if (result.error) return renderInlineError(visible, result.error);
+    if (result.untradable) {
+      return renderInlineHtml(visible, `<span class="me-inline-brand">ME</span><span class="me-inline-secondary" title="Torn marks this item as not tradable">untradable</span>`, "GREY");
+    }
+    if (result.noListings) {
+      const mv = result.snapshot?.averagePrice ? `MV ${formatMoney(result.snapshot.averagePrice)}` : "no market value";
+      return renderInlineHtml(visible, `<span class="me-inline-brand">ME</span><span class="me-inline-secondary" title="No Item Market listings right now; Torn's market value is shown">${mv}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">no listings</span>${stale}`, "GREY");
+    }
+    if (result.equipmentRow) {
+      // Sell-side weapon/armor row: exact copy when its uid was priced,
+      // otherwise the plain/bonus floors with a hint to open the details.
+      const row = result.equipmentRow;
+      if (!row.pricing && asInt(visible.card?.dataset?.meCopyPrice, 0) > 0) {
+        // This copy was already priced from its expanded details panel;
+        // keep that price on the row instead of the generic floors.
+        return renderInlineResult(surface, { ...result, equipmentRow: null, equipment: row.summary || { plainFloor: null, bonusFloor: null } }, ownBazaar);
+      }
+      if (row.pricing && row.copy) {
+        const label = copyLabelFor(row.copy);
+        const card = visible.card;
+        if (card?.dataset) {
+          card.dataset.meCopyPrice = String(row.pricing.bazaarSuggested || "");
+          card.dataset.meCopyIm = String(row.pricing.itemMarketSuggested || "");
+          card.dataset.meCopyLabel = label;
+        }
+        if (visible.bazaarAdd) {
+          return renderBazaarAddSuggestion({
+            ...result,
+            sellForm: surface === "imsell" ? { target: row.pricing.itemMarketSuggested, net: row.pricing.itemMarketNet, feeBps: row.pricing.feeBps, copyLabel: label } : null,
+            ownBazaar: surface === "imsell" ? null : { target: row.pricing.bazaarSuggested, copyLabel: label }
+          });
+        }
+        const bz = row.pricing.bazaarSuggested ? formatMoney(row.pricing.bazaarSuggested) : "-";
+        const im = row.pricing.itemMarketSuggested ? formatMoney(row.pricing.itemMarketSuggested) : "-";
+        return renderInlineHtml(visible,
+          `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="Suggested Bazaar price for this copy (priced by uid)">BZ ${bz}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">IM ${im}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${escapeHtml(label)}</span>${stale}`,
+          "GREY"
+        );
+      }
+      const summary = row.summary || {};
+      const plain = summary.plainFloor ? formatMoney(summary.plainFloor) : (result.snapshot?.averagePrice ? `MV ${formatMoney(result.snapshot.averagePrice)}` : "-");
+      const bonusHtml = summary.bonusFloor ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Cheapest listing with a bonus or rarity">bonus ${formatMoney(summary.bonusFloor)}+</span>` : "";
+      return renderInlineHtml(visible,
+        `<span class="me-inline-brand">ME</span><span class="me-inline-secondary" title="Cheapest plain (no bonus) listing on the Item Market; this copy's own quality and bonuses are unknown until its details are opened">floor ${plain}</span>${bonusHtml}<span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Open this item's details to price this exact copy">open details to price</span>${stale}`,
+        "GREY",
+        visible.bazaarAdd ? "me-bazaar-add" : ""
+      );
+    }
     if (result.equipment) {
       // Weapons/armor on list pages. Sell-side surfaces (own Bazaar,
       // inventory) get a plain-copy sell price with context; buy-side
@@ -4712,7 +4929,7 @@
       return renderInlineHtml(visible, `<span class="me-inline-brand">ME</span><span class="me-inline-secondary">unsupported equipment</span>`, "GREY");
     }
 
-    if (surface === "bazaar" && ownBazaar && visible.bazaarAdd) {
+    if ((surface === "bazaar" && ownBazaar && visible.bazaarAdd) || (surface === "imsell" && result.sellForm)) {
       return renderBazaarAddSuggestion(result);
     }
 
@@ -5166,7 +5383,22 @@
 
     if (surface === "inventory") {
       const estimate = estimateInventoryExit({ quantity: visible.quantity, snapshot, historyStats, settings, museum, shopSell });
+      if (!estimate && !(snapshot?.listings || []).length) return { visible, snapshot, historyStats, noListings: true, renderMeta };
       return { visible, snapshot, historyStats, inventory: estimate, renderMeta };
+    }
+
+    if (surface === "imsell") {
+      // Item Market "add listing" form: the suggested Item Market price
+      // (conservative exit minus undercut, through the item's pricing rule)
+      // and the net per unit after the configured fee.
+      const estimate = estimateInventoryExit({ quantity: visible.quantity, snapshot, historyStats, settings, museum, shopSell });
+      if (!estimate) return { visible, snapshot, historyStats, sellForm: { target: null, reason: (snapshot?.listings || []).length ? "price unavailable" : "no listings" }, renderMeta };
+      const floorSuggestion = snapshot.lowestPrice ? Math.max(1, snapshot.lowestPrice - Math.max(0, asInt(settings.itemMarketUndercut))) : null;
+      const rule = Store.pricingRules()[visible.itemId] || null;
+      const fill = applyPricingRule({ rule, floorSuggestion, anchorSuggestion: estimate.routes.itemMarket.suggestedPrice });
+      const target = fill.price || estimate.routes.itemMarket.suggestedPrice;
+      const feeBps = itemMarketFeeBps(settings);
+      return { visible, snapshot, historyStats, sellForm: { target, net: grossToNet(target, feeBps), feeBps, floor: snapshot.lowestPrice, rule, estimate }, renderMeta };
     }
 
     if (surface === "auction") {
@@ -5248,7 +5480,33 @@
     setTimeout(() => scanVisibleSurface(surface, { retryIfEmpty: true, force: false, cancelObsolete: true }), 250);
   }
 
-  async function scanVisibleSurface(surface, { retryIfEmpty = false, force = false, cancelObsolete = false } = {}) {
+  // One scan at a time per page. A scan requested while another is running
+  // is coalesced into a single follow-up pass, so mutation storms cannot
+  // stack overlapping scans (duplicate overlays, wasted requests).
+  const scanState = { running: false, pending: null };
+
+  async function scanVisibleSurface(surface, options = {}) {
+    if (scanState.running) {
+      const previous = scanState.pending || {};
+      scanState.pending = { surface, options: { ...previous.options, ...options, force: Boolean(previous.options?.force || options.force) } };
+      return;
+    }
+    scanState.running = true;
+    try {
+      await scanVisibleSurfaceNow(surface, options);
+    } catch (error) {
+      log("Scan failed", surface, error?.message || error);
+    } finally {
+      scanState.running = false;
+      const pending = scanState.pending;
+      scanState.pending = null;
+      if (pending && document.visibilityState === "visible" && detectSurface() === pending.surface) {
+        setTimeout(() => scanVisibleSurface(pending.surface, pending.options), 60);
+      }
+    }
+  }
+
+  async function scanVisibleSurfaceNow(surface, { retryIfEmpty = false, force = false, cancelObsolete = false } = {}) {
     removeFloatingUi();
     if (document.visibilityState !== "visible") return;
 
@@ -5256,10 +5514,10 @@
     const ownBazaar = surface === "bazaar" ? await isOwnBazaar() : false;
     if (detectSurface() !== surface || document.visibilityState !== "visible") return;
 
-    const requireMoney = surface !== "inventory";
+    const requireMoney = !["inventory", "imsell"].includes(surface);
     let items = surface === "auction"
       ? collectAuctionItems()
-      : (surface === "bazaar" && ownBazaar ? collectOwnBazaarItems() : collectVisibleItems({ requireMoney }));
+      : (surface === "imsell" ? collectSellFormRows() : (surface === "bazaar" && ownBazaar ? collectOwnBazaarItems() : collectVisibleItems({ requireMoney })));
 
     if (!items.length) {
       if (retryIfEmpty) {
@@ -5328,21 +5586,43 @@
       recordSellWatch(items.filter((visible) => visible.price > 0 && !visible.bazaarAdd).map((visible) => ({ itemId: visible.itemId, name: visible.name, price: visible.price, amount: visible.quantity, venue: "Bazaar" })), "Bazaar", { prune: items.length < clamp(settings.scanMaxVisibleItems, 1, 50) });
     }
 
+    // Sell-side weapon/armor rows: when Torn exposes the copy's uid on the
+    // row, its stats come from one details batch and the exact copy is
+    // priced; otherwise the row shows the plain/bonus floors.
+    const sellSideSurface = surface === "inventory" || surface === "imsell" || (surface === "bazaar" && ownBazaar);
+    let uidDetails = new Map();
+    if (sellSideSurface && settings.equipmentEnabled !== false) {
+      const uids = items
+        .filter((visible) => { const meta = metadata.get(visible.itemId); return meta && !metadataSupportsCommodity(meta); })
+        .map((visible) => { visible.uid = rowUid(visible.card); return visible.uid; })
+        .filter(Boolean);
+      if (uids.length) {
+        try {
+          uidDetails = await loadItemDetails(uids, { priority: 130 });
+        } catch (error) {
+          log("Row uid details unavailable", error.message);
+        }
+        if (detectSurface() !== surface || document.visibilityState !== "visible") return;
+      }
+    }
+
     const tasks = items.map(async (visible, index) => {
       const priority = viewportPriority(visible, index);
       let renderedCached = false;
       try {
         if (!visible.card?.isConnected || detectSurface() !== surface) return;
         const meta = metadata.get(visible.itemId);
+        if (meta && meta.isTradable === false) {
+          renderInlineResult(surface, { visible, untradable: true, renderMeta: { stale: false } }, ownBazaar);
+          return;
+        }
         if (meta && !metadataSupportsCommodity(meta) && settings.equipmentEnabled === false) {
           renderInlineResult(surface, { visible, unsupported: true, renderMeta: { stale: false } }, ownBazaar);
           return;
         }
-        const sellSide = surface === "inventory" || (surface === "bazaar" && ownBazaar);
+        const sellSide = sellSideSurface;
         if (meta && !metadataSupportsCommodity(meta) && sellSide) {
-          // Sell-side equipment is priced only from its expanded details
-          // panel. No market request is spent on the row itself.
-          renderInlineResult(surface, { visible, equipment: {}, equipmentRowOnly: true, renderMeta: { stale: false } }, ownBazaar);
+          await annotateSellSideEquipment(surface, ownBazaar, visible, uidDetails.get(visible.uid) || null, queueGroup, priority);
           return;
         }
         const museum = museumContext.get(visible.itemId) || null;
@@ -5378,9 +5658,9 @@
 
         if (!visible.card?.isConnected || detectSurface() !== surface) return;
         // Metadata was unavailable and the order book revealed equipment on a
-        // sell-side surface: stop here, no further requests for this row.
+        // sell-side surface: show the floors, no further requests.
         if (bundle.snapshot?.equipment && sellSide) {
-          renderInlineResult(surface, { visible, equipment: {}, equipmentRowOnly: true, renderMeta: { stale: false } }, ownBazaar);
+          renderInlineResult(surface, { visible, snapshot: bundle.snapshot, equipmentRow: { summary: bundle.snapshot.equipmentSummary || {} }, renderMeta: { stale: false } }, ownBazaar);
           return;
         }
         const result = resultForSurface(surface, visible, bundle.snapshot, bundle.historyStats, ownBazaar, {
@@ -5413,6 +5693,44 @@
   // v0.4.0: Auction House equipment bids, browse-grid overlay, portfolio,
   // shop runs, travel plan, repricing workbench and sell-side watch
   // ---------------------------------------------------------------------------
+
+  async function annotateSellSideEquipment(surface, ownBazaar, visible, copy, queueGroup, priority = 0) {
+    if (!visible.card?.isConnected) return;
+    if (copy) {
+      try {
+        const [bundle, auctionSales] = await Promise.all([
+          loadSnapshot(visible.itemId, { limit: API_DEEP_LIMIT, priority, queueGroup }),
+          loadAuctionSales(visible.itemId, { priority })
+        ]);
+        if (!visible.card?.isConnected || detectSurface() !== surface) return;
+        if (bundle.snapshot?.equipment) {
+          const pricing = priceOwnedEquipment({ snapshot: bundle.snapshot, copy, auctionSales, settings });
+          if (pricing) {
+            renderInlineResult(surface, { visible, snapshot: bundle.snapshot, equipmentRow: { pricing, copy, summary: bundle.snapshot.equipmentSummary }, renderMeta: { stale: false } }, ownBazaar);
+            return;
+          }
+        }
+      } catch (error) {
+        if (error?.marketEdgeCanceled) return;
+        log("Uid pricing failed; falling back to floors", visible.itemId, error.message);
+      }
+    }
+    const bundle = await loadSnapshot(visible.itemId, {
+      limit: API_LIST_LIMIT,
+      priority,
+      queueGroup,
+      onCached: (cached) => {
+        if (!visible.card?.isConnected || detectSurface() !== surface) return;
+        renderInlineResult(surface, { visible, snapshot: cached.snapshot, equipmentRow: { summary: cached.snapshot.equipmentSummary || {} }, renderMeta: { stale: Boolean(cached.refreshing) } }, ownBazaar);
+      }
+    });
+    if (!visible.card?.isConnected || detectSurface() !== surface) return;
+    if (!(bundle.snapshot?.listings || []).length) {
+      renderInlineResult(surface, { visible, snapshot: bundle.snapshot, noListings: true, renderMeta: { stale: false } }, ownBazaar);
+      return;
+    }
+    renderInlineResult(surface, { visible, snapshot: bundle.snapshot, equipmentRow: { summary: bundle.snapshot.equipmentSummary || {} }, renderMeta: { stale: false } }, ownBazaar);
+  }
 
   async function annotateAuctionEquipment(visible, queueGroup, priority = 0) {
     if (!visible?.card?.isConnected) return;
@@ -6530,7 +6848,7 @@
     refreshTimer = setTimeout(() => refresh(force), 160);
   }
 
-  const LIST_SURFACES = Object.freeze(["bazaar", "auction", "travel", "inventory", "cityshop"]);
+  const LIST_SURFACES = Object.freeze(["bazaar", "auction", "travel", "inventory", "cityshop", "imsell"]);
 
   function listSurfaceSignature(surface) {
     if (!LIST_SURFACES.includes(surface)) return "";
@@ -6544,7 +6862,7 @@
         if (itemId) entries.add(`${itemId}@${listRowIdentity(card)}`);
       });
     }
-    if (surface === "bazaar" || surface === "inventory") {
+    if ((surface === "bazaar" || surface === "inventory" || surface === "imsell") && /Quality/i.test(document.body?.textContent || "")) {
       try {
         collectExpandedEquipmentDetails(surface, { resolveRows: false }).forEach((detail) => entries.add(`detail:${detail.key}@${listRowIdentity(detail.panel)}`));
       } catch {
@@ -6567,7 +6885,7 @@
     return `${surface}|${heading}|${structuralEntries.join(",")}`;
   }
 
-  let signatureDelayMs = 120;
+  let signatureDelayMs = 200;
 
   function scheduleSignatureCheck(forceScan = false) {
     clearTimeout(signatureTimer);
@@ -6581,12 +6899,18 @@
       }
       if (!LIST_SURFACES.includes(surface)) return;
       const startedAt = Date.now();
-      const signature = listSurfaceSignature(surface);
+      let signature = "";
+      try {
+        signature = listSurfaceSignature(surface);
+      } catch (error) {
+        log("Signature check failed", error?.message || error);
+        return;
+      }
       // Adapt the quiet period to how long the check itself took, so a slow
       // phone under a React re-render storm is not asked to do it again
       // before it has caught up.
       const took = Date.now() - startedAt;
-      signatureDelayMs = clamp(Math.round(took * 5), 120, 2000);
+      signatureDelayMs = clamp(Math.round(took * 5), 200, 2500);
       if (!signature) return;
       if (forceScan || signature !== lastListSignature) {
         lastListSignature = signature;
@@ -6622,7 +6946,12 @@
       cancelQueuedListRequests("Market Edge opened detailed Item Market analysis.");
       clearInlineAnalysis();
       ensureUi();
-      await renderItemMarket();
+      try {
+        await renderItemMarket();
+      } catch (error) {
+        log("Item Market render failed", error?.message || error);
+        errorPanel(describeApiError(error, { feature: "Item Market analysis" }));
+      }
     } else {
       genericIntro(surface, { clear: true });
       scheduleSignatureCheck(false);
@@ -6657,22 +6986,37 @@
     // instead of the whole document keeps mutation callbacks cheap on mobile.
     // A light body-level observer re-attaches if Torn ever replaces the
     // container itself.
-    const observerOptions = {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ["class", "style", "aria-selected", "aria-hidden"]
-    };
+    // Child-list changes are enough to notice rows appearing, tabs switching
+    // and details panels opening. Attribute mutations (hover classes, inline
+    // styles) fire constantly on Torn's React pages and are ignored.
+    const observerOptions = { childList: true, subtree: true };
     let observedRoot = null;
     const contentObserver = new MutationObserver(() => {
-      if (document.visibilityState !== "visible") return;
-      const currentKey = `${detectSurface()}|${location.pathname}|${location.search}|${location.hash}`;
-      if (currentKey !== lastLocationKey) {
-        scheduleRefresh(true);
-        return;
+      try {
+        if (document.visibilityState !== "visible") return;
+        const currentKey = `${detectSurface()}|${location.pathname}|${location.search}|${location.hash}`;
+        if (currentKey !== lastLocationKey) {
+          scheduleRefresh(true);
+          return;
+        }
+        scheduleSignatureCheck(false);
+      } catch (error) {
+        log("Observer callback failed", error?.message || error);
       }
-      scheduleSignatureCheck(false);
     });
+
+    // Rows beyond the scan limit are picked up as they scroll into view.
+    let scrollTimer = null;
+    window.addEventListener("scroll", () => {
+      if (scrollTimer) return;
+      scrollTimer = setTimeout(() => {
+        scrollTimer = null;
+        if (document.visibilityState !== "visible") return;
+        const surface = detectSurface();
+        if (surface === "itemmarket") scheduleSignatureCheck(false);
+        else if (LIST_SURFACES.includes(surface)) scanVisibleSurface(surface, { retryIfEmpty: false, force: false, cancelObsolete: false });
+      }, 350);
+    }, { passive: true });
 
     const attachContentObserver = () => {
       const root = document.querySelector("#mainContainer, .content-wrapper, #bazaarRoot, #react-root") || document.body;
@@ -6767,6 +7111,8 @@
       sellWatchTick,
       fillAllVisiblePrices,
       collectOwnListingRows,
+      collectSellFormRows,
+      rowUid,
       fillOwnListingOnPage,
       loadInventory,
       loadItemDetails,

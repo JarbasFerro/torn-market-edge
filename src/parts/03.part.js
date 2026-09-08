@@ -374,7 +374,14 @@
     const sid = String(url.searchParams.get("sid") || "").toLowerCase();
     const path = url.pathname.toLowerCase();
     const hash = location.hash.toLowerCase();
-    if (sid === "itemmarket" || hash.includes("itemmarket")) return "itemmarket";
+    if (sid === "itemmarket" || hash.includes("itemmarket")) {
+      // Item Market 2.0 sell flow: the "add listing" view lists inventory
+      // rows with price and quantity fields. Recognised by its route or, when
+      // Torn changes the route, by the presence of those rows.
+      const hasItemId = /(?:itemID|itemId|item_id)=\d+/i.test(`${location.search}${location.hash}`);
+      if (!hasItemId && (/addlisting|add-listing|sellitems|sell-items|view=add|p=add|\/add\b/i.test(hash) || sellFormRowsPresent())) return "imsell";
+      return "itemmarket";
+    }
     if (path.endsWith("/bazaar.php") || path.endsWith("bazaar.php")) return "bazaar";
     if (path.endsWith("/amarket.php") || path.endsWith("amarket.php") || sid.includes("auction")) return "auction";
     if (sid === "travel" || path.endsWith("travelagency.php")) return "travel";
@@ -389,6 +396,37 @@
     if (url.pathname.toLowerCase().endsWith("bigalgunshop.php")) return CITY_SHOP_STEPS.bigalgunshop;
     const step = String(url.searchParams.get("step") || "").toLowerCase();
     return CITY_SHOP_STEPS[step] || "";
+  }
+
+  let sellFormProbeCache = { at: 0, href: "", present: false };
+
+  // Cheap probe: is there an item image with a visible text/number input in a
+  // small container around it (a sell/add form row)? Cached briefly because
+  // detectSurface() runs on every mutation.
+  function sellFormRowsPresent() {
+    const now = Date.now();
+    if (sellFormProbeCache.href === location.href && now - sellFormProbeCache.at < 700) return sellFormProbeCache.present;
+    let present = false;
+    try {
+      const images = document.querySelectorAll("img[src*='/items/'], img[srcset*='/items/']");
+      const limit = Math.min(images.length, 40);
+      for (let index = 0; index < limit && !present; index += 1) {
+        let node = images[index].parentElement;
+        for (let depth = 0; node && depth < 7 && node !== document.body; depth += 1, node = node.parentElement) {
+          if (node.closest("#market-edge-root")) break;
+          if ((node.textContent || "").length > 700) break;
+          const input = node.querySelector("input:not([type='hidden']):not([type='checkbox']):not([type='radio']):not([type='search'])");
+          if (input && !/search|filter/i.test(`${input.name || ""} ${input.placeholder || ""} ${input.className || ""}`)) {
+            present = true;
+            break;
+          }
+        }
+      }
+    } catch {
+      present = false;
+    }
+    sellFormProbeCache = { at: now, href: location.href, present };
+    return present;
   }
 
   function getItemIdFromLocation() {
@@ -406,7 +444,26 @@
     return ids?.length ? asInt(ids[ids.length - 1]) : null;
   }
 
+  // Item ids are resolved for every identity node on every signature pass;
+  // memoise per node, keyed by the attributes that could change the answer.
+  const itemIdCache = new WeakMap();
+
+  function itemIdFingerprint(element) {
+    return `${element.getAttribute?.("data-item") || ""}|${element.getAttribute?.("data-itemid") || ""}|${element.getAttribute?.("item") || ""}|${element.getAttribute?.("src") || ""}|${element.getAttribute?.("href") || ""}|${element.getAttribute?.("aria-controls") || ""}`;
+  }
+
   function itemIdFromElement(element) {
+    if (!element) return null;
+    if (typeof element !== "object") return null;
+    const fingerprint = itemIdFingerprint(element);
+    const cached = itemIdCache.get(element);
+    if (cached && cached.fingerprint === fingerprint) return cached.id;
+    const id = itemIdFromElementUncached(element);
+    itemIdCache.set(element, { fingerprint, id });
+    return id;
+  }
+
+  function itemIdFromElementUncached(element) {
     if (!element) return null;
     const attrNames = ["data-itemid", "data-item-id", "data-id", "item"];
     let node = element;

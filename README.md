@@ -27,6 +27,7 @@ The current release adds a repricing workbench with per-item pricing rules and u
 - Foreign shops while travelling
 - Inventory
 - Item Market browse grid (category and search cards)
+- Item Market sell form (add listing)
 - Torn city shops (shops.php, Big Al's)
 - Panels that need no page at all: Portfolio, City shop runs, Travel plan
 
@@ -174,7 +175,7 @@ The engine separates:
 7. Bazaar, Item Market, Auction House and Museum-set net proceeds after fees;
 8. confidence and data freshness.
 
-For weapons and armor the engine instead groups listings by rarity and bonus set, matches quality softly, and caps the comparable median with ended Auction House sales from the last 30 days. To price a copy you own, open its item details on the Bazaar add form or inventory: the card that appears prices that exact quality and bonus roll and can fill the Bazaar form with `^`. Equipment rows on inventory and your own Bazaar make no market requests until you do that.
+For weapons and armor the engine instead groups listings by rarity and bonus set, matches quality softly, and caps the comparable median with ended Auction House sales from the last 30 days. Equipment rows on the inventory, the Bazaar add form and the Item Market sell form show the plain and bonus floors from one compact order book per item type. Rows that expose the copy's uid are priced as that exact copy automatically. Otherwise open the item's details: the card that appears prices that exact quality and bonus roll and can fill the form with `^`.
 
 Where no order book has been fetched (portfolio quick pass, shop runs, travel plan, browse grid), the exit comes from Torn's official market value with an extra 2% haircut on top of your safety haircut. Ended Auction House sales are the only official transaction record; on the Auction House they cap the maximum rational bid for stackable items.
 

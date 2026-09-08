@@ -47,6 +47,7 @@ At minimum, preserve these cases:
 19. **Shop economics** - runs capped by stock, sell-to-shop route beats a sunk market, foreign offers ranked per country.
 20. **Auction evidence** - ended sales cap the rational bid; equipment max bid stays between the current bid and the plain floor; timing buckets pick the best window.
 21. **Browse grid** - STRONG / CONSIDER / FAIR / ABOVE MV from the official market value with no order-book request.
+22. **Stability** - overlapping scans coalesce to one overlay per row; equipment rows show floors on every sell-side surface and uid-priced copies; untradable items are labelled; the Item Market sell form and a generic Bazaar add fallback are recognised by structure.
 
 ## Manual UI regression matrix
 

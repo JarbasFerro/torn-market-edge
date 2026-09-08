@@ -93,8 +93,9 @@ function responder(url) {
       { id: 11, price: 850000, average_price: 840000, amount: 5, is_anonymous: false, available: 5, item: { id: 206, name: "Xanax", type: "Drug", rarity: null, uid: null, stats: null, bonuses: [] } },
     ], _metadata: { links: { next: null, prev: null } } };
   }
-  if (url.includes("/torn/555/itemdetails")) {
-    return { itemdetails: [{ id: 1, uid: 555, name: "Fixture Rifle", type: "Weapon", sub_type: "Rifle", stats: { damage: 60, accuracy: 55, armor: null, quality: 51 }, bonuses: [], rarity: null }] };
+  if (url.includes("/itemdetails")) {
+    const uids = ((url.match(/\/torn\/([\d,]+)\/itemdetails/) || [])[1] || "").split(",").map(Number);
+    return { itemdetails: uids.map((uid) => ({ id: 1, uid, name: "Fixture Rifle", type: "Weapon", sub_type: "Rifle", stats: { damage: 60, accuracy: 55, armor: null, quality: uid === 556 ? 90 : 51 }, bonuses: [], rarity: null })).filter((row) => [555, 556].includes(row.uid)) };
   }
   if (url.includes("/torn/cityshops")) {
     return { cityshops: [
@@ -296,4 +297,85 @@ run("Own Bazaar manage rows offer a fill control and fill-all writes every visib
   assert.equal(filled, 1);
   assert.equal(env.document.querySelector("input[name='price']").value, "789999");
   assert.ok(env.ME.Store.sellWatch().some((entry) => entry.venue === "Bazaar" && entry.itemId === 206), "own Bazaar price is recorded for undercut alerts");
+});
+
+run("Item Market sell form (add listing) rows get an Item Market price with net and a fill control", async (t) => {
+  const env = boot(fixture("itemmarket-sell.html"), "https://www.torn.com/page.php?sid=ItemMarket#/addListing");
+  t.after(env.close);
+  assert.equal(env.ME.detectSurface(), "imsell");
+  const rows = env.ME.collectSellFormRows();
+  assert.equal(rows.length, 2);
+  await env.ME.scanVisibleSurface("imsell", { force: true });
+  const blocks = Array.from(env.document.querySelectorAll(".me-inline-analysis"));
+  const xanax = blocks.find((block) => block.dataset.meItemId === "206");
+  const rifle = blocks.find((block) => block.dataset.meItemId === "1");
+  assert.ok(xanax && rifle, "both rows annotated");
+  assert.match(xanax.textContent, /\$789k|\$790k/, "floor minus undercut");
+  assert.match(xanax.textContent, /net \$/);
+  const button = xanax.querySelector(".me-bazaar-fill-btn");
+  assert.ok(button);
+  button.click();
+  const priceInput = env.document.querySelector(".sellRow___t7 input.price___m5");
+  assert.equal(priceInput.value, "789999");
+  assert.equal(env.document.querySelector(".sellRow___t7 input.quantity___q1").value, "12", "quantity filled with everything owned");
+  assert.match(rifle.textContent, /floor \$800k/);
+  assert.match(rifle.textContent, /open details to price/);
+});
+
+run("Item Market sell form is recognised from the page even without a known route", async (t) => {
+  const env = boot(fixture("itemmarket-sell.html"), "https://www.torn.com/page.php?sid=ItemMarket#/something-new");
+  t.after(env.close);
+  assert.equal(env.ME.detectSurface(), "imsell", "sell rows on the page identify the surface");
+});
+
+run("Bazaar add form falls back to generic sell-form rows when Torn's structure is unknown", async (t) => {
+  const env = boot(fixture("bazaar-add-generic.html"), "https://www.torn.com/bazaar.php#/add");
+  t.after(env.close);
+  await env.ME.scanVisibleSurface("bazaar", { force: true });
+  const block = env.document.querySelector(".me-inline-analysis[data-me-item-id='206']");
+  assert.ok(block, "row found through the generic collector");
+  const button = block.querySelector(".me-bazaar-fill-btn");
+  assert.ok(button);
+  button.click();
+  const inputs = Array.from(env.document.querySelectorAll(".fields___f1 input"));
+  assert.match(inputs[1].value, /^8[0-3]\d{4}$/, "price field (rightmost) is filled with the Bazaar target");
+  assert.equal(inputs[0].value, "25", "quantity field is filled with the owned amount");
+});
+
+run("Inventory weapon rows carrying a uid are priced as the exact copy without opening details", async (t) => {
+  const env = boot(fixture("inventory-weapon-uid.html"), "https://www.torn.com/item.php");
+  t.after(env.close);
+  await env.ME.scanVisibleSurface("inventory", { force: true });
+  const rows = Array.from(env.document.querySelectorAll("li.item-row"));
+  const first = rows[0].querySelector(".me-inline-analysis");
+  const second = rows[1].querySelector(".me-inline-analysis");
+  assert.match(first.textContent, /BZ \$792k/, "copy 555 priced from its uid");
+  assert.match(first.textContent, /Q 51\.0% plain/);
+  assert.match(second.textContent, /Q 90\.0% plain/, "copy 556 priced from its own stats");
+  assert.equal(env.requests.filter((url) => url.includes("/itemdetails")).length, 1, "one details batch for both uids");
+  assert.equal(env.requests.filter((url) => url.includes("/market/1/itemmarket?limit=100")).length, 1, "one deep book shared by both copies");
+});
+
+run("Overlapping scans are coalesced: two concurrent scans leave one overlay per row", async (t) => {
+  const env = boot(fixture("inventory.html"), "https://www.torn.com/item.php");
+  t.after(env.close);
+  await Promise.all([
+    env.ME.scanVisibleSurface("inventory", { force: true }),
+    env.ME.scanVisibleSurface("inventory", { force: true }),
+    env.ME.scanVisibleSurface("inventory", { force: false }),
+  ]);
+  await tick(200);
+  const blocks = Array.from(env.document.querySelectorAll(".me-inline-analysis"));
+  const ids = blocks.map((block) => block.dataset.meItemId).sort();
+  assert.equal(JSON.stringify(ids), JSON.stringify(["206", "258"]), "exactly one overlay per row");
+});
+
+run("Untradable items are labelled instead of priced", async (t) => {
+  const env = boot(fixture("inventory.html"), "https://www.torn.com/item.php");
+  t.after(env.close);
+  env.ME.Store.saveItemMeta({ id: 258, name: "Jaguar Plushie", type: "Plushie", isTradable: false, marketPrice: 0, shops: [] });
+  await env.ME.scanVisibleSurface("inventory", { force: true });
+  const plushie = env.document.querySelector(".me-inline-analysis[data-me-item-id='258']");
+  assert.match(plushie.textContent, /untradable/);
+  assert.ok(!env.requests.some((url) => url.includes("/market/258/itemmarket")), "no order book for an untradable item");
 });

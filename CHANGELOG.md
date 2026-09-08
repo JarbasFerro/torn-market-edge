@@ -6,6 +6,21 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-08
+
+### Fixed
+
+- **Stability under Torn's React re-renders.** The content observer now watches child-list changes only; attribute churn (hover classes, inline styles) no longer triggers signature passes. Scans are serialised: a scan requested while one is running is coalesced into a single follow-up pass, so mutation storms can no longer stack overlapping scans with duplicate overlays and wasted requests. Signature checks, observer callbacks and the Item Market render are isolated with error handling so one failure cannot stop the script.
+- **Performance on long inventories.** Item ids are memoised per DOM node (keyed by the attributes that decide them), the expensive details-panel walk runs only when the page contains a quality figure, and the minimum quiet period between signature passes is 200 ms.
+- **Rows beyond the scan limit.** A throttled scroll listener scans rows as they come into view instead of waiting for a DOM mutation.
+- **Weapons and armor on every inventory tab, the Bazaar add form and the Item Market sell form.** Equipment rows no longer stay blank: they show the plain floor, the bonus floor and a hint to open the details, from one compact order book per item type. Rows that expose the copy's uid are priced as the exact copy (stats through `/torn/{uids}/itemdetails`, comparables and ended sales) without opening anything; such rows get the fill control on sell forms. A copy priced from its expanded details keeps that price across rescans.
+- **Untradable items and empty books** are labelled ("untradable", "no listings" with Torn's market value) instead of a bare PASS.
+
+### Added
+
+- **Item Market sell form ("add listing") support.** Rows with an item image and price/quantity fields on the Item Market page are recognised (by route, or by their presence when Torn changes the route). Each row gets the suggested Item Market price through the item's pricing rule, the net after the configured fee, and a `^` fill for price and owned quantity. Listing stays manual.
+- **Generic sell-form fallback for the Bazaar add form.** When Torn's class names or headings change, rows are found by structure (one item image plus a visible price field) so the suggestion and fill keep working.
+
 ## [0.4.0] - 2026-09-08
 
 ### Added

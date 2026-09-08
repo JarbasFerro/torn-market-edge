@@ -229,7 +229,7 @@ run("Inventory scan annotates commodity, plushie and unsupported rows end to end
   assert.equal(env.requests.filter((url) => url.includes("pointsmarket")).length, 1);
 });
 
-run("Bazaar add form weapon rows carry no price until the copy is priced from its details", async (t) => {
+run("Bazaar add form weapon rows show the plain floor and a hint, with no fill until the copy is known", async (t) => {
   const env = boot(fixture("bazaar-add-weapons.html"), "https://www.torn.com/bazaar.php#/add");
   t.after(env.close);
   await env.ME.scanVisibleSurface("bazaar", { force: true });
@@ -237,26 +237,29 @@ run("Bazaar add form weapon rows carry no price until the copy is priced from it
   const rifle = blocks.find((block) => block.dataset.meItemId === "1");
   const xanax = blocks.find((block) => block.dataset.meItemId === "206");
   assert.ok(rifle && xanax, "both rows are annotated");
-  assert.doesNotMatch(rifle.textContent, /floor/);
+  assert.match(rifle.textContent, /floor \$800k/);
+  assert.match(rifle.textContent, /bonus \$9m\+/);
   assert.match(rifle.textContent, /open details to price/);
   assert.equal(rifle.querySelector(".me-bazaar-fill-btn"), null, "no fill on the row: the copy is unknown there");
   assert.ok(xanax.querySelector(".me-bazaar-fill-btn"), "commodity rows keep their fill control");
   assert.equal(env.document.querySelector(".me-equip-card"), null, "no details panel open, no card");
-  assert.ok(!env.requests.some((url) => url.includes("/market/1/")), "no market or auction request is spent on a weapon row");
+  assert.ok(env.requests.some((url) => url.includes("/market/1/itemmarket?limit=20")), "one compact order book per equipment type");
+  assert.ok(!env.requests.some((url) => url.includes("/market/1/auctionhouse")), "no auction request without a known copy");
 });
 
-run("Inventory weapon rows make no market request and show nothing until priced from details", async (t) => {
+run("Inventory weapon rows show the plain floor from one compact book and rescans stay silent", async (t) => {
   const env = boot(fixture("inventory-weapon.html"), "https://www.torn.com/item.php");
   t.after(env.close);
   await env.ME.scanVisibleSurface("inventory", { force: true });
   const rifle = Array.from(env.document.querySelectorAll(".me-inline-analysis")).find((block) => block.dataset.meItemId === "1");
-  assert.ok(rifle, "row gets a completed marker so rescans skip it");
-  assert.ok(rifle.classList.contains("me-hidden"), "marker is invisible");
-  assert.equal(rifle.textContent.trim(), "");
-  assert.ok(!env.requests.some((url) => url.includes("/market/1/")), "no market or auction request for the weapon row");
+  assert.ok(rifle, "weapon row is annotated");
+  assert.match(rifle.textContent, /floor \$800k/);
+  assert.match(rifle.textContent, /open details to price/);
+  assert.equal(env.requests.filter((url) => url.includes("/market/1/itemmarket?limit=20")).length, 1);
+  assert.ok(!env.requests.some((url) => url.includes("/market/1/auctionhouse")));
   assert.ok(env.requests.some((url) => url.includes("/market/206/itemmarket")), "commodity rows are still priced");
   await env.ME.scanVisibleSurface("inventory", { force: false });
-  assert.ok(!env.requests.some((url) => url.includes("/market/1/")), "rescans stay silent for weapon rows");
+  assert.equal(env.requests.filter((url) => url.includes("/market/1/itemmarket?limit=20")).length, 1, "rescans do not refetch completed rows");
 });
 
 run("Expanded weapon details panel prices the exact copy and fills the correct row", async (t) => {
@@ -305,8 +308,8 @@ run("Expanded weapon details panel prices the exact copy and fills the correct r
   assert.ok(rowBlock, "expanded row is annotated after pricing");
   assert.match(rowBlock.textContent, /\$792k/);
   assert.match(rowBlock.textContent, /Q 51\.0% plain/);
-  assert.match(rows[0].querySelector(".me-inline-analysis").textContent, /open details to price/, "row above keeps its hint");
-  assert.match(rows[2].querySelector(".me-inline-analysis").textContent, /open details to price/, "identical item below keeps its hint");
+  assert.match(rows[0].querySelector(".me-inline-analysis").textContent, /no listings/, "row above (no book in the stub) reports no listings");
+  assert.match(rows[2].querySelector(".me-inline-analysis").textContent, /open details to price/, "identical item below keeps its floor hint");
   const rowButton = rowBlock.querySelector(".me-bazaar-fill-btn");
   assert.ok(rowButton, "row carries the ^ fill once the copy is priced");
   rows[1].querySelector("input.input-money").value = "";
@@ -489,7 +492,7 @@ run("Equipment copies sharing an item id each keep their own row, and the priced
   const summaries = rifleRows.map((row) => row.querySelector(".me-inline-analysis")?.textContent || "");
   assert.match(summaries[1], /BZ \$/, "the copy whose details are open (second row) gets the summary");
   assert.match(summaries[1], /Q 38\.6% plain/);
-  assert.equal(summaries[0], "", "first copy keeps its hidden marker");
-  assert.equal(summaries[2], "", "third copy keeps its hidden marker");
-  assert.ok(!env.requests.some((url) => url.includes("/market/1/itemmarket?limit=20")), "no per-row market requests for equipment");
+  assert.match(summaries[0], /open details to price/, "first copy shows the floor hint");
+  assert.match(summaries[2], /open details to price/, "third copy shows the floor hint");
+  assert.ok(env.requests.filter((url) => url.includes("/market/1/itemmarket?limit=20")).length <= 1, "at most one compact book for the three copies");
 });

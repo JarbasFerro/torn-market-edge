@@ -453,7 +453,7 @@
 
   function collectBazaarAddItems() {
     const section = bazaarAddSection();
-    if (!section) return [];
+    if (!section) return bazaarAddRouteActive() ? collectSellFormRows() : [];
 
     const byCard = new Map();
     const directRows = knownBazaarAddRows(section);
@@ -521,9 +521,117 @@
       }
     }
 
+    if (!byCard.size && bazaarAddRouteActive()) return collectSellFormRows();
     return Array.from(byCard.values())
       .sort((a, b) => viewportPriority(b) - viewportPriority(a))
       .slice(0, clamp(settings.scanMaxVisibleItems, 1, 50));
+  }
+
+  // Generic sell-form rows: any small container holding one item image and a
+  // visible price/quantity field. Serves the Item Market "add listing" view
+  // and is the fallback for the Bazaar add form when Torn's class names
+  // change. Rows are shaped like Bazaar add rows so the same renderer and
+  // fill controls apply.
+  function collectSellFormRows({ root = document, limit = clamp(settings.scanMaxVisibleItems, 1, 50) } = {}) {
+    const byCard = new Map();
+    const images = Array.from(root.querySelectorAll("img[src*='/items/'], img[srcset*='/items/'], [style*='/items/']"))
+      .filter((node) => !node.closest("#market-edge-root,.me-inline-analysis,.me-equip-card"));
+    const nearest = images
+      .map((node) => ({ node, priority: viewportPriority({ card: node }) }))
+      .sort((a, b) => b.priority - a.priority)
+      .slice(0, limit * 2);
+    for (const { node } of nearest) {
+      const itemId = itemIdFromElement(node);
+      if (!itemId) continue;
+      let card = null;
+      let probe = node.parentElement;
+      for (let depth = 0; probe && depth < 9 && probe !== document.body; depth += 1, probe = probe.parentElement) {
+        if (!(probe instanceof HTMLElement)) continue;
+        const textLength = (probe.textContent || "").length;
+        if (textLength > 700) break;
+        const ids = directItemIdsWithin(probe);
+        if (ids.size > 1) break;
+        const input = Array.from(probe.querySelectorAll("input")).find((candidate) => {
+          if (["hidden", "checkbox", "radio", "search", "submit", "button"].includes(candidate.type)) return false;
+          if (/search|filter/i.test(`${candidate.name || ""} ${candidate.placeholder || ""} ${candidate.className || ""}`)) return false;
+          const rect = candidate.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        });
+        if (!input) continue;
+        if (/price per unit\s*:/i.test(probe.textContent || "")) break;
+        card = probe;
+        break;
+      }
+      if (!card || byCard.has(card)) continue;
+      const rect = card.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      const priceInput = findBazaarAddPriceInput(card);
+      if (!priceInput) continue;
+      const quantityCheckbox = findBazaarAddQuantityCheckbox(card);
+      const quantityInput = quantityCheckbox ? null : findBazaarAddQuantityInput(card, priceInput);
+      // Text nodes joined with spaces: adjacent inline spans ("Xanax" + "x12")
+      // must not merge into one token.
+      const text = spacedText(card);
+      const quantity = parseQuantity(text);
+      const maxFromInput = parseIntegerField(quantityInput?.getAttribute("max"));
+      const controlHost = priceInput.closest("div[class*='amount___'], div.amount-main-wrap, div[class*='price___'], div[class*='controls'], div[class*='actions']") || priceInput.parentElement || card;
+      byCard.set(card, {
+        itemId,
+        name: elementItemName(card, node),
+        price: parseIntegerField(priceInput.value) || 0,
+        quantity,
+        maxAvailable: Math.max(1, Math.min(quantity, maxFromInput || quantity)),
+        card,
+        priceInput,
+        quantityInput,
+        quantityCheckbox,
+        bazaarAdd: true,
+        sellForm: true,
+        bazaarControls: controlHost,
+        inlineAnchor: controlHost,
+        inlineMode: "bazaar-below-controls",
+        domTextLength: Math.min(text.length, 1200)
+      });
+    }
+    return Array.from(byCard.values()).sort((a, b) => viewportPriority(b) - viewportPriority(a)).slice(0, limit);
+  }
+
+  function spacedText(element) {
+    if (!element) return "";
+    const parts = [];
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    let node = walker.nextNode();
+    while (node) {
+      if (!node.parentElement?.closest?.(".me-inline-analysis,.me-equip-card")) {
+        const value = String(node.textContent || "").trim();
+        if (value) parts.push(value);
+      }
+      node = walker.nextNode();
+    }
+    return parts.join(" ");
+  }
+
+  // Torn exposes the copy's uid on some inventory rows; when present the
+  // exact copy can be priced through /torn/{uids}/itemdetails without
+  // opening its details panel.
+  function rowUid(card) {
+    if (!card?.getAttribute) return null;
+    const read = (element) => {
+      for (const attr of Array.from(element.attributes || [])) {
+        if (!/uid|armoury|armory/i.test(attr.name)) continue;
+        const digits = String(attr.value || "").match(/\d{3,}/);
+        if (digits) return asInt(digits[0], 0) || null;
+      }
+      return null;
+    };
+    const own = read(card);
+    if (own) return own;
+    const nodes = card.querySelectorAll("[data-uid],[data-item-uid],[data-itemuid],[data-armoury],[data-armouryid],[data-armoury-id],[uid]");
+    for (const node of Array.from(nodes).slice(0, 5)) {
+      const value = read(node);
+      if (value) return value;
+    }
+    return null;
   }
 
   function collectManagedBazaarItems() {

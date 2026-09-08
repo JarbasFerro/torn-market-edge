@@ -17,21 +17,43 @@
       recordSellWatch(items.filter((visible) => visible.price > 0 && !visible.bazaarAdd).map((visible) => ({ itemId: visible.itemId, name: visible.name, price: visible.price, amount: visible.quantity, venue: "Bazaar" })), "Bazaar", { prune: items.length < clamp(settings.scanMaxVisibleItems, 1, 50) });
     }
 
+    // Sell-side weapon/armor rows: when Torn exposes the copy's uid on the
+    // row, its stats come from one details batch and the exact copy is
+    // priced; otherwise the row shows the plain/bonus floors.
+    const sellSideSurface = surface === "inventory" || surface === "imsell" || (surface === "bazaar" && ownBazaar);
+    let uidDetails = new Map();
+    if (sellSideSurface && settings.equipmentEnabled !== false) {
+      const uids = items
+        .filter((visible) => { const meta = metadata.get(visible.itemId); return meta && !metadataSupportsCommodity(meta); })
+        .map((visible) => { visible.uid = rowUid(visible.card); return visible.uid; })
+        .filter(Boolean);
+      if (uids.length) {
+        try {
+          uidDetails = await loadItemDetails(uids, { priority: 130 });
+        } catch (error) {
+          log("Row uid details unavailable", error.message);
+        }
+        if (detectSurface() !== surface || document.visibilityState !== "visible") return;
+      }
+    }
+
     const tasks = items.map(async (visible, index) => {
       const priority = viewportPriority(visible, index);
       let renderedCached = false;
       try {
         if (!visible.card?.isConnected || detectSurface() !== surface) return;
         const meta = metadata.get(visible.itemId);
+        if (meta && meta.isTradable === false) {
+          renderInlineResult(surface, { visible, untradable: true, renderMeta: { stale: false } }, ownBazaar);
+          return;
+        }
         if (meta && !metadataSupportsCommodity(meta) && settings.equipmentEnabled === false) {
           renderInlineResult(surface, { visible, unsupported: true, renderMeta: { stale: false } }, ownBazaar);
           return;
         }
-        const sellSide = surface === "inventory" || (surface === "bazaar" && ownBazaar);
+        const sellSide = sellSideSurface;
         if (meta && !metadataSupportsCommodity(meta) && sellSide) {
-          // Sell-side equipment is priced only from its expanded details
-          // panel. No market request is spent on the row itself.
-          renderInlineResult(surface, { visible, equipment: {}, equipmentRowOnly: true, renderMeta: { stale: false } }, ownBazaar);
+          await annotateSellSideEquipment(surface, ownBazaar, visible, uidDetails.get(visible.uid) || null, queueGroup, priority);
           return;
         }
         const museum = museumContext.get(visible.itemId) || null;
@@ -67,9 +89,9 @@
 
         if (!visible.card?.isConnected || detectSurface() !== surface) return;
         // Metadata was unavailable and the order book revealed equipment on a
-        // sell-side surface: stop here, no further requests for this row.
+        // sell-side surface: show the floors, no further requests.
         if (bundle.snapshot?.equipment && sellSide) {
-          renderInlineResult(surface, { visible, equipment: {}, equipmentRowOnly: true, renderMeta: { stale: false } }, ownBazaar);
+          renderInlineResult(surface, { visible, snapshot: bundle.snapshot, equipmentRow: { summary: bundle.snapshot.equipmentSummary || {} }, renderMeta: { stale: false } }, ownBazaar);
           return;
         }
         const result = resultForSurface(surface, visible, bundle.snapshot, bundle.historyStats, ownBazaar, {
@@ -102,6 +124,44 @@
   // v0.4.0: Auction House equipment bids, browse-grid overlay, portfolio,
   // shop runs, travel plan, repricing workbench and sell-side watch
   // ---------------------------------------------------------------------------
+
+  async function annotateSellSideEquipment(surface, ownBazaar, visible, copy, queueGroup, priority = 0) {
+    if (!visible.card?.isConnected) return;
+    if (copy) {
+      try {
+        const [bundle, auctionSales] = await Promise.all([
+          loadSnapshot(visible.itemId, { limit: API_DEEP_LIMIT, priority, queueGroup }),
+          loadAuctionSales(visible.itemId, { priority })
+        ]);
+        if (!visible.card?.isConnected || detectSurface() !== surface) return;
+        if (bundle.snapshot?.equipment) {
+          const pricing = priceOwnedEquipment({ snapshot: bundle.snapshot, copy, auctionSales, settings });
+          if (pricing) {
+            renderInlineResult(surface, { visible, snapshot: bundle.snapshot, equipmentRow: { pricing, copy, summary: bundle.snapshot.equipmentSummary }, renderMeta: { stale: false } }, ownBazaar);
+            return;
+          }
+        }
+      } catch (error) {
+        if (error?.marketEdgeCanceled) return;
+        log("Uid pricing failed; falling back to floors", visible.itemId, error.message);
+      }
+    }
+    const bundle = await loadSnapshot(visible.itemId, {
+      limit: API_LIST_LIMIT,
+      priority,
+      queueGroup,
+      onCached: (cached) => {
+        if (!visible.card?.isConnected || detectSurface() !== surface) return;
+        renderInlineResult(surface, { visible, snapshot: cached.snapshot, equipmentRow: { summary: cached.snapshot.equipmentSummary || {} }, renderMeta: { stale: Boolean(cached.refreshing) } }, ownBazaar);
+      }
+    });
+    if (!visible.card?.isConnected || detectSurface() !== surface) return;
+    if (!(bundle.snapshot?.listings || []).length) {
+      renderInlineResult(surface, { visible, snapshot: bundle.snapshot, noListings: true, renderMeta: { stale: false } }, ownBazaar);
+      return;
+    }
+    renderInlineResult(surface, { visible, snapshot: bundle.snapshot, equipmentRow: { summary: bundle.snapshot.equipmentSummary || {} }, renderMeta: { stale: false } }, ownBazaar);
+  }
 
   async function annotateAuctionEquipment(visible, queueGroup, priority = 0) {
     if (!visible?.card?.isConnected) return;
@@ -1219,7 +1279,7 @@
     refreshTimer = setTimeout(() => refresh(force), 160);
   }
 
-  const LIST_SURFACES = Object.freeze(["bazaar", "auction", "travel", "inventory", "cityshop"]);
+  const LIST_SURFACES = Object.freeze(["bazaar", "auction", "travel", "inventory", "cityshop", "imsell"]);
 
   function listSurfaceSignature(surface) {
     if (!LIST_SURFACES.includes(surface)) return "";
@@ -1233,7 +1293,7 @@
         if (itemId) entries.add(`${itemId}@${listRowIdentity(card)}`);
       });
     }
-    if (surface === "bazaar" || surface === "inventory") {
+    if ((surface === "bazaar" || surface === "inventory" || surface === "imsell") && /Quality/i.test(document.body?.textContent || "")) {
       try {
         collectExpandedEquipmentDetails(surface, { resolveRows: false }).forEach((detail) => entries.add(`detail:${detail.key}@${listRowIdentity(detail.panel)}`));
       } catch {
@@ -1256,7 +1316,7 @@
     return `${surface}|${heading}|${structuralEntries.join(",")}`;
   }
 
-  let signatureDelayMs = 120;
+  let signatureDelayMs = 200;
 
   function scheduleSignatureCheck(forceScan = false) {
     clearTimeout(signatureTimer);
@@ -1270,12 +1330,18 @@
       }
       if (!LIST_SURFACES.includes(surface)) return;
       const startedAt = Date.now();
-      const signature = listSurfaceSignature(surface);
+      let signature = "";
+      try {
+        signature = listSurfaceSignature(surface);
+      } catch (error) {
+        log("Signature check failed", error?.message || error);
+        return;
+      }
       // Adapt the quiet period to how long the check itself took, so a slow
       // phone under a React re-render storm is not asked to do it again
       // before it has caught up.
       const took = Date.now() - startedAt;
-      signatureDelayMs = clamp(Math.round(took * 5), 120, 2000);
+      signatureDelayMs = clamp(Math.round(took * 5), 200, 2500);
       if (!signature) return;
       if (forceScan || signature !== lastListSignature) {
         lastListSignature = signature;
@@ -1311,7 +1377,12 @@
       cancelQueuedListRequests("Market Edge opened detailed Item Market analysis.");
       clearInlineAnalysis();
       ensureUi();
-      await renderItemMarket();
+      try {
+        await renderItemMarket();
+      } catch (error) {
+        log("Item Market render failed", error?.message || error);
+        errorPanel(describeApiError(error, { feature: "Item Market analysis" }));
+      }
     } else {
       genericIntro(surface, { clear: true });
       scheduleSignatureCheck(false);
@@ -1346,22 +1417,37 @@
     // instead of the whole document keeps mutation callbacks cheap on mobile.
     // A light body-level observer re-attaches if Torn ever replaces the
     // container itself.
-    const observerOptions = {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ["class", "style", "aria-selected", "aria-hidden"]
-    };
+    // Child-list changes are enough to notice rows appearing, tabs switching
+    // and details panels opening. Attribute mutations (hover classes, inline
+    // styles) fire constantly on Torn's React pages and are ignored.
+    const observerOptions = { childList: true, subtree: true };
     let observedRoot = null;
     const contentObserver = new MutationObserver(() => {
-      if (document.visibilityState !== "visible") return;
-      const currentKey = `${detectSurface()}|${location.pathname}|${location.search}|${location.hash}`;
-      if (currentKey !== lastLocationKey) {
-        scheduleRefresh(true);
-        return;
+      try {
+        if (document.visibilityState !== "visible") return;
+        const currentKey = `${detectSurface()}|${location.pathname}|${location.search}|${location.hash}`;
+        if (currentKey !== lastLocationKey) {
+          scheduleRefresh(true);
+          return;
+        }
+        scheduleSignatureCheck(false);
+      } catch (error) {
+        log("Observer callback failed", error?.message || error);
       }
-      scheduleSignatureCheck(false);
     });
+
+    // Rows beyond the scan limit are picked up as they scroll into view.
+    let scrollTimer = null;
+    window.addEventListener("scroll", () => {
+      if (scrollTimer) return;
+      scrollTimer = setTimeout(() => {
+        scrollTimer = null;
+        if (document.visibilityState !== "visible") return;
+        const surface = detectSurface();
+        if (surface === "itemmarket") scheduleSignatureCheck(false);
+        else if (LIST_SURFACES.includes(surface)) scanVisibleSurface(surface, { retryIfEmpty: false, force: false, cancelObsolete: false });
+      }, 350);
+    }, { passive: true });
 
     const attachContentObserver = () => {
       const root = document.querySelector("#mainContainer, .content-wrapper, #bazaarRoot, #react-root") || document.body;
@@ -1456,6 +1542,8 @@
       sellWatchTick,
       fillAllVisiblePrices,
       collectOwnListingRows,
+      collectSellFormRows,
+      rowUid,
       fillOwnListingOnPage,
       loadInventory,
       loadItemDetails,
