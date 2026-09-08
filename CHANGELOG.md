@@ -6,6 +6,17 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-09-08
+
+### Changed
+
+- Weapon rows on the Bazaar add form no longer show a floor glance. Until a copy has been priced from its expanded details, the row only says "open details to price".
+- Once a copy is priced from its details panel, that copy's value (with its quality/bonus label) and the `^` fill move onto its row, and survive rescans until Torn re-renders the row. Inventory rows get the same BZ/IM values for the priced copy.
+
+### Fixed
+
+- After filling a price on an add-form row, a rescan could mistake that row for an existing Bazaar listing and replace the suggestion with a "Target" line. Add-form rows now take precedence over the managed-listing heuristics.
+
 ## [0.3.2] - 2026-09-08
 
 ### Changed

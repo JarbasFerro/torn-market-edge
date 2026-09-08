@@ -229,7 +229,7 @@ run("Inventory scan annotates commodity, plushie and unsupported rows end to end
   assert.equal(env.requests.filter((url) => url.includes("pointsmarket")).length, 1);
 });
 
-run("Bazaar add form weapon rows show only a floor glance and point to the details panel", async (t) => {
+run("Bazaar add form weapon rows carry no price until the copy is priced from its details", async (t) => {
   const env = boot(fixture("bazaar-add-weapons.html"), "https://www.torn.com/bazaar.php#/add");
   t.after(env.close);
   await env.ME.scanVisibleSurface("bazaar", { force: true });
@@ -237,7 +237,7 @@ run("Bazaar add form weapon rows show only a floor glance and point to the detai
   const rifle = blocks.find((block) => block.dataset.meItemId === "1");
   const xanax = blocks.find((block) => block.dataset.meItemId === "206");
   assert.ok(rifle && xanax, "both rows are annotated");
-  assert.match(rifle.textContent, /floor \$800k/);
+  assert.doesNotMatch(rifle.textContent, /floor/);
   assert.match(rifle.textContent, /open details to price/);
   assert.equal(rifle.querySelector(".me-bazaar-fill-btn"), null, "no fill on the row: the copy is unknown there");
   assert.ok(xanax.querySelector(".me-bazaar-fill-btn"), "commodity rows keep their fill control");
@@ -278,4 +278,22 @@ run("Expanded weapon details panel prices the exact copy and fills the row", asy
   // A second scan does not duplicate the card.
   await env.ME.scanVisibleSurface("bazaar", { force: false });
   assert.equal(env.document.querySelectorAll(".me-equip-card").length, 1);
+
+  // The priced copy is promoted onto its row with its own fill control.
+  const rowBlock = env.document.querySelector("li.clearfix .me-inline-analysis");
+  assert.ok(rowBlock, "row is annotated after pricing");
+  assert.match(rowBlock.textContent, /\$792k/);
+  assert.match(rowBlock.textContent, /Q 51\.0% plain/);
+  assert.doesNotMatch(rowBlock.textContent, /open details/);
+  const rowButton = rowBlock.querySelector(".me-bazaar-fill-btn");
+  assert.ok(rowButton, "row carries the ^ fill once the copy is priced");
+  env.document.querySelector("li.clearfix input.input-money").value = "";
+  rowButton.click();
+  assert.equal(env.document.querySelector("li.clearfix input.input-money").value, "792000");
+
+  // A rescan of the rows keeps the copy price instead of reverting to the hint.
+  await env.ME.scanVisibleSurface("bazaar", { force: true });
+  const again = env.document.querySelector("li.clearfix .me-inline-analysis");
+  assert.match(again.textContent, /\$792k/);
+  assert.ok(again.querySelector(".me-bazaar-fill-btn"));
 });

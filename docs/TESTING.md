@@ -99,7 +99,7 @@ At minimum, preserve these cases:
 
 - Open a weapon or armor on the Item Market.
 - Confirm the comparables table groups by rarity/bonus and shows Auction House sales when any exist.
-- On inventory/Bazaar, confirm weapon rows show the plain floor.
+- On the Bazaar add form, confirm weapon rows show only "open details to price" until a copy is priced, then the copy's value and `^`.
 - Expand a weapon's details on the Bazaar add form; confirm a Market Edge card appears below the stats with the copy's quality, a suggested price, comparables and `^`; confirm `^` fills the price and selects the item without submitting.
 
 ### Watchlist

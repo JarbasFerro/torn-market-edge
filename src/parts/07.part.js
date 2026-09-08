@@ -79,6 +79,31 @@
     await scanExpandedEquipment(surface, ownBazaar, queueGroup);
   }
 
+  // Once a copy has been priced from its details panel, its value (and the
+  // fill control on the Bazaar add form) moves onto the row so the player can
+  // keep working from the list.
+  function promoteCopyPriceToRow(surface, ownBazaar, detail, pricing, snapshot) {
+    if (!detail?.row?.isConnected || !pricing?.bazaarSuggested) return;
+    const copy = detail.copy;
+    const label = [
+      Number.isFinite(copy.quality) ? `Q ${copy.quality.toFixed(1)}%` : null,
+      copy.bonuses.length ? copy.bonuses.map((bonus) => bonus.title).join("+") : "plain"
+    ].filter(Boolean).join(" ");
+    const items = surface === "bazaar" ? collectBazaarAddItems() : collectVisibleItems({ requireMoney: false });
+    const visible = items.find((item) => item.card === detail.row || item.card.contains(detail.row) || detail.row.contains(item.card));
+    const card = visible?.card || detail.row;
+    card.dataset.meCopyPrice = String(pricing.bazaarSuggested);
+    card.dataset.meCopyIm = String(pricing.itemMarketSuggested || "");
+    card.dataset.meCopyLabel = label;
+    if (!visible) return;
+    renderInlineResult(surface, {
+      visible,
+      snapshot,
+      equipment: snapshot.equipmentSummary || { plainFloor: null, bonusFloor: null },
+      renderMeta: { stale: false }
+    }, ownBazaar);
+  }
+
   // Expanded item-details panels on sell-side surfaces: price the exact copy
   // against the deep order book (limit 100) and ended Auction House sales.
   async function scanExpandedEquipment(surface, ownBazaar, queueGroup) {
@@ -108,6 +133,7 @@
         if (!detail.panel.isConnected || detectSurface() !== surface) return;
         const pricing = priceOwnedEquipment({ snapshot: bundle.snapshot, copy: detail.copy, auctionSales, settings });
         renderEquipmentDetailCard(detail, pricing, { canFill: surface === "bazaar" && Boolean(detail.row) });
+        promoteCopyPriceToRow(surface, ownBazaar, detail, pricing, bundle.snapshot);
       } catch (error) {
         if (error?.marketEdgeCanceled) return;
         log("Details pricing failed", detail.itemId, error.message);

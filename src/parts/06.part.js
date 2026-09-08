@@ -33,10 +33,13 @@
 
     const targetText = formatMoney(target);
     const pricing = result?.ownBazaar?.equipmentPricing || null;
-    const equipmentHtml = pricing ? equipmentContextHtml(pricing) : "";
+    const copyLabel = result?.ownBazaar?.copyLabel || "";
+    const equipmentHtml = pricing
+      ? equipmentContextHtml(pricing)
+      : (copyLabel ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Priced from this copy's details">${escapeHtml(copyLabel)}</span>` : "");
     const priceTitle = pricing
       ? `Suggested Bazaar price for a plain (no bonus) copy: ${formatMoney(target, true)}. ${equipmentContextTitle(pricing)}`
-      : "Suggested Bazaar selling price";
+      : (copyLabel ? `Suggested Bazaar price for this copy (${copyLabel}): ${formatMoney(target, true)}` : "Suggested Bazaar selling price");
     const block = renderInlineHtml(
       visible,
       `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="${escapeHtml(priceTitle)}">${targetText}</span><button class="me-bazaar-fill-btn" type="button" aria-label="Fill Bazaar price and maximum quantity" title="Fill price with ${escapeHtml(targetText)} and quantity with max available">^</button>${equipmentHtml}${stale}`,
@@ -199,15 +202,29 @@
       // surfaces get the plain and bonus floors to compare against.
       const summary = result.equipment;
       const pricing = result.equipmentPricing || null;
+      const copyPrice = asInt(visible.card?.dataset?.meCopyPrice, 0);
+      const copyLabel = String(visible.card?.dataset?.meCopyLabel || "");
       if (surface === "bazaar" && ownBazaar && visible.bazaarAdd) {
-        // The row only gets a floor glance. Per-copy pricing and the fill
-        // control live in the expanded item-details panel, where the copy's
-        // quality and bonuses are visible.
-        const plain = summary.plainFloor ? formatMoney(summary.plainFloor) : "-";
+        // Weapon rows carry no price until the copy has been priced from its
+        // expanded details panel; then that copy's value and the fill control
+        // move onto the row.
+        if (copyPrice > 0) {
+          return renderBazaarAddSuggestion({
+            ...result,
+            ownBazaar: { target: copyPrice, copyLabel }
+          });
+        }
         return renderInlineHtml(visible,
-          `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="Cheapest plain Item Market listing">floor ${plain}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Open this item's details to price this exact copy (quality and bonuses) and fill the form">open details to price</span>${stale}`,
+          `<span class="me-inline-brand">ME</span><span class="me-inline-secondary" title="Open this item's details to price this exact copy (quality and bonuses)">open details to price</span>${stale}`,
           "GREY",
           "me-bazaar-add"
+        );
+      }
+      if (surface === "inventory" && copyPrice > 0) {
+        const copyIm = asInt(visible.card?.dataset?.meCopyIm, 0);
+        return renderInlineHtml(visible,
+          `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="Suggested Bazaar price for this copy (${escapeHtml(copyLabel)})">BZ ${formatMoney(copyPrice)}</span>${copyIm ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary">IM ${formatMoney(copyIm)}</span>` : ""}<span class="me-inline-sep">|</span><span class="me-inline-secondary">${escapeHtml(copyLabel)}</span>${stale}`,
+          "GREY"
         );
       }
       if (surface === "bazaar" && ownBazaar && pricing) {

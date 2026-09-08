@@ -582,7 +582,15 @@
   }
 
   function collectOwnBazaarItems() {
-    const combined = [...collectManagedBazaarItems(), ...collectBazaarAddItems()];
+    // Add-form rows take precedence: once a price has been filled into an
+    // add row, the managed-listing heuristics would otherwise mistake it for
+    // an existing Bazaar listing.
+    const addItems = collectBazaarAddItems();
+    const addCards = addItems.map((item) => item.card);
+    const managed = collectManagedBazaarItems().filter((item) => (
+      !addCards.some((card) => card === item.card || card.contains(item.card) || item.card.contains(card))
+    ));
+    const combined = [...addItems, ...managed];
     const seenCards = new Set();
     return combined
       .filter((visible) => {

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.3.2
+// @version      0.3.3
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.3.2",
+    version: "0.3.3",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -2836,7 +2836,15 @@
   }
 
   function collectOwnBazaarItems() {
-    const combined = [...collectManagedBazaarItems(), ...collectBazaarAddItems()];
+    // Add-form rows take precedence: once a price has been filled into an
+    // add row, the managed-listing heuristics would otherwise mistake it for
+    // an existing Bazaar listing.
+    const addItems = collectBazaarAddItems();
+    const addCards = addItems.map((item) => item.card);
+    const managed = collectManagedBazaarItems().filter((item) => (
+      !addCards.some((card) => card === item.card || card.contains(item.card) || item.card.contains(card))
+    ));
+    const combined = [...addItems, ...managed];
     const seenCards = new Set();
     return combined
       .filter((visible) => {
@@ -3431,10 +3439,13 @@
 
     const targetText = formatMoney(target);
     const pricing = result?.ownBazaar?.equipmentPricing || null;
-    const equipmentHtml = pricing ? equipmentContextHtml(pricing) : "";
+    const copyLabel = result?.ownBazaar?.copyLabel || "";
+    const equipmentHtml = pricing
+      ? equipmentContextHtml(pricing)
+      : (copyLabel ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Priced from this copy's details">${escapeHtml(copyLabel)}</span>` : "");
     const priceTitle = pricing
       ? `Suggested Bazaar price for a plain (no bonus) copy: ${formatMoney(target, true)}. ${equipmentContextTitle(pricing)}`
-      : "Suggested Bazaar selling price";
+      : (copyLabel ? `Suggested Bazaar price for this copy (${copyLabel}): ${formatMoney(target, true)}` : "Suggested Bazaar selling price");
     const block = renderInlineHtml(
       visible,
       `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="${escapeHtml(priceTitle)}">${targetText}</span><button class="me-bazaar-fill-btn" type="button" aria-label="Fill Bazaar price and maximum quantity" title="Fill price with ${escapeHtml(targetText)} and quantity with max available">^</button>${equipmentHtml}${stale}`,
@@ -3597,15 +3608,29 @@
       // surfaces get the plain and bonus floors to compare against.
       const summary = result.equipment;
       const pricing = result.equipmentPricing || null;
+      const copyPrice = asInt(visible.card?.dataset?.meCopyPrice, 0);
+      const copyLabel = String(visible.card?.dataset?.meCopyLabel || "");
       if (surface === "bazaar" && ownBazaar && visible.bazaarAdd) {
-        // The row only gets a floor glance. Per-copy pricing and the fill
-        // control live in the expanded item-details panel, where the copy's
-        // quality and bonuses are visible.
-        const plain = summary.plainFloor ? formatMoney(summary.plainFloor) : "-";
+        // Weapon rows carry no price until the copy has been priced from its
+        // expanded details panel; then that copy's value and the fill control
+        // move onto the row.
+        if (copyPrice > 0) {
+          return renderBazaarAddSuggestion({
+            ...result,
+            ownBazaar: { target: copyPrice, copyLabel }
+          });
+        }
         return renderInlineHtml(visible,
-          `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="Cheapest plain Item Market listing">floor ${plain}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Open this item's details to price this exact copy (quality and bonuses) and fill the form">open details to price</span>${stale}`,
+          `<span class="me-inline-brand">ME</span><span class="me-inline-secondary" title="Open this item's details to price this exact copy (quality and bonuses)">open details to price</span>${stale}`,
           "GREY",
           "me-bazaar-add"
+        );
+      }
+      if (surface === "inventory" && copyPrice > 0) {
+        const copyIm = asInt(visible.card?.dataset?.meCopyIm, 0);
+        return renderInlineHtml(visible,
+          `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="Suggested Bazaar price for this copy (${escapeHtml(copyLabel)})">BZ ${formatMoney(copyPrice)}</span>${copyIm ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary">IM ${formatMoney(copyIm)}</span>` : ""}<span class="me-inline-sep">|</span><span class="me-inline-secondary">${escapeHtml(copyLabel)}</span>${stale}`,
+          "GREY"
         );
       }
       if (surface === "bazaar" && ownBazaar && pricing) {
@@ -4192,6 +4217,31 @@
     await scanExpandedEquipment(surface, ownBazaar, queueGroup);
   }
 
+  // Once a copy has been priced from its details panel, its value (and the
+  // fill control on the Bazaar add form) moves onto the row so the player can
+  // keep working from the list.
+  function promoteCopyPriceToRow(surface, ownBazaar, detail, pricing, snapshot) {
+    if (!detail?.row?.isConnected || !pricing?.bazaarSuggested) return;
+    const copy = detail.copy;
+    const label = [
+      Number.isFinite(copy.quality) ? `Q ${copy.quality.toFixed(1)}%` : null,
+      copy.bonuses.length ? copy.bonuses.map((bonus) => bonus.title).join("+") : "plain"
+    ].filter(Boolean).join(" ");
+    const items = surface === "bazaar" ? collectBazaarAddItems() : collectVisibleItems({ requireMoney: false });
+    const visible = items.find((item) => item.card === detail.row || item.card.contains(detail.row) || detail.row.contains(item.card));
+    const card = visible?.card || detail.row;
+    card.dataset.meCopyPrice = String(pricing.bazaarSuggested);
+    card.dataset.meCopyIm = String(pricing.itemMarketSuggested || "");
+    card.dataset.meCopyLabel = label;
+    if (!visible) return;
+    renderInlineResult(surface, {
+      visible,
+      snapshot,
+      equipment: snapshot.equipmentSummary || { plainFloor: null, bonusFloor: null },
+      renderMeta: { stale: false }
+    }, ownBazaar);
+  }
+
   // Expanded item-details panels on sell-side surfaces: price the exact copy
   // against the deep order book (limit 100) and ended Auction House sales.
   async function scanExpandedEquipment(surface, ownBazaar, queueGroup) {
@@ -4221,6 +4271,7 @@
         if (!detail.panel.isConnected || detectSurface() !== surface) return;
         const pricing = priceOwnedEquipment({ snapshot: bundle.snapshot, copy: detail.copy, auctionSales, settings });
         renderEquipmentDetailCard(detail, pricing, { canFill: surface === "bazaar" && Boolean(detail.row) });
+        promoteCopyPriceToRow(surface, ownBazaar, detail, pricing, bundle.snapshot);
       } catch (error) {
         if (error?.marketEdgeCanceled) return;
         log("Details pricing failed", detail.itemId, error.message);

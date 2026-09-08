@@ -1,6 +1,6 @@
 {
   "name": "torn-market-edge",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "private": true,
   "description": "Decision-support userscript for Torn markets using the official Torn API.",
   "license": "MIT",
