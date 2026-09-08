@@ -379,3 +379,77 @@ run("Untradable items are labelled instead of priced", async (t) => {
   assert.match(plushie.textContent, /untradable/);
   assert.ok(!env.requests.some((url) => url.includes("/market/258/itemmarket")), "no order book for an untradable item");
 });
+
+// Fixtures below mirror Torn's markup as verified from public userscript
+// sources (Torn Market Filler, Bazaar Filler, Junk Seller, TornTools, PDA).
+
+run("Real Item Market add-listing rows: ids from aria-controls, hidden money twin filled, owned qty from data-money, greyed rows skipped", async (t) => {
+  const env = boot(fixture("itemmarket-addlisting.html"), "https://www.torn.com/page.php?sid=ItemMarket#/addListing");
+  t.after(env.close);
+  assert.equal(env.ME.detectSurface(), "imsell");
+  const rows = env.ME.collectSellFormRows();
+  assert.equal(JSON.stringify(rows.map((row) => row.itemId).sort()), "[1,206]", "greyed-out row is not listable");
+  const xanaxRow = rows.find((row) => row.itemId === 206);
+  assert.equal(xanaxRow.quantity, 12, "owned amount read from the quantity input's data-money");
+  assert.equal(xanaxRow.priceInput.getAttribute("aria-label"), "Xanax price");
+  await env.ME.scanVisibleSurface("imsell", { force: true });
+  const block = env.document.querySelector(".me-inline-analysis[data-me-item-id='206']");
+  assert.ok(block);
+  block.querySelector(".me-bazaar-fill-btn").click();
+  const priceGroup = env.document.querySelector(".itemRowWrapper___f6 .priceInputWrapper___k1 .input-money-group");
+  assert.equal(priceGroup.querySelector("input:not([type='hidden'])").value, "789999");
+  assert.equal(priceGroup.querySelector("input[type='hidden']").value, "789999", "hidden twin carries the raw number");
+  const qtyGroup = env.document.querySelector(".amountInputWrapper___l2 .input-money-group");
+  assert.equal(qtyGroup.querySelector("input:not([type='hidden'])").value, "12");
+  const rifle = env.document.querySelector(".me-inline-analysis[data-me-item-id='1']");
+  assert.match(rifle.textContent, /floor \$800k/);
+  assert.equal(env.document.querySelector("#selectAll").checked, false, "page-level checkboxes are never touched");
+});
+
+run("Real inventory rows: equipped wrap excluded, hidden tab ignored, data-qty used, copy priced from the equip button's armoury id", async (t) => {
+  const env = boot(fixture("inventory-real.html"), "https://www.torn.com/item.php");
+  t.after(env.close);
+  env.document.querySelectorAll(".hidden-tab, .hidden-tab *").forEach((node) => { node.getBoundingClientRect = () => ({ width: 0, height: 0, top: 0, bottom: 0, left: 0, right: 0, x: 0, y: 0 }); });
+  const rows = env.ME.collectVisibleItems({ requireMoney: false });
+  assert.equal(JSON.stringify(rows.map((row) => row.itemId).sort()), "[1,206]", "only the visible tab's rows, none from the equipped wrap");
+  assert.equal(rows.find((row) => row.itemId === 206).quantity, 10, "quantity from data-qty");
+  assert.equal(rows.find((row) => row.itemId === 206).name, "Xanax", "name from data-sort");
+  const rifleRow = env.document.querySelector("#category-wrap li[data-item='1']");
+  assert.equal(env.ME.rowUid(rifleRow), 555, "armoury id from the equip button's data-id");
+  assert.equal(env.ME.itemIdFromElement(rifleRow.querySelector("button[data-action='equip']")), 1, "an equip button's data-id (armoury id) is not read as an item id; the row's data-item wins");
+  await env.ME.scanVisibleSurface("inventory", { force: true });
+  const xanax = env.document.querySelector("#category-wrap li[data-item='206'] .me-inline-analysis");
+  assert.match(xanax.textContent, /BZ \$/);
+  const rifle = env.document.querySelector("#category-wrap li[data-item='1'] .me-inline-analysis");
+  assert.match(rifle.textContent, /Q 51\.0% plain/, "copy priced through /itemdetails from the armoury id");
+  assert.equal(env.document.querySelector(".equipped-items-wrap .me-inline-analysis"), null, "equipped copy untouched");
+  assert.ok(env.requests.some((url) => url.includes("/torn/555/itemdetails")));
+});
+
+run("Real React Bazaar manage rows are found and filled (visible input and hidden twin)", async (t) => {
+  const env = boot(fixture("bazaar-manage-react.html"), "https://www.torn.com/bazaar.php#/manage");
+  t.after(env.close);
+  const items = env.ME.collectManagedBazaarItems();
+  assert.equal(items.length, 1);
+  assert.equal(items[0].price, 800000);
+  await env.ME.scanVisibleSurface("bazaar", { force: true });
+  const block = env.document.querySelector(".me-inline-analysis[data-me-item-id='206']");
+  assert.ok(block, "React manage row annotated");
+  assert.match(block.textContent, /Target \$/);
+  const fill = block.querySelector(".me-manage-fill");
+  assert.ok(fill, "fill control present");
+  fill.click();
+  const group = env.document.querySelector(".price___m7 .input-money-group");
+  assert.equal(group.querySelector("input:not([type='hidden'])").value, "789999");
+  assert.equal(group.querySelector("input[type='hidden']").value, "789999");
+});
+
+run("Item Market item page id is read from wai-itemInfo-{id}-0 controls", async (t) => {
+  const env = boot(fixture("itemmarket-item-aria.html"), "https://www.torn.com/page.php?sid=ItemMarket#/market/view=search&itemName=Xanax");
+  t.after(env.close);
+  assert.equal(env.ME.getItemIdFromLocation(), 206);
+  assert.equal(env.ME.detectSurface(), "itemmarket");
+  const live = env.ME.parseLiveItemMarketListings();
+  assert.equal(live[0].price, 820000);
+  assert.equal(live[0].quantity, 3, "'N available' is the listing quantity");
+});

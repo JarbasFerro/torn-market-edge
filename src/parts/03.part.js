@@ -379,7 +379,9 @@
       // rows with price and quantity fields. Recognised by its route or, when
       // Torn changes the route, by the presence of those rows.
       const hasItemId = /(?:itemID|itemId|item_id)=\d+/i.test(`${location.search}${location.hash}`);
-      if (!hasItemId && (/addlisting|add-listing|sellitems|sell-items|view=add|p=add|\/add\b/i.test(hash) || sellFormRowsPresent())) return "imsell";
+      // #/addListing (sell form) and #/viewListing (your active listings,
+      // editable prices) both carry per-row price fields.
+      if (!hasItemId && (/addlisting|add-listing|viewlisting|view-listing|sellitems|sell-items|view=add|p=add|\/add\b/i.test(hash) || sellFormRowsPresent())) return "imsell";
       return "itemmarket";
     }
     if (path.endsWith("/bazaar.php") || path.endsWith("bazaar.php")) return "bazaar";
@@ -437,11 +439,11 @@
       if (match) return asInt(match[1]);
     }
     // Torn's current Item Market also exposes the selected item ID through
-    // aria-controls="wai-itemInfo-..." controls. This is deliberately a
-    // visible-DOM fallback rather than an extra Torn request.
+    // aria-controls="wai-itemInfo-{itemId}-0" controls (the trailing -0 is a
+    // slot index, not part of the id). Visible-DOM fallback, no request.
     const controls = document.querySelector('button[aria-controls^="wai-itemInfo-"]')?.getAttribute("aria-controls") || "";
-    const ids = controls.match(/\d+/g);
-    return ids?.length ? asInt(ids[ids.length - 1]) : null;
+    const match = controls.match(/wai-itemInfo-(\d+)/i);
+    return match ? asInt(match[1]) || null : null;
   }
 
   // Item ids are resolved for every identity node on every signature pass;
@@ -465,7 +467,9 @@
 
   function itemIdFromElementUncached(element) {
     if (!element) return null;
-    const attrNames = ["data-itemid", "data-item-id", "data-id", "item"];
+    // data-item (inventory rows) and data-itemid are item ids. A bare data-id
+    // is NOT: Torn puts the per-copy armoury id there on equip buttons.
+    const attrNames = ["data-item", "data-itemid", "data-item-id", "item"];
     let node = element;
     for (let depth = 0; node && depth < 5; depth += 1, node = node.parentElement) {
       for (const attr of attrNames) {
@@ -473,12 +477,12 @@
         if (raw && /^\d+$/.test(raw)) return asInt(raw);
       }
       for (const [key, value] of Object.entries(node.dataset || {})) {
-        if (/item.*id|id.*item/i.test(key) && /^\d+$/.test(String(value))) return asInt(value);
+        if (/^item(?:id)?$|item.*id|id.*item/i.test(key) && !/armo|uid|row/i.test(key) && /^\d+$/.test(String(value))) return asInt(value);
       }
       const controls = node.getAttribute?.("aria-controls") || "";
       if (controls.startsWith("wai-itemInfo-")) {
-        const ids = controls.match(/\d+/g);
-        if (ids?.length) return asInt(ids[ids.length - 1]);
+        const match = controls.match(/wai-itemInfo-(\d+)/i);
+        if (match) return asInt(match[1]);
       }
       const href = node.getAttribute?.("href");
       if (href) {
@@ -536,7 +540,7 @@
   function inventoryListMarker() {
     if (detectSurface() !== "inventory") return null;
     const now = Date.now();
-    if (inventoryMarkerCache.href === location.href && now - inventoryMarkerCache.at < 400 && (inventoryMarkerCache.node === null || inventoryMarkerCache.node.isConnected)) {
+    if (inventoryMarkerCache.href === location.href && now - inventoryMarkerCache.at < 2500 && (inventoryMarkerCache.node === null || inventoryMarkerCache.node.isConnected)) {
       return inventoryMarkerCache.node;
     }
     const node = inventoryListMarkerUncached();
@@ -549,8 +553,9 @@
     // On Torn's Items page, the equipped paper-doll/loadout appears before the
     // actual inventory list. Prefer the visible "Your Items - <category>"
     // heading as a structural boundary so only inventory rows below it are
-    // analyzed.
-    const selectors = "h1,h2,h3,h4,h5,h6,div,span";
+    // analyzed. Headings and title bars only: scanning every div/span on a
+    // long inventory is what froze slow devices.
+    const selectors = "h1,h2,h3,h4,h5,h6,[class*='title'],[class*='header'],[class*='heading']";
     const candidates = [];
     document.querySelectorAll(selectors).forEach((element) => {
       if (!(element instanceof HTMLElement)) return;
@@ -589,17 +594,14 @@
       return Boolean(relation & Node.DOCUMENT_POSITION_FOLLOWING);
     }
 
-    // If Torn changes the heading markup, accept cards inside known inventory
-    // list containers.
-    if (card.closest(".items-cont, [class*='itemsCont'], [class*='items-cont'], [class*='inventoryList'], [class*='inventory-list']")) {
-      return true;
-    }
-
-    // Last-resort defensive exclusions for the equipped/loadout region.
+    // Without the heading: the equipped/loadout region is excluded first
+    // (Torn's .equipped-items-wrap), then cards inside known inventory list
+    // containers (ul.items-cont) are accepted.
     const equippedAncestor = card.closest(
-      "[class*='equipped'],[class*='loadout'],[class*='paperdoll'],[class*='paper-doll'],[class*='characterEquipment'],[class*='character-equipment']"
+      ".equipped-items-wrap,[class*='equipped'],[class*='loadout'],[class*='paperdoll'],[class*='paper-doll'],[class*='characterEquipment'],[class*='character-equipment']"
     );
-    return !equippedAncestor;
+    if (equippedAncestor) return false;
+    return Boolean(card.closest(".items-cont, [class*='itemsCont'], [class*='items-cont'], [class*='inventoryList'], [class*='inventory-list'], .category-wrap, #category-wrap"));
   }
 
   function itemIdentitySelector() {

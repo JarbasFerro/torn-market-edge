@@ -126,7 +126,7 @@
     if (detectSurface() === "inventory") {
       const roots = Array.from(document.querySelectorAll(
         ".items-cont, [class*='itemsCont'], [class*='items-cont'], [class*='inventoryList'], [class*='inventory-list']"
-      )).filter((root) => !root.closest("#market-edge-root"));
+      )).filter((root) => !root.closest("#market-edge-root,.equipped-items-wrap,[class*='equipped']"));
       if (roots.length) {
         roots.forEach((root) => root.querySelectorAll(selector).forEach((node) => candidates.add(node)));
       } else {
@@ -166,8 +166,11 @@
       const priceElement = card?.querySelector?.('[data-testid="price"]');
       const price = requireMoney ? priceForSurfaceCard(detectSurface(), card, priceElement) : null;
       if (requireMoney && !price) continue;
-      const quantity = parseQuantity(text);
-      const name = elementItemName(card, node);
+      // Torn's inventory rows carry the quantity as data-qty and the item
+      // name as data-sort; both beat text parsing.
+      const quantity = asInt(card?.dataset?.qty, 0) || parseQuantity(text);
+      const name = String(card?.dataset?.sort || "").trim() || elementItemName(card, node);
+      const equipped = String(card?.dataset?.equipped || "") === "true";
       // Key by row element, not item id: equipment copies share an item id
       // but each occupies its own row and gets its own annotation. Several
       // identity nodes inside one row still collapse to a single entry.
@@ -179,6 +182,7 @@
           name,
           price,
           quantity,
+          equipped,
           card,
           inlineAnchor: findItemTextHost(card, name),
           inlineMode: "inline",
@@ -191,6 +195,10 @@
 
 
   function findOwnBazaarCard(start) {
+    // React manage view: div[data-testid="sortable-item"] / div[class*="row___"]
+    // > div[class*="item___"] with the price in div[class*="price___"].
+    const reactRow = start?.closest?.('[data-testid="sortable-item"], div[class*="row___"]');
+    if (reactRow && reactRow.querySelector("input") && directItemIdsWithin(reactRow).size <= 1) return reactRow;
     let node = start;
     let fallback = null;
     for (let depth = 0; node && depth < 10 && node !== document.body; depth += 1, node = node.parentElement) {
@@ -230,6 +238,14 @@
     }
 
     if (best) return best;
+
+    // React manage rows: the price sits in div[class*="price___"] as an
+    // input-money group (visible input plus a hidden twin).
+    const reactPrice = card.querySelector("div[class*='price___'] .input-money-group input:not([type='hidden']), div[class*='price___'] input:not([type='hidden']), [class*='priceMobile___'] input:not([type='hidden'])");
+    if (reactPrice instanceof HTMLInputElement) {
+      const price = parseIntegerField(reactPrice.value);
+      if (price) return { input: reactPrice, row: reactPrice.closest("div[class*='price___']") || reactPrice.parentElement, price, score: 80 };
+    }
 
     // Fallback: locate the visible "Price per unit" label and then the nearest
     // input in the same small container. This avoids ever confusing Torn's RRP
@@ -419,9 +435,17 @@
     if (!card) return null;
     const amount = card.querySelector("div[class*='amount___'], div.amount-main-wrap") || card;
     const control = amount.querySelector("div.choice-container, [class*='choiceContainer___']");
-    const checkbox = control?.querySelector?.("input[type='checkbox'], input");
-    if (!(checkbox instanceof HTMLInputElement)) return null;
-    const rect = control.getBoundingClientRect();
+    let checkbox = control?.querySelector?.("input[type='checkbox'], input");
+    let box = control;
+    if (!(checkbox instanceof HTMLInputElement)) {
+      // Item Market sell form: single-copy rows use a select checkbox with a
+      // stable id prefix. Only that id is trusted, because the anonymous
+      // listing toggle is also a checkbox and must never be touched.
+      checkbox = card.querySelector("input[type='checkbox'][id*='selectCheckbox' i]");
+      box = checkbox?.closest("[class*='checkboxContainer___'], [class*='checkboxWrapper___']") || checkbox?.parentElement || null;
+    }
+    if (!(checkbox instanceof HTMLInputElement) || !box) return null;
+    const rect = box.getBoundingClientRect();
     return rect.width > 0 && rect.height > 0 ? checkbox : null;
   }
 
@@ -563,6 +587,8 @@
         break;
       }
       if (!card || byCard.has(card)) continue;
+      // Item Market rows that cannot be listed are greyed out.
+      if (/grayedOut|greyedOut|disabled___/i.test(`${card.className || ""} ${card.parentElement?.className || ""}`) || card.classList.contains("disabled")) continue;
       const rect = card.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) continue;
       const priceInput = findBazaarAddPriceInput(card);
@@ -572,7 +598,9 @@
       // Text nodes joined with spaces: adjacent inline spans ("Xanax" + "x12")
       // must not merge into one token.
       const text = spacedText(card);
-      const quantity = parseQuantity(text);
+      // Torn's quantity input carries the owned amount in data-money.
+      const ownedFromInput = parseIntegerField(quantityInput?.getAttribute("data-money"));
+      const quantity = ownedFromInput || parseQuantity(text);
       const maxFromInput = parseIntegerField(quantityInput?.getAttribute("max"));
       const controlHost = priceInput.closest("div[class*='amount___'], div.amount-main-wrap, div[class*='price___'], div[class*='controls'], div[class*='actions']") || priceInput.parentElement || card;
       byCard.set(card, {
@@ -587,6 +615,9 @@
         quantityCheckbox,
         bazaarAdd: true,
         sellForm: true,
+        // On #/viewListing the fields belong to an existing listing: fill
+        // the price only, never the quantity.
+        priceOnly: /viewlisting|view-listing/i.test(String(location.hash || "")),
         bazaarControls: controlHost,
         inlineAnchor: controlHost,
         inlineMode: "bazaar-below-controls",
@@ -616,21 +647,21 @@
   // opening its details panel.
   function rowUid(card) {
     if (!card?.getAttribute) return null;
-    const read = (element) => {
-      for (const attr of Array.from(element.attributes || [])) {
-        if (!/uid|armoury|armory/i.test(attr.name)) continue;
-        const digits = String(attr.value || "").match(/\d{3,}/);
+    // Torn's inventory rows expose the per-copy armoury id (the API's item
+    // uid) as data-armoryid on the row or on the equip/unequip button (whose
+    // data-id is the same value), legacy rows as .actions[xid].
+    const read = (element, names) => {
+      for (const name of names) {
+        const raw = element.getAttribute?.(name);
+        const digits = String(raw || "").match(/\d{3,}/);
         if (digits) return asInt(digits[0], 0) || null;
       }
       return null;
     };
-    const own = read(card);
+    const own = read(card, ["data-armoryid", "data-armouryid", "data-armoury-id", "data-uid", "data-item-uid", "uid"]);
     if (own) return own;
-    const nodes = card.querySelectorAll("[data-uid],[data-item-uid],[data-itemuid],[data-armoury],[data-armouryid],[data-armoury-id],[uid]");
-    for (const node of Array.from(nodes).slice(0, 5)) {
-      const value = read(node);
-      if (value) return value;
-    }
+    const action = card.querySelector("[data-action='equip'],[data-action='unequip'],button[name='equip'],button[name='unequip'],[data-armoryid],[data-armouryid],[data-uid],.actions[xid],[xid]");
+    if (action) return read(action, ["data-armoryid", "data-armouryid", "data-uid", "data-id", "xid"]);
     return null;
   }
 
@@ -930,7 +961,7 @@
       if (node.closest("#market-edge-root,.me-inline-analysis")) return;
       const itemId = itemIdFromElement(node);
       if (!itemId) return;
-      let card = node.closest("li,tr,[role='row'],[class*='row'],[class*='item___'],[class*='listing']") || findCompactCard(node, false);
+      let card = node.closest("li,tr,[role='row'],[class*='itemRow'],[class*='row'],[class*='item___'],[class*='listing']") || findCompactCard(node, false);
       for (let depth = 0; card && depth < 4 && !card.querySelector("input"); depth += 1) card = card.parentElement;
       if (!card || seen.has(card) || card === document.body) return;
       const priceInput = findGenericPriceInput(card);

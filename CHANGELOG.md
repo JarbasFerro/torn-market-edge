@@ -6,6 +6,19 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-09-08
+
+### Fixed
+
+Collectors reconciled with Torn's real markup, as verified from the sources of the public scripts that fill prices on the same pages (Torn Market Filler, Torn Bazaar Filler, Torn Junk Seller, Torn Price Filler, FLIPR, TornTools, Torn PDA). Fixtures now mirror those structures.
+
+- **Item id parsed as 0 from `wai-itemInfo-{id}-0`.** The trailing slot index was taken as the id, which broke the Item Market item page fallback and every sell-form row whose id comes from the info button. The first number after the prefix is used now.
+- **Equip buttons' `data-id` read as an item id.** Torn stores the per-copy armoury id there, so inventory rows carried two ids and fell off the fast path. Bare `data-id` is no longer an item id; `data-item` is.
+- **Torn's money inputs come in pairs.** The visible field has a hidden twin in the same `.input-money-group` that holds the raw number; fills now write both, on the Bazaar add and manage views and the Item Market sell form.
+- **Item Market sell form specifics.** Owned quantity is read from the quantity input's `data-money`; single-copy rows use the `itemRow-selectCheckbox` control (the anonymous-listing checkbox is never touched); greyed-out rows are skipped; `#/viewListing` rows (your active listings) get price-only fills and also open the listings panel.
+- **React Bazaar manage rows** (`div[data-testid="sortable-item"]`, `div[class*="price___"]`) had no "Price per unit" label and were skipped; they are now recognised and filled.
+- **Inventory rows** use `data-qty` and `data-sort` for quantity and name, are excluded inside `.equipped-items-wrap`, and the per-copy id comes from `data-armoryid` or the equip button's `data-id` (the API uid) instead of non-existent `data-uid` attributes. The heading finder scans headings and title bars only and caches for 2.5 s instead of walking every element every 400 ms.
+
 ## [0.4.1] - 2026-09-08
 
 ### Fixed

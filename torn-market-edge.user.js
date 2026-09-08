@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.4.1
+// @version      0.4.2
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.4.1",
+    version: "0.4.2",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -63,7 +63,7 @@
   const WATCHLIST_MAX_ITEMS = 25;
   const WATCHLIST_ALERT_COOLDOWN_MS = 10 * ONE_MINUTE_MS;
   const OWN_LISTINGS_MAX = 25;
-  // v0.4.1 surfaces: portfolio, shop runs, travel planner, auction guidance.
+  // v0.4.2 surfaces: portfolio, shop runs, travel planner, auction guidance.
   const INVENTORY_TTL_MS = 60 * ONE_MINUTE_MS;
   const INVENTORY_PAGE_LIMIT = 250;
   const INVENTORY_MAX_PAGES = 8;
@@ -2833,7 +2833,9 @@
       // rows with price and quantity fields. Recognised by its route or, when
       // Torn changes the route, by the presence of those rows.
       const hasItemId = /(?:itemID|itemId|item_id)=\d+/i.test(`${location.search}${location.hash}`);
-      if (!hasItemId && (/addlisting|add-listing|sellitems|sell-items|view=add|p=add|\/add\b/i.test(hash) || sellFormRowsPresent())) return "imsell";
+      // #/addListing (sell form) and #/viewListing (your active listings,
+      // editable prices) both carry per-row price fields.
+      if (!hasItemId && (/addlisting|add-listing|viewlisting|view-listing|sellitems|sell-items|view=add|p=add|\/add\b/i.test(hash) || sellFormRowsPresent())) return "imsell";
       return "itemmarket";
     }
     if (path.endsWith("/bazaar.php") || path.endsWith("bazaar.php")) return "bazaar";
@@ -2891,11 +2893,11 @@
       if (match) return asInt(match[1]);
     }
     // Torn's current Item Market also exposes the selected item ID through
-    // aria-controls="wai-itemInfo-..." controls. This is deliberately a
-    // visible-DOM fallback rather than an extra Torn request.
+    // aria-controls="wai-itemInfo-{itemId}-0" controls (the trailing -0 is a
+    // slot index, not part of the id). Visible-DOM fallback, no request.
     const controls = document.querySelector('button[aria-controls^="wai-itemInfo-"]')?.getAttribute("aria-controls") || "";
-    const ids = controls.match(/\d+/g);
-    return ids?.length ? asInt(ids[ids.length - 1]) : null;
+    const match = controls.match(/wai-itemInfo-(\d+)/i);
+    return match ? asInt(match[1]) || null : null;
   }
 
   // Item ids are resolved for every identity node on every signature pass;
@@ -2919,7 +2921,9 @@
 
   function itemIdFromElementUncached(element) {
     if (!element) return null;
-    const attrNames = ["data-itemid", "data-item-id", "data-id", "item"];
+    // data-item (inventory rows) and data-itemid are item ids. A bare data-id
+    // is NOT: Torn puts the per-copy armoury id there on equip buttons.
+    const attrNames = ["data-item", "data-itemid", "data-item-id", "item"];
     let node = element;
     for (let depth = 0; node && depth < 5; depth += 1, node = node.parentElement) {
       for (const attr of attrNames) {
@@ -2927,12 +2931,12 @@
         if (raw && /^\d+$/.test(raw)) return asInt(raw);
       }
       for (const [key, value] of Object.entries(node.dataset || {})) {
-        if (/item.*id|id.*item/i.test(key) && /^\d+$/.test(String(value))) return asInt(value);
+        if (/^item(?:id)?$|item.*id|id.*item/i.test(key) && !/armo|uid|row/i.test(key) && /^\d+$/.test(String(value))) return asInt(value);
       }
       const controls = node.getAttribute?.("aria-controls") || "";
       if (controls.startsWith("wai-itemInfo-")) {
-        const ids = controls.match(/\d+/g);
-        if (ids?.length) return asInt(ids[ids.length - 1]);
+        const match = controls.match(/wai-itemInfo-(\d+)/i);
+        if (match) return asInt(match[1]);
       }
       const href = node.getAttribute?.("href");
       if (href) {
@@ -2990,7 +2994,7 @@
   function inventoryListMarker() {
     if (detectSurface() !== "inventory") return null;
     const now = Date.now();
-    if (inventoryMarkerCache.href === location.href && now - inventoryMarkerCache.at < 400 && (inventoryMarkerCache.node === null || inventoryMarkerCache.node.isConnected)) {
+    if (inventoryMarkerCache.href === location.href && now - inventoryMarkerCache.at < 2500 && (inventoryMarkerCache.node === null || inventoryMarkerCache.node.isConnected)) {
       return inventoryMarkerCache.node;
     }
     const node = inventoryListMarkerUncached();
@@ -3003,8 +3007,9 @@
     // On Torn's Items page, the equipped paper-doll/loadout appears before the
     // actual inventory list. Prefer the visible "Your Items - <category>"
     // heading as a structural boundary so only inventory rows below it are
-    // analyzed.
-    const selectors = "h1,h2,h3,h4,h5,h6,div,span";
+    // analyzed. Headings and title bars only: scanning every div/span on a
+    // long inventory is what froze slow devices.
+    const selectors = "h1,h2,h3,h4,h5,h6,[class*='title'],[class*='header'],[class*='heading']";
     const candidates = [];
     document.querySelectorAll(selectors).forEach((element) => {
       if (!(element instanceof HTMLElement)) return;
@@ -3043,17 +3048,14 @@
       return Boolean(relation & Node.DOCUMENT_POSITION_FOLLOWING);
     }
 
-    // If Torn changes the heading markup, accept cards inside known inventory
-    // list containers.
-    if (card.closest(".items-cont, [class*='itemsCont'], [class*='items-cont'], [class*='inventoryList'], [class*='inventory-list']")) {
-      return true;
-    }
-
-    // Last-resort defensive exclusions for the equipped/loadout region.
+    // Without the heading: the equipped/loadout region is excluded first
+    // (Torn's .equipped-items-wrap), then cards inside known inventory list
+    // containers (ul.items-cont) are accepted.
     const equippedAncestor = card.closest(
-      "[class*='equipped'],[class*='loadout'],[class*='paperdoll'],[class*='paper-doll'],[class*='characterEquipment'],[class*='character-equipment']"
+      ".equipped-items-wrap,[class*='equipped'],[class*='loadout'],[class*='paperdoll'],[class*='paper-doll'],[class*='characterEquipment'],[class*='character-equipment']"
     );
-    return !equippedAncestor;
+    if (equippedAncestor) return false;
+    return Boolean(card.closest(".items-cont, [class*='itemsCont'], [class*='items-cont'], [class*='inventoryList'], [class*='inventory-list'], .category-wrap, #category-wrap"));
   }
 
   function itemIdentitySelector() {
@@ -3206,7 +3208,7 @@
     if (detectSurface() === "inventory") {
       const roots = Array.from(document.querySelectorAll(
         ".items-cont, [class*='itemsCont'], [class*='items-cont'], [class*='inventoryList'], [class*='inventory-list']"
-      )).filter((root) => !root.closest("#market-edge-root"));
+      )).filter((root) => !root.closest("#market-edge-root,.equipped-items-wrap,[class*='equipped']"));
       if (roots.length) {
         roots.forEach((root) => root.querySelectorAll(selector).forEach((node) => candidates.add(node)));
       } else {
@@ -3246,8 +3248,11 @@
       const priceElement = card?.querySelector?.('[data-testid="price"]');
       const price = requireMoney ? priceForSurfaceCard(detectSurface(), card, priceElement) : null;
       if (requireMoney && !price) continue;
-      const quantity = parseQuantity(text);
-      const name = elementItemName(card, node);
+      // Torn's inventory rows carry the quantity as data-qty and the item
+      // name as data-sort; both beat text parsing.
+      const quantity = asInt(card?.dataset?.qty, 0) || parseQuantity(text);
+      const name = String(card?.dataset?.sort || "").trim() || elementItemName(card, node);
+      const equipped = String(card?.dataset?.equipped || "") === "true";
       // Key by row element, not item id: equipment copies share an item id
       // but each occupies its own row and gets its own annotation. Several
       // identity nodes inside one row still collapse to a single entry.
@@ -3259,6 +3264,7 @@
           name,
           price,
           quantity,
+          equipped,
           card,
           inlineAnchor: findItemTextHost(card, name),
           inlineMode: "inline",
@@ -3271,6 +3277,10 @@
 
 
   function findOwnBazaarCard(start) {
+    // React manage view: div[data-testid="sortable-item"] / div[class*="row___"]
+    // > div[class*="item___"] with the price in div[class*="price___"].
+    const reactRow = start?.closest?.('[data-testid="sortable-item"], div[class*="row___"]');
+    if (reactRow && reactRow.querySelector("input") && directItemIdsWithin(reactRow).size <= 1) return reactRow;
     let node = start;
     let fallback = null;
     for (let depth = 0; node && depth < 10 && node !== document.body; depth += 1, node = node.parentElement) {
@@ -3310,6 +3320,14 @@
     }
 
     if (best) return best;
+
+    // React manage rows: the price sits in div[class*="price___"] as an
+    // input-money group (visible input plus a hidden twin).
+    const reactPrice = card.querySelector("div[class*='price___'] .input-money-group input:not([type='hidden']), div[class*='price___'] input:not([type='hidden']), [class*='priceMobile___'] input:not([type='hidden'])");
+    if (reactPrice instanceof HTMLInputElement) {
+      const price = parseIntegerField(reactPrice.value);
+      if (price) return { input: reactPrice, row: reactPrice.closest("div[class*='price___']") || reactPrice.parentElement, price, score: 80 };
+    }
 
     // Fallback: locate the visible "Price per unit" label and then the nearest
     // input in the same small container. This avoids ever confusing Torn's RRP
@@ -3499,9 +3517,17 @@
     if (!card) return null;
     const amount = card.querySelector("div[class*='amount___'], div.amount-main-wrap") || card;
     const control = amount.querySelector("div.choice-container, [class*='choiceContainer___']");
-    const checkbox = control?.querySelector?.("input[type='checkbox'], input");
-    if (!(checkbox instanceof HTMLInputElement)) return null;
-    const rect = control.getBoundingClientRect();
+    let checkbox = control?.querySelector?.("input[type='checkbox'], input");
+    let box = control;
+    if (!(checkbox instanceof HTMLInputElement)) {
+      // Item Market sell form: single-copy rows use a select checkbox with a
+      // stable id prefix. Only that id is trusted, because the anonymous
+      // listing toggle is also a checkbox and must never be touched.
+      checkbox = card.querySelector("input[type='checkbox'][id*='selectCheckbox' i]");
+      box = checkbox?.closest("[class*='checkboxContainer___'], [class*='checkboxWrapper___']") || checkbox?.parentElement || null;
+    }
+    if (!(checkbox instanceof HTMLInputElement) || !box) return null;
+    const rect = box.getBoundingClientRect();
     return rect.width > 0 && rect.height > 0 ? checkbox : null;
   }
 
@@ -3643,6 +3669,8 @@
         break;
       }
       if (!card || byCard.has(card)) continue;
+      // Item Market rows that cannot be listed are greyed out.
+      if (/grayedOut|greyedOut|disabled___/i.test(`${card.className || ""} ${card.parentElement?.className || ""}`) || card.classList.contains("disabled")) continue;
       const rect = card.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) continue;
       const priceInput = findBazaarAddPriceInput(card);
@@ -3652,7 +3680,9 @@
       // Text nodes joined with spaces: adjacent inline spans ("Xanax" + "x12")
       // must not merge into one token.
       const text = spacedText(card);
-      const quantity = parseQuantity(text);
+      // Torn's quantity input carries the owned amount in data-money.
+      const ownedFromInput = parseIntegerField(quantityInput?.getAttribute("data-money"));
+      const quantity = ownedFromInput || parseQuantity(text);
       const maxFromInput = parseIntegerField(quantityInput?.getAttribute("max"));
       const controlHost = priceInput.closest("div[class*='amount___'], div.amount-main-wrap, div[class*='price___'], div[class*='controls'], div[class*='actions']") || priceInput.parentElement || card;
       byCard.set(card, {
@@ -3667,6 +3697,9 @@
         quantityCheckbox,
         bazaarAdd: true,
         sellForm: true,
+        // On #/viewListing the fields belong to an existing listing: fill
+        // the price only, never the quantity.
+        priceOnly: /viewlisting|view-listing/i.test(String(location.hash || "")),
         bazaarControls: controlHost,
         inlineAnchor: controlHost,
         inlineMode: "bazaar-below-controls",
@@ -3696,21 +3729,21 @@
   // opening its details panel.
   function rowUid(card) {
     if (!card?.getAttribute) return null;
-    const read = (element) => {
-      for (const attr of Array.from(element.attributes || [])) {
-        if (!/uid|armoury|armory/i.test(attr.name)) continue;
-        const digits = String(attr.value || "").match(/\d{3,}/);
+    // Torn's inventory rows expose the per-copy armoury id (the API's item
+    // uid) as data-armoryid on the row or on the equip/unequip button (whose
+    // data-id is the same value), legacy rows as .actions[xid].
+    const read = (element, names) => {
+      for (const name of names) {
+        const raw = element.getAttribute?.(name);
+        const digits = String(raw || "").match(/\d{3,}/);
         if (digits) return asInt(digits[0], 0) || null;
       }
       return null;
     };
-    const own = read(card);
+    const own = read(card, ["data-armoryid", "data-armouryid", "data-armoury-id", "data-uid", "data-item-uid", "uid"]);
     if (own) return own;
-    const nodes = card.querySelectorAll("[data-uid],[data-item-uid],[data-itemuid],[data-armoury],[data-armouryid],[data-armoury-id],[uid]");
-    for (const node of Array.from(nodes).slice(0, 5)) {
-      const value = read(node);
-      if (value) return value;
-    }
+    const action = card.querySelector("[data-action='equip'],[data-action='unequip'],button[name='equip'],button[name='unequip'],[data-armoryid],[data-armouryid],[data-uid],.actions[xid],[xid]");
+    if (action) return read(action, ["data-armoryid", "data-armouryid", "data-uid", "data-id", "xid"]);
     return null;
   }
 
@@ -4010,7 +4043,7 @@
       if (node.closest("#market-edge-root,.me-inline-analysis")) return;
       const itemId = itemIdFromElement(node);
       if (!itemId) return;
-      let card = node.closest("li,tr,[role='row'],[class*='row'],[class*='item___'],[class*='listing']") || findCompactCard(node, false);
+      let card = node.closest("li,tr,[role='row'],[class*='itemRow'],[class*='row'],[class*='item___'],[class*='listing']") || findCompactCard(node, false);
       for (let depth = 0; card && depth < 4 && !card.querySelector("input"); depth += 1) card = card.parentElement;
       if (!card || seen.has(card) || card === document.body) return;
       const priceInput = findGenericPriceInput(card);
@@ -4610,6 +4643,14 @@
     else input.value = String(target);
     input.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
     input.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+    // Torn's money inputs are pairs: the visible field and a hidden twin in
+    // the same .input-money-group that holds the raw number.
+    const group = input.closest(".input-money-group");
+    group?.querySelectorAll?.("input[type='hidden']").forEach((twin) => {
+      if (twin === input) return;
+      if (setter) setter.call(twin, String(target));
+      else twin.value = String(target);
+    });
     return parseIntegerField(input.value) === target;
   }
 
@@ -4653,7 +4694,9 @@
       const priceFilled = setBazaarInputValue(visible.priceInput, target);
       const maxAvailable = Math.max(1, asInt(visible.maxAvailable || visible.quantity, 1));
       let quantityFilled = false;
-      if (visible.quantityCheckbox?.isConnected) {
+      if (visible.priceOnly) {
+        // Existing listing: the quantity is not ours to change.
+      } else if (visible.quantityCheckbox?.isConnected) {
         if (!visible.quantityCheckbox.checked) visible.quantityCheckbox.click();
         quantityFilled = Boolean(visible.quantityCheckbox.checked);
       } else if (visible.quantityInput?.isConnected) {
@@ -6957,6 +7000,9 @@
       scheduleSignatureCheck(false);
       // City shop pages also get the shop-runs panel, scoped to that shop.
       if (surface === "cityshop" && Store.apiKey()) setTimeout(() => { if (detectSurface() === "cityshop") renderShopRunsPanel(); }, 400);
+      // Your active Item Market listings (#/viewListing): inline fills on the
+      // rows plus the API-backed listings panel.
+      if (surface === "imsell" && ownListingsRouteActive() && Store.apiKey()) setTimeout(() => { if (detectSurface() === "imsell") renderOwnListingsPanel(); }, 400);
     }
   }
 

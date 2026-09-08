@@ -16,6 +16,14 @@
     else input.value = String(target);
     input.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
     input.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+    // Torn's money inputs are pairs: the visible field and a hidden twin in
+    // the same .input-money-group that holds the raw number.
+    const group = input.closest(".input-money-group");
+    group?.querySelectorAll?.("input[type='hidden']").forEach((twin) => {
+      if (twin === input) return;
+      if (setter) setter.call(twin, String(target));
+      else twin.value = String(target);
+    });
     return parseIntegerField(input.value) === target;
   }
 
@@ -59,7 +67,9 @@
       const priceFilled = setBazaarInputValue(visible.priceInput, target);
       const maxAvailable = Math.max(1, asInt(visible.maxAvailable || visible.quantity, 1));
       let quantityFilled = false;
-      if (visible.quantityCheckbox?.isConnected) {
+      if (visible.priceOnly) {
+        // Existing listing: the quantity is not ours to change.
+      } else if (visible.quantityCheckbox?.isConnected) {
         if (!visible.quantityCheckbox.checked) visible.quantityCheckbox.click();
         quantityFilled = Boolean(visible.quantityCheckbox.checked);
       } else if (visible.quantityInput?.isConnected) {

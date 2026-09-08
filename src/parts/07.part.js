@@ -1388,6 +1388,9 @@
       scheduleSignatureCheck(false);
       // City shop pages also get the shop-runs panel, scoped to that shop.
       if (surface === "cityshop" && Store.apiKey()) setTimeout(() => { if (detectSurface() === "cityshop") renderShopRunsPanel(); }, 400);
+      // Your active Item Market listings (#/viewListing): inline fills on the
+      // rows plus the API-backed listings panel.
+      if (surface === "imsell" && ownListingsRouteActive() && Store.apiKey()) setTimeout(() => { if (detectSurface() === "imsell") renderOwnListingsPanel(); }, 400);
     }
   }
 
