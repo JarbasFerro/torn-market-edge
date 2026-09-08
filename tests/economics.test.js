@@ -197,6 +197,17 @@ test("unsupported equipment is not commodity-valued", () => {
   assert.equal(result, null);
 });
 
+test("Bazaar add form suggestion is explicit and user-triggered", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "torn-market-edge.user.js"), "utf8");
+  assert.ok(source.includes("function collectBazaarAddItems()"));
+  assert.ok(source.includes("function findBazaarAddPriceInput(card)"));
+  assert.ok(source.includes("function setBazaarPriceInput(input, value)"));
+  assert.ok(source.includes("me-bazaar-fill-btn"));
+  assert.ok(source.includes('dispatchEvent(new Event("input", { bubbles: true, composed: true }))'));
+  assert.ok(source.includes('dispatchEvent(new Event("change", { bubbles: true, composed: true }))'));
+  assert.ok(source.includes("Market Edge never submits a Bazaar form automatically"));
+});
+
 test("hardening guards remain present in the assembled userscript", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "torn-market-edge.user.js"), "utf8");
   assert.match(source, /cancelQueued\(predicate/);

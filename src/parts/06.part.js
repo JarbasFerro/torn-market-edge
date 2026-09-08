@@ -7,6 +7,53 @@
     return result?.renderMeta?.stale ? `<span class="me-inline-stale" title="Showing cached data while Market Edge refreshes">*</span>` : "";
   }
 
+  function setBazaarPriceInput(input, value) {
+    if (!(input instanceof HTMLInputElement)) return false;
+    const target = Math.max(1, asInt(value));
+    if (!target) return false;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    if (setter) setter.call(input, String(target));
+    else input.value = String(target);
+    input.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+    return parseIntegerField(input.value) === target;
+  }
+
+  function renderBazaarAddSuggestion(result) {
+    const visible = result.visible;
+    const target = result?.ownBazaar?.target;
+    const stale = staleMarker(result);
+    if (!Number.isFinite(target) || target <= 0) {
+      return renderInlineHtml(
+        visible,
+        `<span class="me-inline-brand">ME</span><span class="me-inline-secondary">price unavailable</span>${stale}`,
+        "GREY"
+      );
+    }
+
+    const targetText = formatMoney(target);
+    const block = renderInlineHtml(
+      visible,
+      `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="Suggested Bazaar selling price">${targetText}</span><button class="me-bazaar-fill-btn" type="button" aria-label="Set Bazaar price to ${escapeHtml(targetText)}" title="Fill Torn price field with ${escapeHtml(targetText)}">&gt;</button>${stale}`,
+      "GREY",
+      "me-bazaar-add"
+    );
+    const button = block?.querySelector?.(".me-bazaar-fill-btn");
+    if (!button || !visible.priceInput) return block;
+
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!visible.priceInput?.isConnected) return;
+      if (!setBazaarPriceInput(visible.priceInput, target)) return;
+      visible.price = target;
+      block.classList.add("me-applied");
+      button.title = `Price filled with ${targetText}`;
+      setTimeout(() => block?.classList?.remove("me-applied"), 700);
+    });
+    return block;
+  }
+
   function renderInlineResult(surface, result, ownBazaar) {
     const visible = result.visible;
     if (!visible || !visible.card?.isConnected) return null;
@@ -14,6 +61,10 @@
     if (result.error) return renderInlineError(visible, result.error);
     if (result.unsupported) {
       return renderInlineHtml(visible, `<span class="me-inline-brand">ME</span><span class="me-inline-secondary">unsupported equipment</span>`, "GREY");
+    }
+
+    if (surface === "bazaar" && ownBazaar && visible.bazaarAdd) {
+      return renderBazaarAddSuggestion(result);
     }
 
     if (result.inventory) {

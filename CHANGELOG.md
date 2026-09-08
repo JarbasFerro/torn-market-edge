@@ -6,6 +6,19 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-09-08
+
+### Added
+
+- Support the **Add items to your Bazaar** composer.
+- Show a compact Market Edge suggested Bazaar selling price beside each addable item.
+- Add an explicit `>` control that fills Torn's price field with the suggestion without selecting quantity or submitting the Bazaar form.
+
+### Changed
+
+- Bazaar add-form price inputs are detected defensively, preferring price-labelled or rightmost numeric fields while avoiding quantity fields.
+- React-controlled Torn price inputs are updated through the native input setter plus `input` and `change` events for reliable mobile/desktop behavior.
+
 ## [0.2.1] - 2026-09-08
 
 ### Fixed

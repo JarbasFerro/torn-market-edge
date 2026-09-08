@@ -218,7 +218,126 @@
     return { input: null, row: null, price: null };
   }
 
-  function collectOwnBazaarItems() {
+  function bazaarAddSection() {
+    if (detectSurface() !== "bazaar") return null;
+    const candidates = [];
+    document.querySelectorAll("h1,h2,h3,h4,h5,h6,div,span,strong").forEach((element) => {
+      if (!(element instanceof HTMLElement) || element.closest("#market-edge-root,.me-inline-analysis")) return;
+      const ownText = Array.from(element.childNodes)
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.textContent || "")
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (!/^Add items to your Bazaar$/i.test(ownText)) return;
+      const rect = element.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      candidates.push(element);
+    });
+
+    for (const heading of candidates) {
+      let node = heading;
+      let fallback = heading.parentElement;
+      for (let depth = 0; node && depth < 9 && node !== document.body; depth += 1, node = node.parentElement) {
+        if (!(node instanceof HTMLElement)) continue;
+        const text = (node.innerText || "").replace(/\s+/g, " ").trim();
+        if (text.length > 8000) continue;
+        if (node.querySelector("input")) fallback = node;
+        if (/You are adding\s+\d+\s+items?\s+across\s+\d+\s+categor/i.test(text) && /ADD TO BAZAAR/i.test(text) && node.querySelector("input")) {
+          return node;
+        }
+      }
+      if (fallback?.querySelector?.("input")) return fallback;
+    }
+    return null;
+  }
+
+  function findBazaarAddRow(start, section) {
+    if (!start || !section) return null;
+    let node = start instanceof HTMLElement ? start : start.parentElement;
+    let fallback = null;
+    for (let depth = 0; node && depth < 9 && node !== section.parentElement; depth += 1, node = node.parentElement) {
+      if (!(node instanceof HTMLElement) || !section.contains(node)) continue;
+      const rect = node.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0 || rect.height > 140) continue;
+      const text = (node.innerText || "").replace(/\s+/g, " ").trim();
+      if (!text || text.length > 300) continue;
+      const ids = directItemIdsWithin(node);
+      if (ids.size !== 1) continue;
+      const visibleInputs = Array.from(node.querySelectorAll("input")).filter((input) => {
+        const inputRect = input.getBoundingClientRect();
+        return inputRect.width > 0 && inputRect.height > 0 && input.type !== "hidden";
+      });
+      if (!visibleInputs.length) continue;
+      fallback = node;
+      if (/^(?:x|\u00d7)\s*[\d,]+\s+\S+/i.test(text) || /\bQty\b/i.test(text)) return node;
+      if (node.matches("li,tr,[role='row'],[class*='row'],[class*='item']")) return node;
+    }
+    return fallback;
+  }
+
+  function findBazaarAddPriceInput(card) {
+    if (!card) return null;
+    const candidates = Array.from(card.querySelectorAll("input")).filter((input) => {
+      const rect = input.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0 && !["hidden", "checkbox", "radio"].includes(input.type);
+    });
+    if (!candidates.length) return null;
+    if (candidates.length === 1) return candidates[0];
+
+    const scored = candidates.map((input) => {
+      const metadata = `${input.name || ""} ${input.id || ""} ${input.getAttribute("aria-label") || ""} ${input.getAttribute("placeholder") || ""} ${input.className || ""}`;
+      let score = 0;
+      if (/price|cost|unit/i.test(metadata)) score += 120;
+      if (/qty|quantity|amount|count/i.test(metadata)) score -= 180;
+      const rect = input.getBoundingClientRect();
+      return { input, score, left: rect.left };
+    });
+    scored.sort((a, b) => b.score - a.score || b.left - a.left);
+    return scored[0]?.input || null;
+  }
+
+  function collectBazaarAddItems() {
+    const section = bazaarAddSection();
+    if (!section) return [];
+
+    const byCard = new Map();
+    section.querySelectorAll(itemIdentitySelector()).forEach((node) => {
+      if (node.closest("#market-edge-root,.me-inline-analysis")) return;
+      const itemId = itemIdFromElement(node);
+      if (!itemId) return;
+      const card = findBazaarAddRow(node, section);
+      if (!card || card.closest("#market-edge-root")) return;
+      const priceInput = findBazaarAddPriceInput(card);
+      if (!priceInput) return;
+      const text = card.innerText || "";
+      const quantity = parseQuantity(text);
+      const name = elementItemName(card, node);
+      const key = card;
+      const existing = byCard.get(key);
+      const score = Math.min(text.length, 1000);
+      if (!existing || score < existing.domTextLength) {
+        byCard.set(key, {
+          itemId,
+          name,
+          price: parseIntegerField(priceInput.value) || 0,
+          quantity,
+          card,
+          priceInput,
+          bazaarAdd: true,
+          inlineAnchor: findItemTextHost(card, name),
+          inlineMode: "inline",
+          domTextLength: score
+        });
+      }
+    });
+
+    return Array.from(byCard.values())
+      .sort((a, b) => viewportPriority(b) - viewportPriority(a))
+      .slice(0, clamp(settings.scanMaxVisibleItems, 1, 50));
+  }
+
+  function collectManagedBazaarItems() {
     const candidates = new Set();
     const selector = itemIdentitySelector();
     document.querySelectorAll(selector).forEach((node) => {
@@ -255,6 +374,19 @@
       }
     }
     return Array.from(byId.values()).sort((a, b) => viewportPriority(b) - viewportPriority(a)).slice(0, clamp(settings.scanMaxVisibleItems, 1, 50));
+  }
+
+  function collectOwnBazaarItems() {
+    const combined = [...collectManagedBazaarItems(), ...collectBazaarAddItems()];
+    const seenCards = new Set();
+    return combined
+      .filter((visible) => {
+        if (!visible?.card || seenCards.has(visible.card)) return false;
+        seenCards.add(visible.card);
+        return true;
+      })
+      .sort((a, b) => viewportPriority(b) - viewportPriority(a))
+      .slice(0, clamp(settings.scanMaxVisibleItems, 1, 50));
   }
 
   function collectAuctionItems() {

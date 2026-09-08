@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.2.1
+// @version      0.2.2
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -23,13 +23,12 @@
 (function marketEdgeBootstrap(global) {
   "use strict";
 
-  // v0.2.0: SPA-safe incremental scanning, concurrent API loading, persistent
-  // stale-while-revalidate snapshots, batched item metadata, viewport priority
-  // and compact surface-specific inline intelligence.
+  // v0.2.2: SPA/API hardening plus explicit, user-triggered Bazaar add-form
+  // price suggestions. Market Edge never submits a Bazaar form automatically.
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.2.1",
+    version: "0.2.2",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -1437,7 +1436,126 @@
     return { input: null, row: null, price: null };
   }
 
-  function collectOwnBazaarItems() {
+  function bazaarAddSection() {
+    if (detectSurface() !== "bazaar") return null;
+    const candidates = [];
+    document.querySelectorAll("h1,h2,h3,h4,h5,h6,div,span,strong").forEach((element) => {
+      if (!(element instanceof HTMLElement) || element.closest("#market-edge-root,.me-inline-analysis")) return;
+      const ownText = Array.from(element.childNodes)
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.textContent || "")
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (!/^Add items to your Bazaar$/i.test(ownText)) return;
+      const rect = element.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      candidates.push(element);
+    });
+
+    for (const heading of candidates) {
+      let node = heading;
+      let fallback = heading.parentElement;
+      for (let depth = 0; node && depth < 9 && node !== document.body; depth += 1, node = node.parentElement) {
+        if (!(node instanceof HTMLElement)) continue;
+        const text = (node.innerText || "").replace(/\s+/g, " ").trim();
+        if (text.length > 8000) continue;
+        if (node.querySelector("input")) fallback = node;
+        if (/You are adding\s+\d+\s+items?\s+across\s+\d+\s+categor/i.test(text) && /ADD TO BAZAAR/i.test(text) && node.querySelector("input")) {
+          return node;
+        }
+      }
+      if (fallback?.querySelector?.("input")) return fallback;
+    }
+    return null;
+  }
+
+  function findBazaarAddRow(start, section) {
+    if (!start || !section) return null;
+    let node = start instanceof HTMLElement ? start : start.parentElement;
+    let fallback = null;
+    for (let depth = 0; node && depth < 9 && node !== section.parentElement; depth += 1, node = node.parentElement) {
+      if (!(node instanceof HTMLElement) || !section.contains(node)) continue;
+      const rect = node.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0 || rect.height > 140) continue;
+      const text = (node.innerText || "").replace(/\s+/g, " ").trim();
+      if (!text || text.length > 300) continue;
+      const ids = directItemIdsWithin(node);
+      if (ids.size !== 1) continue;
+      const visibleInputs = Array.from(node.querySelectorAll("input")).filter((input) => {
+        const inputRect = input.getBoundingClientRect();
+        return inputRect.width > 0 && inputRect.height > 0 && input.type !== "hidden";
+      });
+      if (!visibleInputs.length) continue;
+      fallback = node;
+      if (/^(?:x|\u00d7)\s*[\d,]+\s+\S+/i.test(text) || /\bQty\b/i.test(text)) return node;
+      if (node.matches("li,tr,[role='row'],[class*='row'],[class*='item']")) return node;
+    }
+    return fallback;
+  }
+
+  function findBazaarAddPriceInput(card) {
+    if (!card) return null;
+    const candidates = Array.from(card.querySelectorAll("input")).filter((input) => {
+      const rect = input.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0 && !["hidden", "checkbox", "radio"].includes(input.type);
+    });
+    if (!candidates.length) return null;
+    if (candidates.length === 1) return candidates[0];
+
+    const scored = candidates.map((input) => {
+      const metadata = `${input.name || ""} ${input.id || ""} ${input.getAttribute("aria-label") || ""} ${input.getAttribute("placeholder") || ""} ${input.className || ""}`;
+      let score = 0;
+      if (/price|cost|unit/i.test(metadata)) score += 120;
+      if (/qty|quantity|amount|count/i.test(metadata)) score -= 180;
+      const rect = input.getBoundingClientRect();
+      return { input, score, left: rect.left };
+    });
+    scored.sort((a, b) => b.score - a.score || b.left - a.left);
+    return scored[0]?.input || null;
+  }
+
+  function collectBazaarAddItems() {
+    const section = bazaarAddSection();
+    if (!section) return [];
+
+    const byCard = new Map();
+    section.querySelectorAll(itemIdentitySelector()).forEach((node) => {
+      if (node.closest("#market-edge-root,.me-inline-analysis")) return;
+      const itemId = itemIdFromElement(node);
+      if (!itemId) return;
+      const card = findBazaarAddRow(node, section);
+      if (!card || card.closest("#market-edge-root")) return;
+      const priceInput = findBazaarAddPriceInput(card);
+      if (!priceInput) return;
+      const text = card.innerText || "";
+      const quantity = parseQuantity(text);
+      const name = elementItemName(card, node);
+      const key = card;
+      const existing = byCard.get(key);
+      const score = Math.min(text.length, 1000);
+      if (!existing || score < existing.domTextLength) {
+        byCard.set(key, {
+          itemId,
+          name,
+          price: parseIntegerField(priceInput.value) || 0,
+          quantity,
+          card,
+          priceInput,
+          bazaarAdd: true,
+          inlineAnchor: findItemTextHost(card, name),
+          inlineMode: "inline",
+          domTextLength: score
+        });
+      }
+    });
+
+    return Array.from(byCard.values())
+      .sort((a, b) => viewportPriority(b) - viewportPriority(a))
+      .slice(0, clamp(settings.scanMaxVisibleItems, 1, 50));
+  }
+
+  function collectManagedBazaarItems() {
     const candidates = new Set();
     const selector = itemIdentitySelector();
     document.querySelectorAll(selector).forEach((node) => {
@@ -1474,6 +1592,19 @@
       }
     }
     return Array.from(byId.values()).sort((a, b) => viewportPriority(b) - viewportPriority(a)).slice(0, clamp(settings.scanMaxVisibleItems, 1, 50));
+  }
+
+  function collectOwnBazaarItems() {
+    const combined = [...collectManagedBazaarItems(), ...collectBazaarAddItems()];
+    const seenCards = new Set();
+    return combined
+      .filter((visible) => {
+        if (!visible?.card || seenCards.has(visible.card)) return false;
+        seenCards.add(visible.card);
+        return true;
+      })
+      .sort((a, b) => viewportPriority(b) - viewportPriority(a))
+      .slice(0, clamp(settings.scanMaxVisibleItems, 1, 50));
   }
 
   function collectAuctionItems() {
@@ -1630,6 +1761,10 @@
     .me-inline-analysis.RED .me-inline-status { color:#e27a7a !important; }
     .me-inline-metric { white-space:nowrap !important; font-variant-numeric:tabular-nums !important; }
     .me-inline-analysis.me-loading { opacity:.65 !important; font-weight:400 !important; }
+    .me-inline-analysis.me-bazaar-add { pointer-events:auto !important; padding-right:3px !important; }
+    .me-bazaar-fill-btn { display:inline-flex !important; align-items:center !important; justify-content:center !important; min-width:25px !important; height:22px !important; margin:0 0 0 2px !important; padding:0 7px !important; border:1px solid rgba(255,255,255,.24) !important; border-radius:4px !important; background:rgba(255,255,255,.08) !important; color:#eee !important; font:800 13px/1 Arial,sans-serif !important; cursor:pointer !important; pointer-events:auto !important; touch-action:manipulation !important; }
+    .me-bazaar-fill-btn:hover, .me-bazaar-fill-btn:focus { background:rgba(255,255,255,.16) !important; border-color:rgba(255,255,255,.4) !important; outline:none !important; }
+    .me-inline-analysis.me-bazaar-add.me-applied { border-color:rgba(74,165,100,.65) !important; }
     .me-modal-backdrop { position:fixed; inset:0; z-index:999999; background:rgba(0,0,0,.64); display:flex; align-items:center; justify-content:center; padding:18px; }
     .me-modal { width:min(620px, 100%); max-height:90vh; overflow:auto; background:#242426; color:#eee; border:1px solid #555; border-radius:8px; box-shadow:0 14px 46px rgba(0,0,0,.55); padding:14px; }
     .me-modal h2 { margin:0 0 12px; font-size:17px; }
@@ -1887,6 +2022,53 @@
     return result?.renderMeta?.stale ? `<span class="me-inline-stale" title="Showing cached data while Market Edge refreshes">*</span>` : "";
   }
 
+  function setBazaarPriceInput(input, value) {
+    if (!(input instanceof HTMLInputElement)) return false;
+    const target = Math.max(1, asInt(value));
+    if (!target) return false;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    if (setter) setter.call(input, String(target));
+    else input.value = String(target);
+    input.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+    return parseIntegerField(input.value) === target;
+  }
+
+  function renderBazaarAddSuggestion(result) {
+    const visible = result.visible;
+    const target = result?.ownBazaar?.target;
+    const stale = staleMarker(result);
+    if (!Number.isFinite(target) || target <= 0) {
+      return renderInlineHtml(
+        visible,
+        `<span class="me-inline-brand">ME</span><span class="me-inline-secondary">price unavailable</span>${stale}`,
+        "GREY"
+      );
+    }
+
+    const targetText = formatMoney(target);
+    const block = renderInlineHtml(
+      visible,
+      `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="Suggested Bazaar selling price">${targetText}</span><button class="me-bazaar-fill-btn" type="button" aria-label="Set Bazaar price to ${escapeHtml(targetText)}" title="Fill Torn price field with ${escapeHtml(targetText)}">&gt;</button>${stale}`,
+      "GREY",
+      "me-bazaar-add"
+    );
+    const button = block?.querySelector?.(".me-bazaar-fill-btn");
+    if (!button || !visible.priceInput) return block;
+
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!visible.priceInput?.isConnected) return;
+      if (!setBazaarPriceInput(visible.priceInput, target)) return;
+      visible.price = target;
+      block.classList.add("me-applied");
+      button.title = `Price filled with ${targetText}`;
+      setTimeout(() => block?.classList?.remove("me-applied"), 700);
+    });
+    return block;
+  }
+
   function renderInlineResult(surface, result, ownBazaar) {
     const visible = result.visible;
     if (!visible || !visible.card?.isConnected) return null;
@@ -1894,6 +2076,10 @@
     if (result.error) return renderInlineError(visible, result.error);
     if (result.unsupported) {
       return renderInlineHtml(visible, `<span class="me-inline-brand">ME</span><span class="me-inline-secondary">unsupported equipment</span>`, "GREY");
+    }
+
+    if (surface === "bazaar" && ownBazaar && visible.bazaarAdd) {
+      return renderBazaarAddSuggestion(result);
     }
 
     if (result.inventory) {
