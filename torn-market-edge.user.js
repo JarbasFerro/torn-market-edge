@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.3.0
+// @version      0.3.1
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.3.0",
+    version: "0.3.1",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -967,6 +967,59 @@
     return { rows, groups, best, summary: snapshot?.equipmentSummary || summarizeEquipmentListings(listings) };
   }
 
+  // Sell-side pricing for a weapon/armor the player owns when its individual
+  // stats are unknown (Bazaar add form, inventory). Assumes a plain roll: the
+  // reference is the lowest of the plain listing median, Torn's daily average
+  // and ended Auction House sales of plain copies, and the sell price never
+  // exceeds the current plain Item Market floor because buyers compare there.
+  function equipmentSellPricing(snapshot, settings = {}, auctionSales = []) {
+    const summary = snapshot?.equipmentSummary;
+    if (!summary) return null;
+    const plainSales = (auctionSales || [])
+      .filter((sale) => sale?.details && !bonusSignature(sale.details) && !sale.details.rarity)
+      .filter((sale) => !snapshot?.itemId || !sale.itemId || sale.itemId === snapshot.itemId)
+      .map((sale) => sale.price)
+      .filter((price) => price > 0);
+    const salesMedian = median(plainSales);
+    const averagePrice = asInt(snapshot?.averagePrice, 0) || null;
+    const candidates = [
+      summary.plainMedian,
+      averagePrice ? Math.round(averagePrice * 1.05) : null,
+      Number.isFinite(salesMedian) ? Math.round(salesMedian * 1.05) : null
+    ].filter((value) => Number.isFinite(value) && value > 0);
+    const reference = candidates.length ? Math.min(...candidates) : (summary.plainFloor || null);
+    if (!reference) return null;
+
+    const haircut = clamp(Number.isFinite(settings.safetyHaircut) ? settings.safetyHaircut : DEFAULTS.safetyHaircut, 0, 0.10);
+    const bazaarDiscount = clamp(Number.isFinite(settings.bazaarDiscount) ? settings.bazaarDiscount : DEFAULTS.bazaarDiscount, 0, 0.5);
+    const undercut = Math.max(0, asInt(settings.itemMarketUndercut ?? DEFAULTS.itemMarketUndercut));
+    const conservative = Math.max(1, Math.floor(reference * (1 - haircut)));
+    const floorCapped = summary.plainFloor ? Math.min(conservative, summary.plainFloor) : conservative;
+    const bazaarSuggested = Math.max(1, Math.floor(floorCapped * (1 - bazaarDiscount)));
+    const itemMarketSuggested = Math.max(1, floorCapped - undercut);
+    const feeBps = itemMarketFeeBps(settings);
+    const itemMarketNet = grossToNet(itemMarketSuggested, feeBps);
+    const bazaarNet = settings.bazaarEnabled === false ? Number.NEGATIVE_INFINITY : bazaarSuggested;
+
+    return {
+      assumesPlain: true,
+      plainFloor: summary.plainFloor || null,
+      plainMedian: summary.plainMedian ? Math.round(summary.plainMedian) : null,
+      plainListings: summary.listingCount || 0,
+      bonusFloor: summary.bonusFloor || null,
+      averagePrice,
+      salesMedian: Number.isFinite(salesMedian) ? Math.round(salesMedian) : null,
+      salesCount: plainSales.length,
+      reference,
+      conservative,
+      bazaarSuggested,
+      itemMarketSuggested,
+      itemMarketNet,
+      feeBps,
+      bestRoute: bazaarNet >= itemMarketNet ? "Bazaar" : "Item Market"
+    };
+  }
+
   function museumSetFor(itemId) {
     const id = asInt(itemId, 0);
     if (!id) return null;
@@ -1183,6 +1236,7 @@
     summarizeEquipmentListings,
     equipmentGroupKey,
     analyzeEquipmentListings,
+    equipmentSellPricing,
     normalizeAuctionSales,
     museumSetFor,
     museumValuation,
@@ -3124,9 +3178,14 @@
     }
 
     const targetText = formatMoney(target);
+    const pricing = result?.ownBazaar?.equipmentPricing || null;
+    const equipmentHtml = pricing ? equipmentContextHtml(pricing) : "";
+    const priceTitle = pricing
+      ? `Suggested Bazaar price for a plain (no bonus) copy: ${formatMoney(target, true)}. ${equipmentContextTitle(pricing)}`
+      : "Suggested Bazaar selling price";
     const block = renderInlineHtml(
       visible,
-      `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="Suggested Bazaar selling price">${targetText}</span><button class="me-bazaar-fill-btn" type="button" aria-label="Fill Bazaar price and maximum quantity" title="Fill price with ${escapeHtml(targetText)} and quantity with max available">^</button>${stale}`,
+      `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="${escapeHtml(priceTitle)}">${targetText}</span><button class="me-bazaar-fill-btn" type="button" aria-label="Fill Bazaar price and maximum quantity" title="Fill price with ${escapeHtml(targetText)} and quantity with max available">^</button>${equipmentHtml}${stale}`,
       "GREY",
       "me-bazaar-add"
     );
@@ -3158,15 +3217,57 @@
     return block;
   }
 
+  function equipmentContextTitle(pricing) {
+    const parts = [
+      pricing.plainFloor ? `Cheapest plain Item Market listing: ${formatMoney(pricing.plainFloor, true)}` : "No plain Item Market listing found",
+      pricing.plainMedian ? `Plain listing median: ${formatMoney(pricing.plainMedian, true)}` : "",
+      pricing.averagePrice ? `Torn daily average: ${formatMoney(pricing.averagePrice, true)}` : "",
+      pricing.salesMedian ? `Ended Auction House sales (30d, plain): median ${formatMoney(pricing.salesMedian, true)} over ${pricing.salesCount}` : "No plain Auction House sales in 30 days",
+      pricing.bonusFloor ? `Bonus/rarity copies list from ${formatMoney(pricing.bonusFloor, true)}; if yours has a bonus, price it on the Item Market page instead` : "",
+      `Item Market alternative: ${formatMoney(pricing.itemMarketSuggested, true)} (net ${formatMoney(pricing.itemMarketNet, true)} after ${pricing.feeBps / 100}%)`
+    ].filter(Boolean);
+    return parts.join("\n");
+  }
+
+  function equipmentContextHtml(pricing) {
+    const bits = [];
+    if (pricing.plainFloor) bits.push(`<span class="me-inline-secondary" title="Cheapest plain Item Market listing">floor ${formatMoney(pricing.plainFloor)}</span>`);
+    if (pricing.salesMedian) bits.push(`<span class="me-inline-secondary" title="Median of ${pricing.salesCount} ended Auction House sales of plain copies in 30 days">AH ${formatMoney(pricing.salesMedian)}</span>`);
+    else if (pricing.averagePrice) bits.push(`<span class="me-inline-secondary" title="Torn daily average">avg ${formatMoney(pricing.averagePrice)}</span>`);
+    if (pricing.bonusFloor) bits.push(`<span class="me-inline-secondary" title="Cheapest listing with a bonus or rarity">bonus ${formatMoney(pricing.bonusFloor)}+</span>`);
+    return bits.map((bit) => `<span class="me-inline-sep">|</span>${bit}`).join("");
+  }
+
   function renderInlineResult(surface, result, ownBazaar) {
     const visible = result.visible;
     if (!visible || !visible.card?.isConnected) return null;
     const stale = staleMarker(result);
     if (result.error) return renderInlineError(visible, result.error);
     if (result.equipment) {
-      // Weapons/armor on list pages: show the cheapest plain and cheapest
-      // bonus/rarity listing so the player has a floor to compare against.
+      // Weapons/armor on list pages. Sell-side surfaces (own Bazaar,
+      // inventory) get a plain-copy sell price with context; buy-side
+      // surfaces get the plain and bonus floors to compare against.
       const summary = result.equipment;
+      const pricing = result.equipmentPricing || null;
+      if (surface === "bazaar" && ownBazaar && visible.bazaarAdd) {
+        return renderBazaarAddSuggestion({ ...result, ownBazaar: { target: pricing?.bazaarSuggested, equipmentPricing: pricing } });
+      }
+      if (surface === "bazaar" && ownBazaar && pricing) {
+        const delta = pricing.bazaarSuggested - visible.price;
+        const state = delta > 0 ? "YELLOW" : "GREY";
+        return renderInlineHtml(visible,
+          `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="${escapeHtml(equipmentContextTitle(pricing))}">Target ${formatMoney(pricing.bazaarSuggested)}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${delta >= 0 ? "+" : ""}${formatMoney(delta)}</span>${equipmentContextHtml(pricing)}<span class="me-inline-status">${delta > 0 ? "LOW" : "OK"}</span>${stale}`,
+          state
+        );
+      }
+      if (surface === "inventory" && pricing) {
+        const bzClass = pricing.bestRoute === "Bazaar" ? "me-inline-primary" : "me-inline-secondary";
+        const imClass = pricing.bestRoute === "Item Market" ? "me-inline-primary" : "me-inline-secondary";
+        return renderInlineHtml(visible,
+          `<span class="me-inline-brand">ME</span><span class="${bzClass}" title="${escapeHtml(equipmentContextTitle(pricing))}">BZ ${formatMoney(pricing.bazaarSuggested)}</span><span class="me-inline-sep">|</span><span class="${imClass}">IM ${formatMoney(pricing.itemMarketSuggested)}</span>${equipmentContextHtml(pricing)}${stale}`,
+          "GREY"
+        );
+      }
       const plain = summary.plainFloor ? formatMoney(summary.plainFloor) : "-";
       const bonus = summary.bonusFloor ? formatMoney(summary.bonusFloor) : null;
       const bonusHtml = bonus ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Cheapest listing with a bonus or rarity">bonus ${bonus}</span>` : "";
@@ -3514,10 +3615,12 @@
     return 200 - index;
   }
 
-  function resultForSurface(surface, visible, snapshot, historyStats, ownBazaar, renderMeta = {}, museum = null) {
+  function resultForSurface(surface, visible, snapshot, historyStats, ownBazaar, renderMeta = {}, museum = null, auctionSales = []) {
     if (!snapshot?.supportedCommodity) {
       if (settings.equipmentEnabled !== false && snapshot?.equipment && snapshot.equipmentSummary) {
-        return { visible, snapshot, equipment: snapshot.equipmentSummary, renderMeta };
+        const sellSide = surface === "inventory" || (surface === "bazaar" && ownBazaar);
+        const equipmentPricing = sellSide ? equipmentSellPricing(snapshot, settings, auctionSales) : null;
+        return { visible, snapshot, equipment: snapshot.equipmentSummary, equipmentPricing, renderMeta };
       }
       return { visible, snapshot, unsupported: true, renderMeta };
     }
@@ -3699,10 +3802,23 @@
         });
 
         if (!visible.card?.isConnected || detectSurface() !== surface) return;
+        // Sell-side equipment rows get ended Auction House sales as real
+        // transaction evidence. One request per item type, cached ten minutes.
+        let auctionSales = [];
+        const sellSideEquipment = bundle.snapshot?.equipment && settings.equipmentEnabled !== false &&
+          (surface === "inventory" || (surface === "bazaar" && ownBazaar));
+        if (sellSideEquipment) {
+          renderInlineResult(surface, resultForSurface(surface, visible, bundle.snapshot, bundle.historyStats, ownBazaar, {
+            stale: true,
+            cacheAgeSeconds: bundle.cacheState?.ageSeconds
+          }, museum), ownBazaar);
+          auctionSales = await loadAuctionSales(visible.itemId, { priority: priority - 200 });
+          if (!visible.card?.isConnected || detectSurface() !== surface) return;
+        }
         const result = resultForSurface(surface, visible, bundle.snapshot, bundle.historyStats, ownBazaar, {
           stale: false,
           cacheAgeSeconds: bundle.cacheState?.ageSeconds
-        }, museum);
+        }, museum, auctionSales);
         renderInlineResult(surface, result, ownBazaar);
       } catch (error) {
         if (error?.marketEdgeCanceled) return;

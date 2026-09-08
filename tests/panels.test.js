@@ -228,3 +228,29 @@ run("Inventory scan annotates commodity, plushie and unsupported rows end to end
   assert.ok(env.requests.some((url) => url.includes("/market/258/itemmarket")));
   assert.equal(env.requests.filter((url) => url.includes("pointsmarket")).length, 1);
 });
+
+run("Bazaar add form prices a weapon as a plain copy with a fill button and AH evidence", async (t) => {
+  const env = boot(fixture("bazaar-add-weapons.html"), "https://www.torn.com/bazaar.php#/add");
+  t.after(env.close);
+  await env.ME.scanVisibleSurface("bazaar", { force: true });
+  const blocks = Array.from(env.document.querySelectorAll(".me-inline-analysis"));
+  const rifle = blocks.find((block) => block.dataset.meItemId === "1");
+  const xanax = blocks.find((block) => block.dataset.meItemId === "206");
+  assert.ok(rifle && xanax, "both rows are annotated");
+  assert.match(rifle.textContent, /floor \$800k/);
+  assert.match(rifle.textContent, /AH \$950k/);
+  assert.match(rifle.textContent, /bonus \$9m\+/);
+  const button = rifle.querySelector(".me-bazaar-fill-btn");
+  assert.ok(button, "weapon rows get the ^ fill control");
+  assert.equal(button.textContent, "^");
+  assert.ok(env.requests.some((url) => url.includes("/market/1/auctionhouse")), "AH sales are fetched for sell-side equipment");
+  // Suggested plain price: reference min(plain median 1.02m, avg*1.05 1.05m, AH*1.05 997.5k) = 997.5k,
+  // haircut 1% -> 987,525, capped by the 800k floor, bazaar discount 1% -> 792,000.
+  assert.match(rifle.textContent, /\$792k/);
+  button.click();
+  const priceInput = env.document.querySelector("li:first-child input.input-money");
+  assert.equal(priceInput.value, "792000");
+  const checkbox = env.document.querySelector("li:first-child input[type='checkbox']");
+  assert.equal(checkbox.checked, true, "single-item quantity checkbox is selected");
+  assert.ok(xanax.querySelector(".me-bazaar-fill-btn"), "commodity rows keep their fill control");
+});

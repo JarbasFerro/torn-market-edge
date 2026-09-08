@@ -382,3 +382,38 @@ test("v0.3.0 guards remain present in the assembled userscript", () => {
   assert.doesNotMatch(source, /location\.reload/, "the script must never reload pages");
   assert.doesNotMatch(source, /@connect[ \t]+(?!api\.torn\.com)\S/, "only api.torn.com may be connected");
 });
+
+// ---------------------------------------------------------------------------
+// Equipment sell-side pricing (Bazaar add form, inventory)
+// ---------------------------------------------------------------------------
+
+test("equipment sell pricing assumes a plain copy and never exceeds the plain floor", () => {
+  const snap = {
+    itemId: 1,
+    averagePrice: 10_200,
+    equipment: true,
+    equipmentSummary: { listingCount: 20, plainFloor: 9_700, plainMedian: 10_500, bonusFloor: 250_000, groups: [] },
+  };
+  const now = Math.floor(Date.now() / 1000);
+  const sales = ME.normalizeAuctionSales({ auctionhouse: [
+    { id: 1, seller: { id: 1, name: "a" }, buyer: { id: 2, name: "b" }, timestamp: now - 100, price: 9_900, bids: 1, item: { id: 1, uid: 1, name: "AK", type: "Weapon", sub_type: "Rifle", stats: { quality: 50 }, bonuses: [], rarity: null } },
+    { id: 2, seller: { id: 1, name: "a" }, buyer: { id: 2, name: "b" }, timestamp: now - 200, price: 10_100, bids: 1, item: { id: 1, uid: 2, name: "AK", type: "Weapon", sub_type: "Rifle", stats: { quality: 55 }, bonuses: [], rarity: null } },
+    { id: 3, seller: { id: 1, name: "a" }, buyer: { id: 2, name: "b" }, timestamp: now - 300, price: 900_000, bids: 5, item: { id: 1, uid: 3, name: "AK", type: "Weapon", sub_type: "Rifle", stats: { quality: 90 }, bonuses: [{ id: 1, title: "Bleed", description: "", value: 10 }], rarity: "orange" } },
+  ] });
+  const pricing = ME.equipmentSellPricing(snap, settings({ safetyHaircut: 0.01, bazaarDiscount: 0.01, itemMarketUndercut: 1 }), sales);
+  assert.equal(pricing.assumesPlain, true);
+  assert.equal(pricing.salesCount, 2, "bonus sales are excluded from the plain reference");
+  assert.equal(pricing.salesMedian, 10_000);
+  assert.equal(pricing.reference, 10_500, "reference is the lowest of plain median, average*1.05 and AH*1.05");
+  assert.equal(pricing.conservative, 10_395);
+  assert.ok(pricing.bazaarSuggested <= 9_700, "never above the plain Item Market floor");
+  assert.equal(pricing.bazaarSuggested, 9_603);
+  assert.equal(pricing.itemMarketSuggested, 9_699);
+  assert.equal(pricing.itemMarketNet, Math.floor(9_699 * 0.95));
+  assert.equal(pricing.bestRoute, "Bazaar");
+  assert.equal(pricing.bonusFloor, 250_000);
+
+  const noFloor = ME.equipmentSellPricing({ itemId: 1, averagePrice: 0, equipmentSummary: { listingCount: 0, plainFloor: null, plainMedian: null, bonusFloor: 5_000 } }, settings(), []);
+  assert.equal(noFloor, null, "without any plain evidence there is no sell price");
+  assert.equal(ME.equipmentSellPricing({ itemId: 1 }, settings(), []), null);
+});

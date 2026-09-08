@@ -164,6 +164,59 @@
     return { rows, groups, best, summary: snapshot?.equipmentSummary || summarizeEquipmentListings(listings) };
   }
 
+  // Sell-side pricing for a weapon/armor the player owns when its individual
+  // stats are unknown (Bazaar add form, inventory). Assumes a plain roll: the
+  // reference is the lowest of the plain listing median, Torn's daily average
+  // and ended Auction House sales of plain copies, and the sell price never
+  // exceeds the current plain Item Market floor because buyers compare there.
+  function equipmentSellPricing(snapshot, settings = {}, auctionSales = []) {
+    const summary = snapshot?.equipmentSummary;
+    if (!summary) return null;
+    const plainSales = (auctionSales || [])
+      .filter((sale) => sale?.details && !bonusSignature(sale.details) && !sale.details.rarity)
+      .filter((sale) => !snapshot?.itemId || !sale.itemId || sale.itemId === snapshot.itemId)
+      .map((sale) => sale.price)
+      .filter((price) => price > 0);
+    const salesMedian = median(plainSales);
+    const averagePrice = asInt(snapshot?.averagePrice, 0) || null;
+    const candidates = [
+      summary.plainMedian,
+      averagePrice ? Math.round(averagePrice * 1.05) : null,
+      Number.isFinite(salesMedian) ? Math.round(salesMedian * 1.05) : null
+    ].filter((value) => Number.isFinite(value) && value > 0);
+    const reference = candidates.length ? Math.min(...candidates) : (summary.plainFloor || null);
+    if (!reference) return null;
+
+    const haircut = clamp(Number.isFinite(settings.safetyHaircut) ? settings.safetyHaircut : DEFAULTS.safetyHaircut, 0, 0.10);
+    const bazaarDiscount = clamp(Number.isFinite(settings.bazaarDiscount) ? settings.bazaarDiscount : DEFAULTS.bazaarDiscount, 0, 0.5);
+    const undercut = Math.max(0, asInt(settings.itemMarketUndercut ?? DEFAULTS.itemMarketUndercut));
+    const conservative = Math.max(1, Math.floor(reference * (1 - haircut)));
+    const floorCapped = summary.plainFloor ? Math.min(conservative, summary.plainFloor) : conservative;
+    const bazaarSuggested = Math.max(1, Math.floor(floorCapped * (1 - bazaarDiscount)));
+    const itemMarketSuggested = Math.max(1, floorCapped - undercut);
+    const feeBps = itemMarketFeeBps(settings);
+    const itemMarketNet = grossToNet(itemMarketSuggested, feeBps);
+    const bazaarNet = settings.bazaarEnabled === false ? Number.NEGATIVE_INFINITY : bazaarSuggested;
+
+    return {
+      assumesPlain: true,
+      plainFloor: summary.plainFloor || null,
+      plainMedian: summary.plainMedian ? Math.round(summary.plainMedian) : null,
+      plainListings: summary.listingCount || 0,
+      bonusFloor: summary.bonusFloor || null,
+      averagePrice,
+      salesMedian: Number.isFinite(salesMedian) ? Math.round(salesMedian) : null,
+      salesCount: plainSales.length,
+      reference,
+      conservative,
+      bazaarSuggested,
+      itemMarketSuggested,
+      itemMarketNet,
+      feeBps,
+      bestRoute: bazaarNet >= itemMarketNet ? "Bazaar" : "Item Market"
+    };
+  }
+
   function museumSetFor(itemId) {
     const id = asInt(itemId, 0);
     if (!id) return null;
@@ -380,6 +433,7 @@
     summarizeEquipmentListings,
     equipmentGroupKey,
     analyzeEquipmentListings,
+    equipmentSellPricing,
     normalizeAuctionSales,
     museumSetFor,
     museumValuation,

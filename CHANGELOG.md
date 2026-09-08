@@ -6,6 +6,14 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-08
+
+### Added
+
+- **Weapon/armor sell pricing on the Bazaar add form and inventory.** Equipment rows now get a suggested Bazaar price for a plain (no bonus) copy, the `^` fill control that sets price and selects the item, and context: plain Item Market floor, ended Auction House sales median (30 days, plain copies) or Torn daily average, and the cheapest bonus/rarity listing so a bonus roll is not sold at plain prices. The suggestion never exceeds the current plain floor.
+- Own-Bazaar weapon listings show the same target and a LOW/OK delta against the current price.
+- Ended Auction House sales are fetched for sell-side equipment rows only, one request per item type, cached ten minutes.
+
 ## [0.3.0] - 2026-09-08
 
 ### Added
