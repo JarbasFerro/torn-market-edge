@@ -1,0 +1,43 @@
+name: Apply v0.2.5 Bazaar visible controls
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/apply-v025-bazaar-visible-controls.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Apply v0.2.5 patch
+        run: python3 .github/apply_v025_bazaar_visible_controls.py
+
+      - name: Build userscript
+        run: cat src/parts/*.part.js > torn-market-edge.user.js
+
+      - name: Validate JavaScript
+        run: node --check torn-market-edge.user.js
+
+      - name: Run regression tests
+        run: node --test tests/*.test.js
+
+      - name: Remove one-time patch files
+        run: |
+          rm .github/apply_v025_bazaar_visible_controls.py
+          rm .github/workflows/apply-v025-bazaar-visible-controls.yml
+
+      - name: Commit v0.2.5 to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: show Bazaar add controls and max Qty v0.2.5"
+          git push
