@@ -6,6 +6,8 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-08
+
 ### Fixed
 
 - Detect same-item SPA row remounts and re-annotate without requiring a refresh.

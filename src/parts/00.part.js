@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.2.0
+// @version      0.2.1
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -29,7 +29,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.2.0",
+    version: "0.2.1",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
