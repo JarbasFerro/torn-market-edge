@@ -160,23 +160,33 @@
 
   // Expanded item-details panels on sell-side surfaces: price the exact copy
   // against the deep order book (limit 100) and ended Auction House sales.
-  function removeDetailCards(panel) {
-    let card = findDetailCard(panel);
+  function removeDetailCards(detailOrKey) {
+    let card = findDetailCard(detailOrKey);
     while (card) {
       card.remove();
-      card = findDetailCard(panel);
+      card = findDetailCard(detailOrKey);
     }
   }
 
   // Torn keeps the details container when a panel collapses; the card must
   // not outlive the stats block it was attached to.
-  function cleanupOrphanedDetailCards() {
-    document.querySelectorAll(".me-equip-card").forEach((card) => {
-      const previous = card.previousElementSibling;
-      const anchored = previous && !previous.classList.contains("me-equip-card") && QUALITY_PATTERN.test(previous.textContent || "");
-      if (!anchored) card.remove();
+  function cleanupOrphanedDetailCards(surface) {
+    const cards = document.querySelectorAll(".me-equip-card");
+    if (!cards.length) return;
+    let openKeys = null;
+    try {
+      openKeys = new Set(collectExpandedEquipmentDetails(surface, { resolveRows: false }).map((detail) => detail.key));
+    } catch {
+      openKeys = null;
+    }
+    cards.forEach((card) => {
+      const panel = cardPanels.get(card);
+      const panelAlive = panel?.isConnected && QUALITY_PATTERN.test(panel.textContent || "");
+      const keyOpen = openKeys ? openKeys.has(card.dataset.meDetailKey) : panelAlive;
+      if (!panelAlive && !keyOpen) card.remove();
     });
   }
+
 
   let lastDetailsOutcome = "";
   const detailsInFlight = new Set();
@@ -210,7 +220,7 @@
   }
 
   async function scanExpandedEquipment(surface, ownBazaar) {
-    cleanupOrphanedDetailCards();
+    cleanupOrphanedDetailCards(surface);
     if (settings.equipmentEnabled === false) return;
     const sellSide = surface === "inventory" || (surface === "bazaar" && ownBazaar);
     if (!sellSide || !Store.apiKey()) return;
@@ -224,8 +234,8 @@
     }
     details = details.filter((detail) => {
       if (detailsInFlight.has(detail.key)) return false;
-      const card = findDetailCard(detail.panel);
-      return !(card && card.dataset.meDetailKey === detail.key && card.dataset.meComplete === "1");
+      const card = findDetailCard(detail);
+      return !(card && card.dataset.meComplete === "1");
     });
     if (!details.length) return;
 

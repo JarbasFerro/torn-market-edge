@@ -6,6 +6,13 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.3.12] - 2026-09-08
+
+### Fixed
+
+- **The pricing card was rendered but invisible on the inventory page.** It was inserted inside Torn's React stats wrapper, whose grid layout hides an extra child. The card is now appended to the nearest plain block container around the stats, tracked by the copy's key instead of its DOM position, and cleaned up when that copy's details are no longer open.
+- Cards whose price rests on no comparable listings and fewer than three Auction House sales are flagged as thin evidence.
+
 ## [0.3.11] - 2026-09-08
 
 ### Fixed

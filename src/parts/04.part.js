@@ -568,9 +568,30 @@
 
   const BAZAAR_ADD_ROW_SELECTOR = "ul.items-cont li.clearfix, div[class*='itemsContainner___'] div[class*='item___'], div[class*='rowItems___'] div[class*='item___']";
 
-  function findDetailCard(panel) {
-    const node = panel?.nextElementSibling;
-    return node?.classList?.contains("me-equip-card") ? node : null;
+  // Pricing cards are tracked by the copy key rather than by DOM position:
+  // Torn's React stats wrapper may re-render, and the card lives outside it.
+  function findDetailCard(detailOrKey) {
+    const key = typeof detailOrKey === "string" ? detailOrKey : detailOrKey?.key;
+    if (!key) return null;
+    return Array.from(document.querySelectorAll(".me-equip-card")).find((card) => card.dataset.meDetailKey === key) || null;
+  }
+
+  // Where to put the card: the nearest ancestor of the stats block that is a
+  // plain block container (not grid/flex/inline), so the wrapper's layout
+  // cannot hide it. Falls back to the panel's parent.
+  function detailCardHost(panel) {
+    let fallback = panel?.parentElement || null;
+    for (let node = panel?.parentElement, depth = 0; node && node !== document.body && depth < 5; depth += 1, node = node.parentElement) {
+      let display = "";
+      try {
+        display = String(window.getComputedStyle(node).display || "");
+      } catch {
+        display = "";
+      }
+      if (/^(block|list-item|flow-root|table-cell|table)$/.test(display)) return node;
+      if (!display) fallback = node;
+    }
+    return fallback;
   }
 
   // Find Torn's item-stats blocks by walking text nodes for "Quality:" and

@@ -277,7 +277,8 @@ run("Expanded weapon details panel prices the exact copy and fills the correct r
   await env.ME.scanVisibleSurface("bazaar", { force: true });
   const card = env.document.querySelector(".me-equip-card");
   assert.ok(card, "details panel receives a pricing card");
-  assert.equal(card.previousElementSibling.className, "details", "card sits right below Torn's stats block");
+  assert.equal(card.parentElement.className, "item-info-wrap", "card is appended to the block wrapper right after Torn's stats");
+  assert.equal(card.previousElementSibling.className, "details");
   assert.equal(card.dataset.meComplete, "1");
   assert.match(card.textContent, /Q 51\.0%/);
   assert.match(card.textContent, /plain \(no bonus\)/);
@@ -424,7 +425,8 @@ run("Details pricing survives a list rescan and a re-rendered panel while its re
   assert.ok(detailRequests.every((meta) => meta.queueGroup === "details"), "details requests never share the cancellable list queue group");
   const cards = env.document.querySelectorAll(".me-equip-card");
   assert.equal(cards.length, 1, "exactly one card after the panel was replaced");
-  assert.equal(cards[0].previousElementSibling, fresh, "card is attached to the new panel");
+  assert.equal(cards[0].parentElement.className, "info-wrap", "card lives outside the grid wrapper");
+  assert.ok(cards[0].compareDocumentPosition(fresh) & 2, "card comes after the new panel");
   assert.match(cards[0].textContent, /\$792k/);
 });
 
@@ -456,6 +458,21 @@ run("Details pricing retries when the panel is swapped with slightly different t
   await new Promise((resolve) => setTimeout(resolve, 150));
   const card = env.document.querySelector(".me-equip-card");
   assert.ok(card, "the swapped panel still receives a card");
-  assert.equal(card.previousElementSibling, fresh);
+  assert.equal(card.parentElement.className, "info-wrap");
   assert.match(card.textContent, /\$792k/);
+});
+
+run("Pricing card is placed outside a grid stats wrapper so the layout cannot hide it", async (t) => {
+  const env = boot(fixture("inventory-weapon-details.html"), "https://www.torn.com/item.php");
+  t.after(env.close);
+  await env.ME.scanVisibleSurface("inventory", { force: true });
+  const card = env.document.querySelector(".me-equip-card");
+  assert.ok(card);
+  assert.equal(env.window.getComputedStyle(env.document.querySelector(".previewAndPropertiesWrapper")).display, "grid");
+  assert.ok(!card.closest(".previewAndPropertiesWrapper"), "card is not inside the grid wrapper");
+  assert.equal(card.parentElement.className, "info-wrap");
+  // Collapsing (Torn removes the info block) removes the card.
+  env.document.querySelector("li.item-info-wrap").remove();
+  await env.ME.scanVisibleSurface("inventory", { force: true });
+  assert.equal(env.document.querySelectorAll(".me-equip-card").length, 0);
 });

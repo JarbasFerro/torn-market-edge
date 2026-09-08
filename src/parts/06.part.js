@@ -115,10 +115,12 @@
     return { priceFilled, quantityFilled };
   }
 
+  const cardPanels = new WeakMap();
+
   function renderEquipmentDetailCard(detail, pricing, { canFill = false, loading = false, error = "" } = {}) {
     const panel = detail?.panel;
     if (!panel?.isConnected) return null;
-    removeDetailCards(panel);
+    removeDetailCards(detail);
     const card = document.createElement("div");
     card.className = "me-equip-card";
     card.dataset.meDetailKey = detail.key;
@@ -136,13 +138,14 @@
 
     if (loading) {
       card.innerHTML = `<div class="me-equip-head"><span class="me-equip-brand">ME</span><span class="me-equip-alt">${escapeHtml(copyLabel)}</span><span class="me-equip-alt">pricing this copy...</span></div>`;
-      panel.insertAdjacentElement("afterend", card);
+      detailCardHost(panel).appendChild(card);
+      cardPanels.set(card, panel);
       return card;
     }
 
     if (error) {
       card.innerHTML = `<div class="me-equip-head"><span class="me-equip-brand">ME</span><span class="me-equip-alt">${escapeHtml(copyLabel)}</span></div><div class="me-equip-note me-equip-warn">${escapeHtml(error)} Collapse and reopen the details to retry.</div>`;
-      panel.insertAdjacentElement("afterend", card);
+      detailCardHost(panel).appendChild(card);
       return card;
     }
 
@@ -150,7 +153,8 @@
       const groupCount = pricing?.group?.count || 0;
       card.innerHTML = `<div class="me-equip-head"><span class="me-equip-brand">ME</span><span class="me-equip-alt">${escapeHtml(copyLabel)}</span></div>
         <div class="me-equip-note">No comparable ${escapeHtml(pricing?.groupLabel || "listings")} ${groupCount ? "" : "are on the Item Market and no recent Auction House sales were found"}. Price this copy manually or check the Item Market page for the closest rolls.</div>`;
-      panel.insertAdjacentElement("afterend", card);
+      detailCardHost(panel).appendChild(card);
+      cardPanels.set(card, panel);
       return card;
     }
 
@@ -165,9 +169,12 @@
       pricing.plain && pricing.bonusFloor ? ["Bonus copies", `from ${formatMoney(pricing.bonusFloor)}`] : null
     ].filter(Boolean);
 
-    const warn = pricing.cheaperAtSuggested > 0
-      ? `<div class="me-equip-note me-equip-warn">${pricing.cheaperAtSuggested} ${escapeHtml(pricing.groupLabel)} listing(s) are cheaper than this price; they sell first.</div>`
+    const thin = pricing.comparables.count === 0 && pricing.sales.count < 3
+      ? `<div class="me-equip-note me-equip-warn">Thin evidence: no ${escapeHtml(pricing.groupLabel)} listings and only ${pricing.sales.count} Auction House sale(s) in 30 days. Treat this as a rough guide.</div>`
       : "";
+    const warn = thin + (pricing.cheaperAtSuggested > 0
+      ? `<div class="me-equip-note me-equip-warn">${pricing.cheaperAtSuggested} ${escapeHtml(pricing.groupLabel)} listing(s) are cheaper than this price; they sell first.</div>`
+      : "");
     const fill = canFill
       ? `<button class="me-bazaar-fill-btn" type="button" aria-label="Fill Bazaar price and select this item" title="Fill price with ${escapeHtml(formatMoney(pricing.bazaarSuggested, true))} and select this item">^</button>`
       : "";
@@ -183,7 +190,8 @@
       <div class="me-equip-facts">${facts.map(([label, value]) => `<span class="label">${escapeHtml(label)}</span><span class="value">${escapeHtml(value)}</span>`).join("")}</div>
       ${warn}
       <div class="me-equip-note">Reference ${formatMoney(pricing.reference)} from ${escapeHtml(pricing.referenceSource)}, minus safety haircut, never above the cheapest comparable. Estimates, not guarantees; ADD TO BAZAAR stays manual.</div>`;
-    panel.insertAdjacentElement("afterend", card);
+    detailCardHost(panel).appendChild(card);
+    cardPanels.set(card, panel);
 
     const button = card.querySelector(".me-bazaar-fill-btn");
     if (button && detail.row) {
