@@ -6,6 +6,12 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.3.14] - 2026-09-08
+
+### Fixed
+
+- **Inventory tabs with many weapons froze for seconds (Torn PDA).** Three passes were quadratic or layout-bound on long lists: the "Your Items" heading finder serialised the text of every container on the page on every pass (now own-text only and memoized), the row resolver read layout text for up to nine ancestors per row including the whole list (now a direct fast path for Torn's `li[data-item]` rows plus a layout-free pre-check), and the name-host search read layout text per element (now plain text). Fewer candidate rows are inspected per scan.
+
 ## [0.3.13] - 2026-09-08
 
 ### Fixed

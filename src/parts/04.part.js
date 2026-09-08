@@ -4,10 +4,19 @@
 
   function findInventoryRow(start) {
     if (!start) return null;
+    // Fast path: Torn's inventory rows are list items carrying data-item.
+    // No text or layout reads beyond one bounding box.
+    const direct = start.closest?.("li[data-item]");
+    if (direct && !direct.classList.contains("show-item-info") && directItemIdsWithin(direct).size === 1) {
+      const rect = direct.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) return direct;
+    }
     let node = start instanceof HTMLElement ? start : start.parentElement;
     let fallback = null;
     for (let depth = 0; node && depth < 9 && node !== document.body; depth += 1, node = node.parentElement) {
       if (!(node instanceof HTMLElement)) continue;
+      // Layout-free pre-check: a row never has hundreds of characters.
+      if ((node.textContent || "").length > 600) continue;
       const rect = node.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) continue;
       const text = (node.innerText || "").replace(/\s+/g, " ").trim();
@@ -30,7 +39,7 @@
       if (!(element instanceof HTMLElement)) return;
       if (element.closest(".me-inline-analysis")) return;
       if (element.querySelector("img,[style*='/items/']")) return;
-      const text = (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim();
+      const text = (element.textContent || "").replace(/\s+/g, " ").trim();
       if (!text || text.length > 120) return;
       if (/^(?:RRP|Remove|Price per unit)\s*:/i.test(text)) return;
       const lower = text.toLowerCase();
@@ -135,7 +144,7 @@
         return { node, priority: rect ? viewportPriority({ card: node }) : 0 };
       })
       .sort((a, b) => b.priority - a.priority)
-      .slice(0, limit * 3)
+      .slice(0, limit * 2)
       .map((entry) => entry.node);
     for (const node of ordered) {
       const itemId = itemIdFromElement(node);

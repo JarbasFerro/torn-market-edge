@@ -312,6 +312,10 @@
     let node = start;
     let fallback = start;
     for (let depth = 0; node && depth < 7 && node !== document.body; depth += 1, node = node.parentElement) {
+      // textContent is layout-free; only elements that could plausibly be a
+      // card pay for innerText.
+      const rawLength = (node.textContent || "").length;
+      if (rawLength === 0 || rawLength > 2000) continue;
       const text = (node.innerText || "").trim();
       if (text.length > 0 && text.length < 900) fallback = node;
       if (text.length > 0 && text.length < 650 && (!requireMoney || /\$\s*[\d,.]+/.test(text))) return node;
@@ -332,8 +336,20 @@
     return candidates[0] || `Item ${itemIdFromElement(anchor || card) || ""}`.trim();
   }
 
+  let inventoryMarkerCache = { at: 0, node: null, href: "" };
+
   function inventoryListMarker() {
     if (detectSurface() !== "inventory") return null;
+    const now = Date.now();
+    if (inventoryMarkerCache.href === location.href && now - inventoryMarkerCache.at < 400 && (inventoryMarkerCache.node === null || inventoryMarkerCache.node.isConnected)) {
+      return inventoryMarkerCache.node;
+    }
+    const node = inventoryListMarkerUncached();
+    inventoryMarkerCache = { at: now, node, href: location.href };
+    return node;
+  }
+
+  function inventoryListMarkerUncached() {
 
     // On Torn's Items page, the equipped paper-doll/loadout appears before the
     // actual inventory list. Prefer the visible "Your Items - <category>"
@@ -350,8 +366,12 @@
         .join(" ")
         .replace(/\s+/g, " ")
         .trim();
-      const text = ownText || (element.textContent || "").replace(/\s+/g, " ").trim();
-      if (!/^Your Items(?:\s*[-:]\s*.*)?$/i.test(text)) return;
+      // Only an element's own text can be the heading. Reading textContent of
+      // every container would serialise the whole page once per element.
+      const text = ownText || (element.childElementCount <= 2 && (element.textContent || "").length <= 100
+        ? (element.textContent || "").replace(/\s+/g, " ").trim()
+        : "");
+      if (!text || !/^Your Items(?:\s*[-:]\s*.*)?$/i.test(text)) return;
       if (text.length > 100) return;
       const rect = element.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return;

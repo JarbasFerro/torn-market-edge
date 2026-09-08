@@ -799,6 +799,8 @@
       scanVisibleSurface,
       scanExpandedEquipment,
       collectExpandedEquipmentDetails,
+      listSurfaceSignature,
+      inventoryListMarker,
       watchTick,
       loadMuseumContext,
       showSettings,

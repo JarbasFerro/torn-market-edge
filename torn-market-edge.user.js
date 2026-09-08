@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.3.13
+// @version      0.3.14
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.3.13",
+    version: "0.3.14",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -2188,6 +2188,10 @@
     let node = start;
     let fallback = start;
     for (let depth = 0; node && depth < 7 && node !== document.body; depth += 1, node = node.parentElement) {
+      // textContent is layout-free; only elements that could plausibly be a
+      // card pay for innerText.
+      const rawLength = (node.textContent || "").length;
+      if (rawLength === 0 || rawLength > 2000) continue;
       const text = (node.innerText || "").trim();
       if (text.length > 0 && text.length < 900) fallback = node;
       if (text.length > 0 && text.length < 650 && (!requireMoney || /\$\s*[\d,.]+/.test(text))) return node;
@@ -2208,8 +2212,20 @@
     return candidates[0] || `Item ${itemIdFromElement(anchor || card) || ""}`.trim();
   }
 
+  let inventoryMarkerCache = { at: 0, node: null, href: "" };
+
   function inventoryListMarker() {
     if (detectSurface() !== "inventory") return null;
+    const now = Date.now();
+    if (inventoryMarkerCache.href === location.href && now - inventoryMarkerCache.at < 400 && (inventoryMarkerCache.node === null || inventoryMarkerCache.node.isConnected)) {
+      return inventoryMarkerCache.node;
+    }
+    const node = inventoryListMarkerUncached();
+    inventoryMarkerCache = { at: now, node, href: location.href };
+    return node;
+  }
+
+  function inventoryListMarkerUncached() {
 
     // On Torn's Items page, the equipped paper-doll/loadout appears before the
     // actual inventory list. Prefer the visible "Your Items - <category>"
@@ -2226,8 +2242,12 @@
         .join(" ")
         .replace(/\s+/g, " ")
         .trim();
-      const text = ownText || (element.textContent || "").replace(/\s+/g, " ").trim();
-      if (!/^Your Items(?:\s*[-:]\s*.*)?$/i.test(text)) return;
+      // Only an element's own text can be the heading. Reading textContent of
+      // every container would serialise the whole page once per element.
+      const text = ownText || (element.childElementCount <= 2 && (element.textContent || "").length <= 100
+        ? (element.textContent || "").replace(/\s+/g, " ").trim()
+        : "");
+      if (!text || !/^Your Items(?:\s*[-:]\s*.*)?$/i.test(text)) return;
       if (text.length > 100) return;
       const rect = element.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return;
@@ -2291,10 +2311,19 @@
 
   function findInventoryRow(start) {
     if (!start) return null;
+    // Fast path: Torn's inventory rows are list items carrying data-item.
+    // No text or layout reads beyond one bounding box.
+    const direct = start.closest?.("li[data-item]");
+    if (direct && !direct.classList.contains("show-item-info") && directItemIdsWithin(direct).size === 1) {
+      const rect = direct.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) return direct;
+    }
     let node = start instanceof HTMLElement ? start : start.parentElement;
     let fallback = null;
     for (let depth = 0; node && depth < 9 && node !== document.body; depth += 1, node = node.parentElement) {
       if (!(node instanceof HTMLElement)) continue;
+      // Layout-free pre-check: a row never has hundreds of characters.
+      if ((node.textContent || "").length > 600) continue;
       const rect = node.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) continue;
       const text = (node.innerText || "").replace(/\s+/g, " ").trim();
@@ -2317,7 +2346,7 @@
       if (!(element instanceof HTMLElement)) return;
       if (element.closest(".me-inline-analysis")) return;
       if (element.querySelector("img,[style*='/items/']")) return;
-      const text = (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim();
+      const text = (element.textContent || "").replace(/\s+/g, " ").trim();
       if (!text || text.length > 120) return;
       if (/^(?:RRP|Remove|Price per unit)\s*:/i.test(text)) return;
       const lower = text.toLowerCase();
@@ -2422,7 +2451,7 @@
         return { node, priority: rect ? viewportPriority({ card: node }) : 0 };
       })
       .sort((a, b) => b.priority - a.priority)
-      .slice(0, limit * 3)
+      .slice(0, limit * 2)
       .map((entry) => entry.node);
     for (const node of ordered) {
       const itemId = itemIdFromElement(node);
@@ -5155,6 +5184,8 @@
       scanVisibleSurface,
       scanExpandedEquipment,
       collectExpandedEquipmentDetails,
+      listSurfaceSignature,
+      inventoryListMarker,
       watchTick,
       loadMuseumContext,
       showSettings,
