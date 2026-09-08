@@ -6,6 +6,15 @@ on:
       - main
     paths:
       - "src/parts/**"
+      - "tests/**"
+      - ".github/workflows/build-userscript.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "src/parts/**"
+      - "tests/**"
+      - ".github/workflows/build-userscript.yml"
   workflow_dispatch:
 
 permissions:
@@ -24,7 +33,11 @@ jobs:
       - name: Validate JavaScript
         run: node --check torn-market-edge.user.js
 
+      - name: Run regression tests
+        run: node --test tests/*.test.js
+
       - name: Commit generated userscript
+        if: github.event_name == 'push'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
