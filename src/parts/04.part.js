@@ -2,14 +2,114 @@
     return ids;
   }
 
+
+  // ---------------------------------------------------------------------------
+  // Layout reads: one bounding box per node per pass. Collectors used to call
+  // getBoundingClientRect inside sort comparators (a forced reflow per
+  // comparison on Torn's large DOM). Rects are cached for a short window and
+  // priorities are computed once per row before sorting.
+  // ---------------------------------------------------------------------------
+
+  const LAYOUT_RECT_MAX_AGE_MS = 150;
+  const layoutPass = { at: 0, rects: new WeakMap(), deferred: [], viewportHeight: 0 };
+
+  function currentViewportHeight() {
+    return Math.max(window.innerHeight || 0, document.documentElement?.clientHeight || 0) || 800;
+  }
+
+  function refreshLayoutPass() {
+    const now = Date.now();
+    if (now - layoutPass.at > LAYOUT_RECT_MAX_AGE_MS) {
+      layoutPass.at = now;
+      layoutPass.rects = new WeakMap();
+      layoutPass.viewportHeight = currentViewportHeight();
+    }
+  }
+
+  // Called once per scan: clears the list of rows deferred to the
+  // IntersectionObserver so the scan can hand it a fresh set.
+  function beginLayoutPass() {
+    layoutPass.at = 0;
+    layoutPass.deferred = [];
+    refreshLayoutPass();
+  }
+
+  function rectOf(node) {
+    if (!node || typeof node.getBoundingClientRect !== "function") return null;
+    refreshLayoutPass();
+    const cached = layoutPass.rects.get(node);
+    if (cached) return cached;
+    const rect = node.getBoundingClientRect();
+    layoutPass.rects.set(node, rect);
+    return rect;
+  }
+
+  function hasBox(node) {
+    const rect = rectOf(node);
+    return Boolean(rect && rect.width > 0 && rect.height > 0);
+  }
+
+  // "in": on screen; "near": within half a viewport of the fold; "far": left
+  // for the IntersectionObserver.
+  function viewportBand(rect) {
+    if (!rect) return "in";
+    const height = layoutPass.viewportHeight || currentViewportHeight();
+    if (rect.bottom >= 0 && rect.top <= height) return "in";
+    const margin = height * VIEWPORT_PREFETCH_FACTOR;
+    if (rect.top > height && rect.top <= height + margin) return "near";
+    if (rect.bottom < 0 && rect.bottom >= -margin) return "near";
+    return "far";
+  }
+
+  function deferRow(node) {
+    if (node && !layoutPass.deferred.includes(node)) layoutPass.deferred.push(node);
+  }
+
+  function deferredRows() {
+    return layoutPass.deferred.slice();
+  }
+
+  // Rank candidate nodes by viewport position, computing each priority once.
+  // Rows off screen (beyond the prefetch band) or beyond the limit are
+  // deferred instead of scanned.
+  function rankCandidates(nodes, limit, cardOf = (node) => node) {
+    const scored = [];
+    nodes.forEach((node) => {
+      const card = cardOf(node);
+      const rect = rectOf(card);
+      // Nodes without a box (collapsed tabs, lazy placeholders) must never
+      // outrank visible rows.
+      if (rect && (rect.width <= 0 || rect.height <= 0)) return;
+      if (viewportBand(rect) === "far") {
+        deferRow(card);
+        return;
+      }
+      scored.push({ node, priority: rect ? viewportPriority({ card }) : 0 });
+    });
+    scored.sort((a, b) => b.priority - a.priority);
+    scored.slice(limit).forEach((entry) => deferRow(cardOf(entry.node)));
+    return scored.slice(0, limit).map((entry) => entry.node);
+  }
+
+  function sortByViewport(items) {
+    const scored = items.map((item, index) => ({ item, priority: viewportPriority(item, index) }));
+    scored.sort((a, b) => b.priority - a.priority);
+    return scored.map((entry) => entry.item);
+  }
+
+  function finishCollect(items, limit) {
+    const sorted = sortByViewport(items);
+    sorted.slice(limit).forEach((visible) => deferRow(visible.card));
+    return sorted.slice(0, limit);
+  }
+
   function findInventoryRow(start) {
     if (!start) return null;
     // Fast path: Torn's inventory rows are list items carrying data-item.
     // No text or layout reads beyond one bounding box.
     const direct = start.closest?.("li[data-item]:not([data-action])");
     if (direct && !direct.classList.contains("show-item-info") && directItemIdsWithin(direct).size === 1) {
-      const rect = direct.getBoundingClientRect();
-      if (rect.width > 0 && rect.height > 0) return direct;
+      if (hasBox(direct)) return direct;
     }
     let node = start instanceof HTMLElement ? start : start.parentElement;
     let fallback = null;
@@ -17,7 +117,7 @@
       if (!(node instanceof HTMLElement)) continue;
       // Layout-free pre-check: a row never has hundreds of characters.
       if ((node.textContent || "").length > 600) continue;
-      const rect = node.getBoundingClientRect();
+      const rect = rectOf(node);
       if (rect.width <= 0 || rect.height <= 0) continue;
       const text = (node.innerText || "").replace(/\s+/g, " ").trim();
       if (!text || text.length > 180) continue;
@@ -46,7 +146,7 @@
       const nameMatch = normalizedName && (lower === normalizedName || lower.endsWith(` ${normalizedName}`) || lower.includes(normalizedName));
       const itemish = nameMatch || /^(?:x|\u00d7)?\s*[\d,]+\s+\S+/i.test(text);
       if (!itemish) return;
-      const rect = element.getBoundingClientRect();
+      const rect = rectOf(element);
       if (rect.width <= 0 || rect.height <= 0) return;
       candidates.push({ element, area: rect.width * rect.height, length: text.length });
     });
@@ -75,9 +175,7 @@
     card.querySelectorAll(selector).forEach((element) => {
       if (!(element instanceof HTMLElement)) return;
       if (element.closest(".me-inline-analysis,#market-edge-root")) return;
-      const rect = element.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return;
-
+      // Text first: most elements carry no money figure and need no layout read.
       const directText = Array.from(element.childNodes)
         .filter((node) => node.nodeType === Node.TEXT_NODE)
         .map((node) => node.textContent || "")
@@ -88,6 +186,8 @@
       if (!text || text.length > 140) return;
       const price = parseMoney(text);
       if (!price) return;
+      const rect = rectOf(element);
+      if (rect.width <= 0 || rect.height <= 0) return;
 
       const metadata = `${element.getAttribute("data-testid") || ""} ${element.className || ""} ${element.getAttribute("aria-label") || ""} ${element.getAttribute("title") || ""}`;
       let score = 0;
@@ -137,8 +237,7 @@
       // decide.
       const shownRoots = allRoots.filter((root) => {
         if (/display\s*:\s*none/i.test(root.getAttribute("style") || "")) return false;
-        const box = root.getBoundingClientRect();
-        return box.height > 0 && box.width > 0;
+        return hasBox(root);
       });
       const roots = shownRoots.length ? shownRoots : allRoots;
       if (roots.length) {
@@ -152,23 +251,12 @@
 
     const byId = new Map();
     const limit = clamp(settings.scanMaxVisibleItems, 1, 50);
-    const ordered = Array.from(candidates)
-      .map((node) => {
-        const rect = node.getBoundingClientRect?.();
-        // Nodes without a box (collapsed tabs, lazy placeholders) must never
-        // outrank visible rows: they would otherwise all sort as "top of
-        // viewport" and crowd the real rows out of the scan limit.
-        if (rect && (rect.width <= 0 || rect.height <= 0)) return null;
-        return { node, priority: rect ? viewportPriority({ card: node }) : 0 };
-      })
-      .filter(Boolean)
-      .sort((a, b) => b.priority - a.priority)
-      .slice(0, limit * 2)
-      .map((entry) => entry.node);
+    const surface = detectSurface();
+    const ordered = rankCandidates(Array.from(candidates), limit * 2);
     for (const node of ordered) {
       const itemId = itemIdFromElement(node);
       if (!itemId) continue;
-      const card = detectSurface() === "inventory" ? findInventoryRow(node) : findCompactCard(node, requireMoney);
+      const card = surface === "inventory" ? findInventoryRow(node) : findCompactCard(node, requireMoney);
       // A bare image (for example the large picture inside an expanded
       // details block) is not a row: it would hijack the item entry and
       // swallow the annotation.
@@ -176,13 +264,12 @@
       // (li[data-item]) is fine.
       if (!card || card.tagName === "IMG" || (card === node && node.tagName === "IMG") || !(card.textContent || "").trim()) continue;
       if (!isInventoryListCandidate(card, inventoryMarker)) continue;
-      const rect = card?.getBoundingClientRect?.();
-      if (rect && (rect.width <= 0 || rect.height <= 0)) continue;
-      const inventoryRow = detectSurface() === "inventory";
+      if (card !== node && !hasBox(card)) continue;
+      const inventoryRow = surface === "inventory";
       // innerText forces layout; inventory rows are read layout-free.
       const text = inventoryRow ? (card?.textContent || "") : (card?.innerText || "");
       const priceElement = card?.querySelector?.('[data-testid="price"]');
-      const price = requireMoney ? priceForSurfaceCard(detectSurface(), card, priceElement) : null;
+      const price = requireMoney ? priceForSurfaceCard(surface, card, priceElement) : null;
       if (requireMoney && !price) continue;
       // Torn's inventory rows carry the quantity as data-qty; the name comes
       // from the row's name node, then data-sort minus its sort prefix.
@@ -212,7 +299,7 @@
         });
       }
     }
-    return Array.from(byId.values()).sort((a, b) => viewportPriority(b) - viewportPriority(a)).slice(0, clamp(settings.scanMaxVisibleItems, 1, 50));
+    return finishCollect(Array.from(byId.values()), limit);
   }
 
 
@@ -331,8 +418,7 @@
         .replace(/\s+/g, " ")
         .trim();
       if (!/^Add items to your Bazaar$/i.test(ownText)) return;
-      const rect = element.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return;
+      if (!hasBox(element)) return;
       candidates.push(element);
     });
 
@@ -370,16 +456,14 @@
     const candidates = Array.from(section.querySelectorAll(selector)).filter((row) => {
       if (!(row instanceof HTMLElement) || row.classList.contains("disabled")) return false;
       if (String(row.className || "").includes("item___UN3Mg")) return false;
-      const rect = row.getBoundingClientRect();
+      const rect = rectOf(row);
       if (rect.width <= 0 || rect.height <= 0) return false;
       if (rect.height > 300) return false;
       const image = row.querySelector("div.image-wrap img, img[src*='/items/'], img[srcset*='/items/']");
+      if (!image) return false;
       const amount = row.querySelector("div[class*='amount___'], div.amount-main-wrap") || row;
-      const input = Array.from(amount.querySelectorAll("input")).find((candidate) => {
-        const inputRect = candidate.getBoundingClientRect();
-        return inputRect.width > 0 && inputRect.height > 0 && candidate.type !== "hidden";
-      });
-      return Boolean(image && input);
+      const input = Array.from(amount.querySelectorAll("input")).find((candidate) => candidate.type !== "hidden" && hasBox(candidate));
+      return Boolean(input);
     });
 
     // CSS-module selectors can match both a wrapper and its nested item node.
@@ -397,17 +481,14 @@
     let fallback = null;
     for (let depth = 0; node && depth < 12 && node !== section.parentElement; depth += 1, node = node.parentElement) {
       if (!(node instanceof HTMLElement) || !section.contains(node)) continue;
-      const rect = node.getBoundingClientRect();
+      const rect = rectOf(node);
       if (rect.width <= 0 || rect.height <= 0 || rect.height > 280) continue;
       const text = (node.innerText || "").replace(/\s+/g, " ").trim();
       if (!text || text.length > 500) continue;
       const ids = directItemIdsWithin(node);
       const hasItemImage = Boolean(node.querySelector("div.image-wrap img, img[src*='/items/'], img[srcset*='/items/']"));
       if (ids.size !== 1 && !hasItemImage) continue;
-      const visibleInputs = Array.from(node.querySelectorAll("input")).filter((input) => {
-        const inputRect = input.getBoundingClientRect();
-        return inputRect.width > 0 && inputRect.height > 0 && input.type !== "hidden";
-      });
+      const visibleInputs = Array.from(node.querySelectorAll("input")).filter((input) => input.type !== "hidden" && hasBox(input));
       if (!visibleInputs.length) continue;
       fallback = node;
       if (/^(?:x|\u00d7)\s*[\d,]+\s+\S+/i.test(text) || /\bQty\b/i.test(text)) return node;
@@ -419,10 +500,7 @@
   function bazaarAddInputs(card) {
     const amount = card?.querySelector?.("div[class*='amount___'], div.amount-main-wrap") || card;
     if (!amount) return [];
-    return Array.from(amount.querySelectorAll("input")).filter((input) => {
-      const rect = input.getBoundingClientRect();
-      return rect.width > 0 && rect.height > 0 && !["hidden", "checkbox", "radio"].includes(input.type);
-    });
+    return Array.from(amount.querySelectorAll("input")).filter((input) => !["hidden", "checkbox", "radio"].includes(input.type) && hasBox(input));
   }
 
   function findBazaarAddPriceInput(card) {
@@ -430,10 +508,7 @@
     const amount = card.querySelector("div[class*='amount___'], div.amount-main-wrap") || card;
     const priceWrap = amount.querySelector("div[class*='price___'], div.price");
     const explicit = priceWrap?.querySelector("input.input-money, input") || amount.querySelector("input[name*='price' i]");
-    if (explicit) {
-      const rect = explicit.getBoundingClientRect();
-      if (rect.width > 0 && rect.height > 0 && explicit.type !== "hidden") return explicit;
-    }
+    if (explicit && explicit.type !== "hidden" && hasBox(explicit)) return explicit;
 
     const candidates = bazaarAddInputs(card);
     if (!candidates.length) return null;
@@ -444,8 +519,7 @@
       let score = 0;
       if (/price|cost|unit|money/i.test(metadata)) score += 160;
       if (/qty|quantity|amount|count|clear-all/i.test(metadata)) score -= 220;
-      const rect = input.getBoundingClientRect();
-      return { input, score, left: rect.left };
+      return { input, score, left: rectOf(input).left };
     });
     scored.sort((a, b) => b.score - a.score || b.left - a.left);
     return scored[0]?.input || null;
@@ -465,8 +539,7 @@
       box = checkbox?.closest("[class*='checkboxContainer___'], [class*='checkboxWrapper___']") || checkbox?.parentElement || null;
     }
     if (!(checkbox instanceof HTMLInputElement) || !box) return null;
-    const rect = box.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0 ? checkbox : null;
+    return hasBox(box) ? checkbox : null;
   }
 
   function findBazaarAddQuantityInput(card, priceInput = null) {
@@ -477,8 +550,7 @@
     ));
     for (const explicit of explicitCandidates) {
       if (explicit === priceInput) continue;
-      const rect = explicit.getBoundingClientRect();
-      if (rect.width > 0 && rect.height > 0 && explicit.type !== "hidden") return explicit;
+      if (explicit.type !== "hidden" && hasBox(explicit)) return explicit;
     }
 
     const candidates = bazaarAddInputs(card).filter((input) => input !== priceInput);
@@ -488,8 +560,7 @@
       let score = 0;
       if (/qty|quantity|amount|count|clear-all/i.test(metadata)) score += 220;
       if (/price|cost|unit|money/i.test(metadata)) score -= 180;
-      const rect = input.getBoundingClientRect();
-      return { input, score, left: rect.left };
+      return { input, score, left: rectOf(input).left };
     });
     scored.sort((a, b) => b.score - a.score || a.left - b.left);
     return scored[0]?.input || null;
@@ -521,12 +592,11 @@
     // carry Torn's "Price per unit" label are existing listings (manage
     // view), never add rows.
     const limit = clamp(settings.scanMaxVisibleItems, 1, 50);
-    const nearest = candidatePairs
-      .filter(({ card }) => !/price per unit\s*:/i.test(card.textContent || ""))
-      .map((pair) => ({ pair, priority: viewportPriority({ card: pair.card }) }))
-      .sort((a, b) => b.priority - a.priority)
-      .slice(0, limit * 2)
-      .map((entry) => entry.pair);
+    const nearest = rankCandidates(
+      candidatePairs.filter(({ card }) => !/price per unit\s*:/i.test(card.textContent || "")),
+      limit * 2,
+      (pair) => pair.card
+    );
 
     for (const { card, node } of nearest) {
       if (!card || card.closest("#market-edge-root")) continue;
@@ -567,9 +637,7 @@
     }
 
     if (!byCard.size && bazaarAddRouteActive()) return collectSellFormRows();
-    return Array.from(byCard.values())
-      .sort((a, b) => viewportPriority(b) - viewportPriority(a))
-      .slice(0, clamp(settings.scanMaxVisibleItems, 1, 50));
+    return finishCollect(Array.from(byCard.values()), limit);
   }
 
   // Generic sell-form rows: any small container holding one item image and a
@@ -581,11 +649,8 @@
     const byCard = new Map();
     const images = Array.from(root.querySelectorAll("img[src*='/items/'], img[srcset*='/items/'], [style*='/items/']"))
       .filter((node) => !node.closest("#market-edge-root,.me-inline-analysis"));
-    const nearest = images
-      .map((node) => ({ node, priority: viewportPriority({ card: node }) }))
-      .sort((a, b) => b.priority - a.priority)
-      .slice(0, limit * 2);
-    for (const { node } of nearest) {
+    const nearest = rankCandidates(images, limit * 2);
+    for (const node of nearest) {
       const itemId = itemIdFromElement(node);
       if (!itemId) continue;
       let card = null;
@@ -599,8 +664,7 @@
         const input = Array.from(probe.querySelectorAll("input")).find((candidate) => {
           if (["hidden", "checkbox", "radio", "search", "submit", "button"].includes(candidate.type)) return false;
           if (/search|filter/i.test(`${candidate.name || ""} ${candidate.placeholder || ""} ${candidate.className || ""}`)) return false;
-          const rect = candidate.getBoundingClientRect();
-          return rect.width > 0 && rect.height > 0;
+          return hasBox(candidate);
         });
         if (!input) continue;
         if (/price per unit\s*:/i.test(probe.textContent || "")) break;
@@ -610,8 +674,7 @@
       if (!card || byCard.has(card)) continue;
       // Item Market rows that cannot be listed are greyed out.
       if (/grayedOut|greyedOut|disabled___/i.test(`${card.className || ""} ${card.parentElement?.className || ""}`) || card.classList.contains("disabled")) continue;
-      const rect = card.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) continue;
+      if (!hasBox(card)) continue;
       const priceInput = findBazaarAddPriceInput(card);
       if (!priceInput) continue;
       const quantityCheckbox = findBazaarAddQuantityCheckbox(card);
@@ -649,7 +712,7 @@
         domTextLength: Math.min(text.length, 1200)
       });
     }
-    return Array.from(byCard.values()).sort((a, b) => viewportPriority(b) - viewportPriority(a)).slice(0, limit);
+    return finishCollect(Array.from(byCard.values()), limit);
   }
 
   function sellFormControlHost(card, priceInput) {
@@ -699,8 +762,7 @@
       const card = findOwnBazaarCard(node);
       if (!card || card.closest("#market-edge-root")) continue;
       if (card.querySelector("div.amount-main-wrap, div[class*='amount___']") || card.closest("ul.items-cont li.clearfix")?.querySelector("div.amount-main-wrap, div[class*='amount___']")) continue;
-      const rect = card.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) continue;
+      if (!hasBox(card)) continue;
       const priceContext = findOwnBazaarPriceContext(card);
       if (!priceContext.price) continue;
       const text = card.innerText || "";
@@ -722,7 +784,7 @@
         });
       }
     }
-    return Array.from(byId.values()).sort((a, b) => viewportPriority(b) - viewportPriority(a)).slice(0, clamp(settings.scanMaxVisibleItems, 1, 50));
+    return finishCollect(Array.from(byId.values()), clamp(settings.scanMaxVisibleItems, 1, 50));
   }
 
   const BAZAAR_ADD_ROW_SELECTOR = "ul.items-cont li.clearfix, div[class*='itemsContainner___'] div[class*='item___'], div[class*='rowItems___'] div[class*='item___']";
@@ -738,14 +800,11 @@
     ));
     const combined = [...addItems, ...managed];
     const seenCards = new Set();
-    return combined
-      .filter((visible) => {
-        if (!visible?.card || seenCards.has(visible.card)) return false;
-        seenCards.add(visible.card);
-        return true;
-      })
-      .sort((a, b) => viewportPriority(b) - viewportPriority(a))
-      .slice(0, clamp(settings.scanMaxVisibleItems, 1, 50));
+    return finishCollect(combined.filter((visible) => {
+      if (!visible?.card || seenCards.has(visible.card)) return false;
+      seenCards.add(visible.card);
+      return true;
+    }), clamp(settings.scanMaxVisibleItems, 1, 50));
   }
 
   function collectAuctionItems() {
@@ -761,7 +820,7 @@
       const text = li.innerText || "";
       rows.push({ itemId, name, price, quantity: 1, card: li, domTextLength: text.length });
     });
-    return rows.sort((a, b) => viewportPriority(b) - viewportPriority(a)).slice(0, clamp(settings.scanMaxVisibleItems, 1, 50));
+    return finishCollect(rows, clamp(settings.scanMaxVisibleItems, 1, 50));
   }
 
   // Editable price field in a row on Torn's "manage listings" style views

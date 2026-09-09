@@ -43,7 +43,7 @@
   const ONE_MINUTE_MS = 60 * 1000;
   const ONE_DAY_MS = 24 * 60 * 60 * 1000;
   const HISTORY_MIN_GAP_MS = ONE_MINUTE_MS;
-  const HISTORY_MAX_POINTS = 1000;
+  const HISTORY_MAX_POINTS = 400;
   // Torn allows 100 requests/minute per player across all keys. Market Edge
   // keeps a comfortable margin so other tools sharing the key keep working.
   const API_MAX_REQUESTS_PER_MINUTE = 70;
@@ -58,6 +58,18 @@
   // not need that freshness, and refreshes were starving unpriced rows of
   // the request budget on long lists.
   const SELL_SIDE_SNAPSHOT_MAX_AGE_MS = 5 * ONE_MINUTE_MS;
+  // Buy-side lists (Bazaar browse, travel, auction, city shops) reuse an
+  // order book for two minutes: Torn re-renders rows constantly and every
+  // lost overlay would otherwise cost a request once the 30 s cache expired.
+  const BUY_SIDE_SNAPSHOT_MAX_AGE_MS = 2 * ONE_MINUTE_MS;
+  // In-memory API cache and persisted per-item records are bounded so a long
+  // session (or Torn PDA's 5 MB shared localStorage) can never fill up.
+  const API_MEMORY_CACHE_MAX = 300;
+  const STORE_MAX_ITEM_RECORDS = 400;
+  const STORE_FLUSH_DELAY_MS = 300;
+  // Rows further than this many viewport heights below the fold wait for the
+  // IntersectionObserver instead of being scanned (and fetched) up front.
+  const VIEWPORT_PREFETCH_FACTOR = 0.5;
   const ITEM_META_TTL_MS = 7 * ONE_DAY_MS;
   const SET_META_TTL_MS = ONE_DAY_MS;
   const POINTS_MARKET_TTL_MS = 5 * ONE_MINUTE_MS;
@@ -1475,6 +1487,13 @@
   // ---------------------------------------------------------------------------
 
   const LOCAL_STORAGE_PREFIX = "marketEdge.local.";
+  const ITEM_RECORD_PREFIXES = Object.freeze([
+    STORAGE_KEYS.snapshotPrefix,
+    STORAGE_KEYS.historyPrefix,
+    STORAGE_KEYS.itemMetaPrefix,
+    STORAGE_KEYS.auctionSalesPrefix
+  ]);
+  const DELETED = Symbol("deleted");
 
   function localFallbackGet(key, fallback) {
     try {
@@ -1502,46 +1521,219 @@
     }
   }
 
-  class Store {
-    static get(key, fallback) {
-      if (!ENV.hasGmStorage) return localFallbackGet(key, fallback);
-      try {
-        const value = GM_getValue(key, fallback);
-        if (value === undefined) return fallback;
-        // Some userscript bridges (Torn PDA) persist values as strings.
-        if (typeof value === "string" && fallback !== undefined && typeof fallback !== "string") {
-          try { return JSON.parse(value); } catch { return value; }
-        }
-        return value;
-      } catch (error) {
-        console.warn(APP.logPrefix, "Storage read failed", key, error);
-        return localFallbackGet(key, fallback);
+  function localFallbackKeys() {
+    const keys = [];
+    try {
+      for (let index = 0; index < window.localStorage.length; index += 1) {
+        const name = window.localStorage.key(index) || "";
+        if (name.startsWith(LOCAL_STORAGE_PREFIX)) keys.push(name.slice(LOCAL_STORAGE_PREFIX.length));
       }
+    } catch {
+      // ignore
+    }
+    return keys;
+  }
+
+  function gmRead(key, fallback) {
+    try {
+      const value = GM_getValue(key, fallback);
+      if (value === undefined) return fallback;
+      // Some userscript bridges (Torn PDA) persist values as strings.
+      if (typeof value === "string" && fallback !== undefined && typeof fallback !== "string") {
+        try { return JSON.parse(value); } catch { return value; }
+      }
+      return value;
+    } catch (error) {
+      console.warn(APP.logPrefix, "Storage read failed", key, error);
+      return localFallbackGet(key, fallback);
+    }
+  }
+
+  function gmWrite(key, value) {
+    try {
+      GM_setValue(key, value);
+    } catch (error) {
+      console.warn(APP.logPrefix, "Storage write failed", key, error);
+      localFallbackSet(key, value);
+    }
+  }
+
+  function gmDelete(key) {
+    if (!ENV.hasGmDelete) {
+      localFallbackDelete(key);
+      return;
+    }
+    try {
+      GM_deleteValue(key);
+    } catch (error) {
+      console.warn(APP.logPrefix, "Storage delete failed", key, error);
+    }
+  }
+
+  function gmKeys() {
+    try {
+      if (typeof GM_listValues === "function") return Array.from(GM_listValues() || []).map(String);
+    } catch {
+      // fall through
+    }
+    return localFallbackKeys();
+  }
+
+  // Torn PDA 3.15+ offers an async SQLite store (PDA_storage) with its own
+  // quota, separate from the shared, evictable localStorage that backs the
+  // GM_* shim. When present it is loaded once and becomes the backend.
+  const pdaStorage = (() => {
+    try {
+      // eslint-disable-next-line no-undef
+      const candidate = typeof PDA_storage !== "undefined" ? PDA_storage : null;
+      return candidate && typeof candidate.loadAll === "function" && typeof candidate.setMany === "function" ? candidate : null;
+    } catch {
+      return null;
+    }
+  })();
+
+  // Every read goes through an in-memory map; writes land in memory at once
+  // and reach the backend in one batched flush shortly after (or on
+  // pagehide). Per-row code can therefore call Store.pricingRules() or
+  // Store.history() freely without re-parsing JSON each time.
+  class Store {
+    static ready() {
+      if (Store.readyPromise) return Store.readyPromise;
+      Store.readyPromise = (async () => {
+        if (Store.backend !== "pda") return;
+        try {
+          const all = await pdaStorage.loadAll();
+          const entries = all instanceof Map ? Array.from(all.entries()) : Object.entries(all || {});
+          entries.forEach(([key, value]) => {
+            if (!Store.dirty.has(key)) Store.memory.set(key, value);
+          });
+          // First run on PDA_storage: carry the player's settings over from
+          // the localStorage-backed GM shim so nothing is lost.
+          if (!Store.memory.has(STORAGE_KEYS.settings) && ENV.hasGmStorage) {
+            const migrate = [STORAGE_KEYS.settings, STORAGE_KEYS.apiKey, STORAGE_KEYS.keyInfo, STORAGE_KEYS.playerId, STORAGE_KEYS.panelState,
+              STORAGE_KEYS.watchlist, STORAGE_KEYS.sellWatch, STORAGE_KEYS.pricingRules];
+            migrate.forEach((key) => {
+              const value = gmRead(key, undefined);
+              if (value !== undefined && value !== null && value !== "") Store.set(key, value);
+            });
+          }
+        } catch (error) {
+          console.warn(APP.logPrefix, "PDA storage unavailable; using the GM shim", error);
+          Store.backend = ENV.hasGmStorage ? "gm" : "local";
+        }
+      })();
+      return Store.readyPromise;
+    }
+
+    static backendGet(key, fallback) {
+      if (Store.backend === "pda") return fallback;
+      if (Store.backend === "gm") return gmRead(key, fallback);
+      return localFallbackGet(key, fallback);
+    }
+
+    static get(key, fallback) {
+      if (Store.memory.has(key)) {
+        const value = Store.memory.get(key);
+        return value === undefined || value === DELETED ? fallback : value;
+      }
+      const value = Store.backendGet(key, fallback);
+      if (value !== fallback) Store.memory.set(key, value);
+      return value;
     }
 
     static set(key, value) {
-      if (!ENV.hasGmStorage) {
-        localFallbackSet(key, value);
-        return;
-      }
-      try {
-        GM_setValue(key, value);
-      } catch (error) {
-        console.warn(APP.logPrefix, "Storage write failed", key, error);
-        localFallbackSet(key, value);
-      }
+      Store.memory.set(key, value);
+      Store.dirty.set(key, value);
+      Store.scheduleFlush();
     }
 
     static delete(key) {
-      if (!ENV.hasGmStorage || !ENV.hasGmDelete) {
-        localFallbackDelete(key);
+      Store.memory.set(key, DELETED);
+      Store.dirty.set(key, DELETED);
+      Store.scheduleFlush();
+    }
+
+    static scheduleFlush() {
+      if (Store.flushTimer) return;
+      Store.flushTimer = setTimeout(() => Store.flush(), STORE_FLUSH_DELAY_MS);
+    }
+
+    static flush() {
+      if (Store.flushTimer) {
+        clearTimeout(Store.flushTimer);
+        Store.flushTimer = null;
+      }
+      if (!Store.dirty.size) return;
+      const batch = Array.from(Store.dirty.entries());
+      Store.dirty.clear();
+      if (Store.backend === "pda") {
+        const sets = {};
+        let setCount = 0;
+        batch.forEach(([key, value]) => {
+          if (value === DELETED) {
+            Promise.resolve(pdaStorage.delete(key)).catch(() => {});
+            return;
+          }
+          sets[key] = value;
+          setCount += 1;
+        });
+        if (setCount) {
+          Promise.resolve(pdaStorage.setMany(sets)).catch((error) => {
+            console.warn(APP.logPrefix, "PDA storage write failed", error?.code || error);
+            // Quota pressure: drop the oldest item records and keep the
+            // player's own data (settings, key, rules) in the GM shim.
+            if (/quota/i.test(String(error?.code || error?.message || ""))) Store.prune({ max: Math.floor(STORE_MAX_ITEM_RECORDS / 2) });
+            if (ENV.hasGmStorage) Object.entries(sets).forEach(([key, value]) => { if (!ITEM_RECORD_PREFIXES.some((prefix) => key.startsWith(prefix))) gmWrite(key, value); });
+          });
+        }
         return;
       }
+      batch.forEach(([key, value]) => {
+        if (value === DELETED) {
+          if (Store.backend === "gm") gmDelete(key); else localFallbackDelete(key);
+        } else if (Store.backend === "gm") gmWrite(key, value);
+        else localFallbackSet(key, value);
+      });
+    }
+
+    static keys() {
+      const known = new Set(Array.from(Store.memory.keys()).filter((key) => Store.memory.get(key) !== DELETED));
+      let stored = [];
       try {
-        GM_deleteValue(key);
-      } catch (error) {
-        console.warn(APP.logPrefix, "Storage delete failed", key, error);
+        if (Store.backend === "pda") stored = [];
+        else if (Store.backend === "gm") stored = gmKeys();
+        else stored = localFallbackKeys();
+      } catch {
+        stored = [];
       }
+      stored.forEach((key) => { if (Store.memory.get(key) !== DELETED) known.add(key); });
+      return Array.from(known);
+    }
+
+    // Keep the persisted per-item records (order books, history, metadata,
+    // auction sales) bounded: oldest first, once the count exceeds the cap.
+    static prune({ max = STORE_MAX_ITEM_RECORDS } = {}) {
+      const records = Store.keys().filter((key) => ITEM_RECORD_PREFIXES.some((prefix) => key.startsWith(prefix)));
+      if (records.length <= max) return 0;
+      const aged = records.map((key) => {
+        const value = Store.get(key, null);
+        const savedAt = asInt(value?.savedAt, 0)
+          || asInt(value?.timestampObserved, 0) * 1000
+          || (Array.isArray(value) && value.length ? asInt(value[value.length - 1]?.timestamp, 0) * 1000 : 0);
+        return { key, savedAt };
+      }).sort((a, b) => a.savedAt - b.savedAt);
+      const excess = aged.slice(0, records.length - max);
+      excess.forEach((entry) => Store.delete(entry.key));
+      return excess.length;
+    }
+
+    // Another Torn tab may have written settings or rules while this one was
+    // hidden: forget cached reads when the tab comes back.
+    static invalidate() {
+      Store.flush();
+      Store.memory.forEach((value, key) => {
+        if (Store.backend !== "pda" && !ITEM_RECORD_PREFIXES.some((prefix) => key.startsWith(prefix))) Store.memory.delete(key);
+      });
     }
 
     static settings() {
@@ -1669,7 +1861,12 @@
     }
 
     static pricingRules() {
-      return normalizePricingRules(Store.get(STORAGE_KEYS.pricingRules, {}));
+      // Normalised once per stored object; rows ask for the rules repeatedly.
+      const raw = Store.get(STORAGE_KEYS.pricingRules, {});
+      if (Store.rulesCache?.raw === raw) return Store.rulesCache.rules;
+      const rules = normalizePricingRules(raw);
+      Store.rulesCache = { raw, rules };
+      return rules;
     }
 
     static savePricingRule(itemId, rule) {
@@ -1753,7 +1950,23 @@
     }
   }
 
+  Store.memory = new Map();
+  Store.dirty = new Map();
+  Store.flushTimer = null;
+  Store.readyPromise = null;
+  Store.backend = pdaStorage ? "pda" : (ENV.hasGmStorage ? "gm" : "local");
+
   let settings = Store.settings();
+
+  window.addEventListener("pagehide", () => Store.flush());
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      Store.flush();
+      return;
+    }
+    Store.invalidate();
+    settings = Store.settings();
+  });
 
   function log(...args) {
     if (settings.developerMode) console.log(APP.logPrefix, ...args);
@@ -1833,12 +2046,27 @@
   // Transport abstraction: Torn PDA exposes PDA_httpGet, userscript managers
   // expose GM_xmlhttpRequest, and plain fetch is the last resort (the Torn API
   // sends permissive CORS headers). All three only ever talk to api.torn.com.
-  function transportGet(url, headers) {
+  const PDA_DEDUPE_WINDOW_MS = 2100;
+
+  function normalizeTransportResponse(response) {
+    if (typeof response?.text === "function" && response.responseText === undefined) {
+      return Promise.resolve(response.text()).then((text) => ({ status: asInt(response.status, 200), responseText: String(text ?? "") }));
+    }
+    return Promise.resolve({ status: asInt(response?.status, 200), responseText: String(response?.responseText ?? "") });
+  }
+
+  function transportGet(url, headers, { attempt = 0 } = {}) {
     if (ENV.hasPdaRequest) {
-      return Promise.resolve(PDA_httpGet(url, headers)).then((response) => ({
-        status: asInt(response?.status, 200),
-        responseText: String(response?.responseText ?? "")
-      }));
+      // Torn PDA returns undefined (no request made) when the same URL was
+      // requested within the last two seconds. Waiting out that window and
+      // retrying keeps the cache hit free; a nonce parameter would cost quota.
+      return Promise.resolve(PDA_httpGet(url, headers)).then((response) => {
+        if (response === undefined || response === null) {
+          if (attempt >= 1) throw new Error("Torn PDA skipped a duplicate request; try again in a moment.");
+          return new Promise((resolve) => setTimeout(resolve, PDA_DEDUPE_WINDOW_MS)).then(() => transportGet(url, headers, { attempt: attempt + 1 }));
+        }
+        return normalizeTransportResponse(response);
+      });
     }
     if (ENV.hasGmRequest) {
       return new Promise((resolve, reject) => {
@@ -1875,6 +2103,23 @@
       });
       this.memoryCache = new Map();
       this.inFlight = new Map();
+    }
+
+    remember(cacheKey, data) {
+      // Bounded, least-recently-set: expired entries go first, then the oldest.
+      if (this.memoryCache.size >= API_MEMORY_CACHE_MAX) {
+        const now = Date.now();
+        for (const [key, entry] of this.memoryCache) {
+          if (now - entry.at > 5 * ONE_MINUTE_MS) this.memoryCache.delete(key);
+        }
+        while (this.memoryCache.size >= API_MEMORY_CACHE_MAX) {
+          const oldest = this.memoryCache.keys().next().value;
+          if (oldest === undefined) break;
+          this.memoryCache.delete(oldest);
+        }
+      }
+      this.memoryCache.delete(cacheKey);
+      this.memoryCache.set(cacheKey, { at: Date.now(), data });
     }
 
     buildUrl(path) {
@@ -1917,7 +2162,7 @@
         });
       }, priority, { path, queueGroup })
         .then((data) => {
-          this.memoryCache.set(cacheKey, { at: Date.now(), data });
+          this.remember(cacheKey, data);
           return data;
         })
         .finally(() => this.inFlight.delete(cacheKey));
@@ -2253,7 +2498,19 @@
   // DOM/page detection and visible-page parsing
   // ---------------------------------------------------------------------------
 
+  // detectSurface() is asked on every mutation and inside collector loops;
+  // the answer only depends on the URL (plus a short-lived DOM probe).
+  let surfaceCache = { href: "", at: 0, surface: "other" };
+
   function detectSurface() {
+    const now = Date.now();
+    if (surfaceCache.href === location.href && now - surfaceCache.at < 250) return surfaceCache.surface;
+    const surface = detectSurfaceUncached();
+    surfaceCache = { href: location.href, at: now, surface };
+    return surface;
+  }
+
+  function detectSurfaceUncached() {
     const url = new URL(location.href);
     const sid = String(url.searchParams.get("sid") || "").toLowerCase();
     const path = url.pathname.toLowerCase();
@@ -2516,14 +2773,114 @@
     return ids;
   }
 
+
+  // ---------------------------------------------------------------------------
+  // Layout reads: one bounding box per node per pass. Collectors used to call
+  // getBoundingClientRect inside sort comparators (a forced reflow per
+  // comparison on Torn's large DOM). Rects are cached for a short window and
+  // priorities are computed once per row before sorting.
+  // ---------------------------------------------------------------------------
+
+  const LAYOUT_RECT_MAX_AGE_MS = 150;
+  const layoutPass = { at: 0, rects: new WeakMap(), deferred: [], viewportHeight: 0 };
+
+  function currentViewportHeight() {
+    return Math.max(window.innerHeight || 0, document.documentElement?.clientHeight || 0) || 800;
+  }
+
+  function refreshLayoutPass() {
+    const now = Date.now();
+    if (now - layoutPass.at > LAYOUT_RECT_MAX_AGE_MS) {
+      layoutPass.at = now;
+      layoutPass.rects = new WeakMap();
+      layoutPass.viewportHeight = currentViewportHeight();
+    }
+  }
+
+  // Called once per scan: clears the list of rows deferred to the
+  // IntersectionObserver so the scan can hand it a fresh set.
+  function beginLayoutPass() {
+    layoutPass.at = 0;
+    layoutPass.deferred = [];
+    refreshLayoutPass();
+  }
+
+  function rectOf(node) {
+    if (!node || typeof node.getBoundingClientRect !== "function") return null;
+    refreshLayoutPass();
+    const cached = layoutPass.rects.get(node);
+    if (cached) return cached;
+    const rect = node.getBoundingClientRect();
+    layoutPass.rects.set(node, rect);
+    return rect;
+  }
+
+  function hasBox(node) {
+    const rect = rectOf(node);
+    return Boolean(rect && rect.width > 0 && rect.height > 0);
+  }
+
+  // "in": on screen; "near": within half a viewport of the fold; "far": left
+  // for the IntersectionObserver.
+  function viewportBand(rect) {
+    if (!rect) return "in";
+    const height = layoutPass.viewportHeight || currentViewportHeight();
+    if (rect.bottom >= 0 && rect.top <= height) return "in";
+    const margin = height * VIEWPORT_PREFETCH_FACTOR;
+    if (rect.top > height && rect.top <= height + margin) return "near";
+    if (rect.bottom < 0 && rect.bottom >= -margin) return "near";
+    return "far";
+  }
+
+  function deferRow(node) {
+    if (node && !layoutPass.deferred.includes(node)) layoutPass.deferred.push(node);
+  }
+
+  function deferredRows() {
+    return layoutPass.deferred.slice();
+  }
+
+  // Rank candidate nodes by viewport position, computing each priority once.
+  // Rows off screen (beyond the prefetch band) or beyond the limit are
+  // deferred instead of scanned.
+  function rankCandidates(nodes, limit, cardOf = (node) => node) {
+    const scored = [];
+    nodes.forEach((node) => {
+      const card = cardOf(node);
+      const rect = rectOf(card);
+      // Nodes without a box (collapsed tabs, lazy placeholders) must never
+      // outrank visible rows.
+      if (rect && (rect.width <= 0 || rect.height <= 0)) return;
+      if (viewportBand(rect) === "far") {
+        deferRow(card);
+        return;
+      }
+      scored.push({ node, priority: rect ? viewportPriority({ card }) : 0 });
+    });
+    scored.sort((a, b) => b.priority - a.priority);
+    scored.slice(limit).forEach((entry) => deferRow(cardOf(entry.node)));
+    return scored.slice(0, limit).map((entry) => entry.node);
+  }
+
+  function sortByViewport(items) {
+    const scored = items.map((item, index) => ({ item, priority: viewportPriority(item, index) }));
+    scored.sort((a, b) => b.priority - a.priority);
+    return scored.map((entry) => entry.item);
+  }
+
+  function finishCollect(items, limit) {
+    const sorted = sortByViewport(items);
+    sorted.slice(limit).forEach((visible) => deferRow(visible.card));
+    return sorted.slice(0, limit);
+  }
+
   function findInventoryRow(start) {
     if (!start) return null;
     // Fast path: Torn's inventory rows are list items carrying data-item.
     // No text or layout reads beyond one bounding box.
     const direct = start.closest?.("li[data-item]:not([data-action])");
     if (direct && !direct.classList.contains("show-item-info") && directItemIdsWithin(direct).size === 1) {
-      const rect = direct.getBoundingClientRect();
-      if (rect.width > 0 && rect.height > 0) return direct;
+      if (hasBox(direct)) return direct;
     }
     let node = start instanceof HTMLElement ? start : start.parentElement;
     let fallback = null;
@@ -2531,7 +2888,7 @@
       if (!(node instanceof HTMLElement)) continue;
       // Layout-free pre-check: a row never has hundreds of characters.
       if ((node.textContent || "").length > 600) continue;
-      const rect = node.getBoundingClientRect();
+      const rect = rectOf(node);
       if (rect.width <= 0 || rect.height <= 0) continue;
       const text = (node.innerText || "").replace(/\s+/g, " ").trim();
       if (!text || text.length > 180) continue;
@@ -2560,7 +2917,7 @@
       const nameMatch = normalizedName && (lower === normalizedName || lower.endsWith(` ${normalizedName}`) || lower.includes(normalizedName));
       const itemish = nameMatch || /^(?:x|\u00d7)?\s*[\d,]+\s+\S+/i.test(text);
       if (!itemish) return;
-      const rect = element.getBoundingClientRect();
+      const rect = rectOf(element);
       if (rect.width <= 0 || rect.height <= 0) return;
       candidates.push({ element, area: rect.width * rect.height, length: text.length });
     });
@@ -2589,9 +2946,7 @@
     card.querySelectorAll(selector).forEach((element) => {
       if (!(element instanceof HTMLElement)) return;
       if (element.closest(".me-inline-analysis,#market-edge-root")) return;
-      const rect = element.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return;
-
+      // Text first: most elements carry no money figure and need no layout read.
       const directText = Array.from(element.childNodes)
         .filter((node) => node.nodeType === Node.TEXT_NODE)
         .map((node) => node.textContent || "")
@@ -2602,6 +2957,8 @@
       if (!text || text.length > 140) return;
       const price = parseMoney(text);
       if (!price) return;
+      const rect = rectOf(element);
+      if (rect.width <= 0 || rect.height <= 0) return;
 
       const metadata = `${element.getAttribute("data-testid") || ""} ${element.className || ""} ${element.getAttribute("aria-label") || ""} ${element.getAttribute("title") || ""}`;
       let score = 0;
@@ -2651,8 +3008,7 @@
       // decide.
       const shownRoots = allRoots.filter((root) => {
         if (/display\s*:\s*none/i.test(root.getAttribute("style") || "")) return false;
-        const box = root.getBoundingClientRect();
-        return box.height > 0 && box.width > 0;
+        return hasBox(root);
       });
       const roots = shownRoots.length ? shownRoots : allRoots;
       if (roots.length) {
@@ -2666,23 +3022,12 @@
 
     const byId = new Map();
     const limit = clamp(settings.scanMaxVisibleItems, 1, 50);
-    const ordered = Array.from(candidates)
-      .map((node) => {
-        const rect = node.getBoundingClientRect?.();
-        // Nodes without a box (collapsed tabs, lazy placeholders) must never
-        // outrank visible rows: they would otherwise all sort as "top of
-        // viewport" and crowd the real rows out of the scan limit.
-        if (rect && (rect.width <= 0 || rect.height <= 0)) return null;
-        return { node, priority: rect ? viewportPriority({ card: node }) : 0 };
-      })
-      .filter(Boolean)
-      .sort((a, b) => b.priority - a.priority)
-      .slice(0, limit * 2)
-      .map((entry) => entry.node);
+    const surface = detectSurface();
+    const ordered = rankCandidates(Array.from(candidates), limit * 2);
     for (const node of ordered) {
       const itemId = itemIdFromElement(node);
       if (!itemId) continue;
-      const card = detectSurface() === "inventory" ? findInventoryRow(node) : findCompactCard(node, requireMoney);
+      const card = surface === "inventory" ? findInventoryRow(node) : findCompactCard(node, requireMoney);
       // A bare image (for example the large picture inside an expanded
       // details block) is not a row: it would hijack the item entry and
       // swallow the annotation.
@@ -2690,13 +3035,12 @@
       // (li[data-item]) is fine.
       if (!card || card.tagName === "IMG" || (card === node && node.tagName === "IMG") || !(card.textContent || "").trim()) continue;
       if (!isInventoryListCandidate(card, inventoryMarker)) continue;
-      const rect = card?.getBoundingClientRect?.();
-      if (rect && (rect.width <= 0 || rect.height <= 0)) continue;
-      const inventoryRow = detectSurface() === "inventory";
+      if (card !== node && !hasBox(card)) continue;
+      const inventoryRow = surface === "inventory";
       // innerText forces layout; inventory rows are read layout-free.
       const text = inventoryRow ? (card?.textContent || "") : (card?.innerText || "");
       const priceElement = card?.querySelector?.('[data-testid="price"]');
-      const price = requireMoney ? priceForSurfaceCard(detectSurface(), card, priceElement) : null;
+      const price = requireMoney ? priceForSurfaceCard(surface, card, priceElement) : null;
       if (requireMoney && !price) continue;
       // Torn's inventory rows carry the quantity as data-qty; the name comes
       // from the row's name node, then data-sort minus its sort prefix.
@@ -2726,7 +3070,7 @@
         });
       }
     }
-    return Array.from(byId.values()).sort((a, b) => viewportPriority(b) - viewportPriority(a)).slice(0, clamp(settings.scanMaxVisibleItems, 1, 50));
+    return finishCollect(Array.from(byId.values()), limit);
   }
 
 
@@ -2845,8 +3189,7 @@
         .replace(/\s+/g, " ")
         .trim();
       if (!/^Add items to your Bazaar$/i.test(ownText)) return;
-      const rect = element.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return;
+      if (!hasBox(element)) return;
       candidates.push(element);
     });
 
@@ -2884,16 +3227,14 @@
     const candidates = Array.from(section.querySelectorAll(selector)).filter((row) => {
       if (!(row instanceof HTMLElement) || row.classList.contains("disabled")) return false;
       if (String(row.className || "").includes("item___UN3Mg")) return false;
-      const rect = row.getBoundingClientRect();
+      const rect = rectOf(row);
       if (rect.width <= 0 || rect.height <= 0) return false;
       if (rect.height > 300) return false;
       const image = row.querySelector("div.image-wrap img, img[src*='/items/'], img[srcset*='/items/']");
+      if (!image) return false;
       const amount = row.querySelector("div[class*='amount___'], div.amount-main-wrap") || row;
-      const input = Array.from(amount.querySelectorAll("input")).find((candidate) => {
-        const inputRect = candidate.getBoundingClientRect();
-        return inputRect.width > 0 && inputRect.height > 0 && candidate.type !== "hidden";
-      });
-      return Boolean(image && input);
+      const input = Array.from(amount.querySelectorAll("input")).find((candidate) => candidate.type !== "hidden" && hasBox(candidate));
+      return Boolean(input);
     });
 
     // CSS-module selectors can match both a wrapper and its nested item node.
@@ -2911,17 +3252,14 @@
     let fallback = null;
     for (let depth = 0; node && depth < 12 && node !== section.parentElement; depth += 1, node = node.parentElement) {
       if (!(node instanceof HTMLElement) || !section.contains(node)) continue;
-      const rect = node.getBoundingClientRect();
+      const rect = rectOf(node);
       if (rect.width <= 0 || rect.height <= 0 || rect.height > 280) continue;
       const text = (node.innerText || "").replace(/\s+/g, " ").trim();
       if (!text || text.length > 500) continue;
       const ids = directItemIdsWithin(node);
       const hasItemImage = Boolean(node.querySelector("div.image-wrap img, img[src*='/items/'], img[srcset*='/items/']"));
       if (ids.size !== 1 && !hasItemImage) continue;
-      const visibleInputs = Array.from(node.querySelectorAll("input")).filter((input) => {
-        const inputRect = input.getBoundingClientRect();
-        return inputRect.width > 0 && inputRect.height > 0 && input.type !== "hidden";
-      });
+      const visibleInputs = Array.from(node.querySelectorAll("input")).filter((input) => input.type !== "hidden" && hasBox(input));
       if (!visibleInputs.length) continue;
       fallback = node;
       if (/^(?:x|\u00d7)\s*[\d,]+\s+\S+/i.test(text) || /\bQty\b/i.test(text)) return node;
@@ -2933,10 +3271,7 @@
   function bazaarAddInputs(card) {
     const amount = card?.querySelector?.("div[class*='amount___'], div.amount-main-wrap") || card;
     if (!amount) return [];
-    return Array.from(amount.querySelectorAll("input")).filter((input) => {
-      const rect = input.getBoundingClientRect();
-      return rect.width > 0 && rect.height > 0 && !["hidden", "checkbox", "radio"].includes(input.type);
-    });
+    return Array.from(amount.querySelectorAll("input")).filter((input) => !["hidden", "checkbox", "radio"].includes(input.type) && hasBox(input));
   }
 
   function findBazaarAddPriceInput(card) {
@@ -2944,10 +3279,7 @@
     const amount = card.querySelector("div[class*='amount___'], div.amount-main-wrap") || card;
     const priceWrap = amount.querySelector("div[class*='price___'], div.price");
     const explicit = priceWrap?.querySelector("input.input-money, input") || amount.querySelector("input[name*='price' i]");
-    if (explicit) {
-      const rect = explicit.getBoundingClientRect();
-      if (rect.width > 0 && rect.height > 0 && explicit.type !== "hidden") return explicit;
-    }
+    if (explicit && explicit.type !== "hidden" && hasBox(explicit)) return explicit;
 
     const candidates = bazaarAddInputs(card);
     if (!candidates.length) return null;
@@ -2958,8 +3290,7 @@
       let score = 0;
       if (/price|cost|unit|money/i.test(metadata)) score += 160;
       if (/qty|quantity|amount|count|clear-all/i.test(metadata)) score -= 220;
-      const rect = input.getBoundingClientRect();
-      return { input, score, left: rect.left };
+      return { input, score, left: rectOf(input).left };
     });
     scored.sort((a, b) => b.score - a.score || b.left - a.left);
     return scored[0]?.input || null;
@@ -2979,8 +3310,7 @@
       box = checkbox?.closest("[class*='checkboxContainer___'], [class*='checkboxWrapper___']") || checkbox?.parentElement || null;
     }
     if (!(checkbox instanceof HTMLInputElement) || !box) return null;
-    const rect = box.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0 ? checkbox : null;
+    return hasBox(box) ? checkbox : null;
   }
 
   function findBazaarAddQuantityInput(card, priceInput = null) {
@@ -2991,8 +3321,7 @@
     ));
     for (const explicit of explicitCandidates) {
       if (explicit === priceInput) continue;
-      const rect = explicit.getBoundingClientRect();
-      if (rect.width > 0 && rect.height > 0 && explicit.type !== "hidden") return explicit;
+      if (explicit.type !== "hidden" && hasBox(explicit)) return explicit;
     }
 
     const candidates = bazaarAddInputs(card).filter((input) => input !== priceInput);
@@ -3002,8 +3331,7 @@
       let score = 0;
       if (/qty|quantity|amount|count|clear-all/i.test(metadata)) score += 220;
       if (/price|cost|unit|money/i.test(metadata)) score -= 180;
-      const rect = input.getBoundingClientRect();
-      return { input, score, left: rect.left };
+      return { input, score, left: rectOf(input).left };
     });
     scored.sort((a, b) => b.score - a.score || a.left - b.left);
     return scored[0]?.input || null;
@@ -3035,12 +3363,11 @@
     // carry Torn's "Price per unit" label are existing listings (manage
     // view), never add rows.
     const limit = clamp(settings.scanMaxVisibleItems, 1, 50);
-    const nearest = candidatePairs
-      .filter(({ card }) => !/price per unit\s*:/i.test(card.textContent || ""))
-      .map((pair) => ({ pair, priority: viewportPriority({ card: pair.card }) }))
-      .sort((a, b) => b.priority - a.priority)
-      .slice(0, limit * 2)
-      .map((entry) => entry.pair);
+    const nearest = rankCandidates(
+      candidatePairs.filter(({ card }) => !/price per unit\s*:/i.test(card.textContent || "")),
+      limit * 2,
+      (pair) => pair.card
+    );
 
     for (const { card, node } of nearest) {
       if (!card || card.closest("#market-edge-root")) continue;
@@ -3081,9 +3408,7 @@
     }
 
     if (!byCard.size && bazaarAddRouteActive()) return collectSellFormRows();
-    return Array.from(byCard.values())
-      .sort((a, b) => viewportPriority(b) - viewportPriority(a))
-      .slice(0, clamp(settings.scanMaxVisibleItems, 1, 50));
+    return finishCollect(Array.from(byCard.values()), limit);
   }
 
   // Generic sell-form rows: any small container holding one item image and a
@@ -3095,11 +3420,8 @@
     const byCard = new Map();
     const images = Array.from(root.querySelectorAll("img[src*='/items/'], img[srcset*='/items/'], [style*='/items/']"))
       .filter((node) => !node.closest("#market-edge-root,.me-inline-analysis"));
-    const nearest = images
-      .map((node) => ({ node, priority: viewportPriority({ card: node }) }))
-      .sort((a, b) => b.priority - a.priority)
-      .slice(0, limit * 2);
-    for (const { node } of nearest) {
+    const nearest = rankCandidates(images, limit * 2);
+    for (const node of nearest) {
       const itemId = itemIdFromElement(node);
       if (!itemId) continue;
       let card = null;
@@ -3113,8 +3435,7 @@
         const input = Array.from(probe.querySelectorAll("input")).find((candidate) => {
           if (["hidden", "checkbox", "radio", "search", "submit", "button"].includes(candidate.type)) return false;
           if (/search|filter/i.test(`${candidate.name || ""} ${candidate.placeholder || ""} ${candidate.className || ""}`)) return false;
-          const rect = candidate.getBoundingClientRect();
-          return rect.width > 0 && rect.height > 0;
+          return hasBox(candidate);
         });
         if (!input) continue;
         if (/price per unit\s*:/i.test(probe.textContent || "")) break;
@@ -3124,8 +3445,7 @@
       if (!card || byCard.has(card)) continue;
       // Item Market rows that cannot be listed are greyed out.
       if (/grayedOut|greyedOut|disabled___/i.test(`${card.className || ""} ${card.parentElement?.className || ""}`) || card.classList.contains("disabled")) continue;
-      const rect = card.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) continue;
+      if (!hasBox(card)) continue;
       const priceInput = findBazaarAddPriceInput(card);
       if (!priceInput) continue;
       const quantityCheckbox = findBazaarAddQuantityCheckbox(card);
@@ -3163,7 +3483,7 @@
         domTextLength: Math.min(text.length, 1200)
       });
     }
-    return Array.from(byCard.values()).sort((a, b) => viewportPriority(b) - viewportPriority(a)).slice(0, limit);
+    return finishCollect(Array.from(byCard.values()), limit);
   }
 
   function sellFormControlHost(card, priceInput) {
@@ -3213,8 +3533,7 @@
       const card = findOwnBazaarCard(node);
       if (!card || card.closest("#market-edge-root")) continue;
       if (card.querySelector("div.amount-main-wrap, div[class*='amount___']") || card.closest("ul.items-cont li.clearfix")?.querySelector("div.amount-main-wrap, div[class*='amount___']")) continue;
-      const rect = card.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) continue;
+      if (!hasBox(card)) continue;
       const priceContext = findOwnBazaarPriceContext(card);
       if (!priceContext.price) continue;
       const text = card.innerText || "";
@@ -3236,7 +3555,7 @@
         });
       }
     }
-    return Array.from(byId.values()).sort((a, b) => viewportPriority(b) - viewportPriority(a)).slice(0, clamp(settings.scanMaxVisibleItems, 1, 50));
+    return finishCollect(Array.from(byId.values()), clamp(settings.scanMaxVisibleItems, 1, 50));
   }
 
   const BAZAAR_ADD_ROW_SELECTOR = "ul.items-cont li.clearfix, div[class*='itemsContainner___'] div[class*='item___'], div[class*='rowItems___'] div[class*='item___']";
@@ -3252,14 +3571,11 @@
     ));
     const combined = [...addItems, ...managed];
     const seenCards = new Set();
-    return combined
-      .filter((visible) => {
-        if (!visible?.card || seenCards.has(visible.card)) return false;
-        seenCards.add(visible.card);
-        return true;
-      })
-      .sort((a, b) => viewportPriority(b) - viewportPriority(a))
-      .slice(0, clamp(settings.scanMaxVisibleItems, 1, 50));
+    return finishCollect(combined.filter((visible) => {
+      if (!visible?.card || seenCards.has(visible.card)) return false;
+      seenCards.add(visible.card);
+      return true;
+    }), clamp(settings.scanMaxVisibleItems, 1, 50));
   }
 
   function collectAuctionItems() {
@@ -3275,7 +3591,7 @@
       const text = li.innerText || "";
       rows.push({ itemId, name, price, quantity: 1, card: li, domTextLength: text.length });
     });
-    return rows.sort((a, b) => viewportPriority(b) - viewportPriority(a)).slice(0, clamp(settings.scanMaxVisibleItems, 1, 50));
+    return finishCollect(rows, clamp(settings.scanMaxVisibleItems, 1, 50));
   }
 
   // Editable price field in a row on Torn's "manage listings" style views
@@ -4463,9 +4779,9 @@
   }
 
   function viewportPriority(visible, index = 0) {
-    const rect = visible?.card?.getBoundingClientRect?.();
+    const rect = rectOf(visible?.card);
     if (!rect) return 100 - index;
-    const viewportHeight = Math.max(window.innerHeight || 0, document.documentElement.clientHeight || 0);
+    const viewportHeight = layoutPass.viewportHeight || currentViewportHeight();
     const inViewport = rect.bottom >= 0 && rect.top <= viewportHeight;
     if (inViewport) return 1000 - Math.max(0, Math.round(rect.top / 10)) - index;
     if (rect.top > viewportHeight) return 500 - Math.min(300, Math.round((rect.top - viewportHeight) / 20)) - index;
@@ -4576,6 +4892,61 @@
     setTimeout(() => scanVisibleSurface(surface, { retryIfEmpty: true, force: false, cancelObsolete: true }), 250);
   }
 
+  // Visibility: the browser tab must be visible and, inside Torn PDA, the
+  // WebView tab must be the active one (PDA keeps background tabs "visible"
+  // as far as the document is concerned).
+  const pdaTab = { visible: true };
+
+  function pageVisible() {
+    return document.visibilityState === "visible" && pdaTab.visible;
+  }
+
+  // Rows left for later (off screen or beyond the scan limit) are observed;
+  // the first one to scroll into view triggers a scan. Falls back to the
+  // throttled scroll listener where IntersectionObserver is unavailable.
+  let rowWatcher = null;
+  let deferredScanTimer = null;
+
+  function watchDeferredRows(surface) {
+    const nodes = deferredRows();
+    if (typeof IntersectionObserver !== "function") return false;
+    if (!rowWatcher) {
+      rowWatcher = new IntersectionObserver((entries) => {
+        let hit = false;
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) return;
+          rowWatcher.unobserve(entry.target);
+          hit = true;
+        });
+        if (hit) scheduleDeferredScan();
+      }, { rootMargin: `${Math.round(VIEWPORT_PREFETCH_FACTOR * 100)}% 0px` });
+    }
+    let watched = 0;
+    nodes.forEach((node) => {
+      if (!node?.isConnected) return;
+      if (node.querySelector?.('.me-inline-analysis[data-me-complete="1"]')) return;
+      rowWatcher.observe(node);
+      watched += 1;
+    });
+    if (watched) rowWatcher.meSurface = surface;
+    return watched > 0;
+  }
+
+  function scheduleDeferredScan() {
+    clearTimeout(deferredScanTimer);
+    deferredScanTimer = setTimeout(() => {
+      if (!pageVisible()) return;
+      const surface = detectSurface();
+      if (!LIST_SURFACES.includes(surface)) return;
+      scanVisibleSurface(surface, { retryIfEmpty: false, force: false, cancelObsolete: false });
+    }, 120);
+  }
+
+  function resetRowWatcher() {
+    if (rowWatcher) rowWatcher.disconnect();
+    clearTimeout(deferredScanTimer);
+  }
+
   // One scan at a time per page. A scan requested while another is running
   // is coalesced into a single follow-up pass, so mutation storms cannot
   // stack overlapping scans (duplicate overlays, wasted requests).
@@ -4596,30 +4967,33 @@
       scanState.running = false;
       const pending = scanState.pending;
       scanState.pending = null;
-      if (pending && document.visibilityState === "visible" && detectSurface() === pending.surface) {
+      if (pending && pageVisible() && detectSurface() === pending.surface) {
         setTimeout(() => scanVisibleSurface(pending.surface, pending.options), 60);
       }
     }
   }
 
-  async function scanVisibleSurfaceNow(surface, { retryIfEmpty = false, force = false, cancelObsolete = false } = {}) {
+  async function scanVisibleSurfaceNow(surface, { retryIfEmpty = false, force = false, cancelObsolete = false, fresh = false } = {}) {
     const scanStartedAt = Date.now();
     removeFloatingUi();
-    if (document.visibilityState !== "visible") return;
+    if (!pageVisible()) return;
 
     const queueGroup = beginListQueueGroup(surface, { cancelObsolete });
     const ownBazaar = surface === "bazaar" ? await isOwnBazaar() : false;
-    if (detectSurface() !== surface || document.visibilityState !== "visible") return;
+    if (detectSurface() !== surface || !pageVisible()) return;
 
     const requireMoney = !["inventory", "imsell"].includes(surface);
+    beginLayoutPass();
     let items = surface === "auction"
       ? collectAuctionItems()
       : (surface === "imsell" ? collectSellFormRows() : (surface === "bazaar" && ownBazaar ? collectOwnBazaarItems() : collectVisibleItems({ requireMoney })));
+    // Rows off screen or beyond the limit wait for the IntersectionObserver.
+    watchDeferredRows(surface);
 
     if (!items.length) {
       if (retryIfEmpty) {
         setTimeout(() => {
-          if (detectSurface() === surface && document.visibilityState === "visible") {
+          if (detectSurface() === surface && pageVisible()) {
             scanVisibleSurface(surface, { retryIfEmpty: false, force, cancelObsolete: false });
           }
         }, 650);
@@ -4647,7 +5021,7 @@
       return;
     }
 
-    items.sort((a, b) => viewportPriority(b) - viewportPriority(a));
+    items = sortByViewport(items);
     items.forEach((visible) => {
       if (visible.card?.dataset) {
         visible.card.dataset.meScanning = String(visible.itemId);
@@ -4670,7 +5044,7 @@
     } catch (error) {
       log("Museum context unavailable", error.message);
     }
-    if (detectSurface() !== surface || document.visibilityState !== "visible") return;
+    if (detectSurface() !== surface || !pageVisible()) return;
 
     // Own Bazaar listings feed the sell-side (undercut) watch.
     if (surface === "bazaar" && ownBazaar && !bazaarAddRouteActive()) {
@@ -4708,7 +5082,9 @@
           limit: API_LIST_LIMIT,
           priority,
           queueGroup,
-          maxAgeMs: sellSideSurface ? SELL_SIDE_SNAPSHOT_MAX_AGE_MS : 0,
+          // "Analyze page" asks for fresh books; otherwise recent order books
+          // are reused so re-rendered rows cost no request.
+          maxAgeMs: fresh ? 0 : (sellSideSurface ? SELL_SIDE_SNAPSHOT_MAX_AGE_MS : BUY_SIDE_SNAPSHOT_MAX_AGE_MS),
           onCached: (cached) => {
             if (!visible.card?.isConnected || detectSurface() !== surface) return;
             renderedCached = true;
@@ -4767,7 +5143,7 @@
   let browseScanRunning = false;
 
   async function scanBrowseGrid({ force = false } = {}) {
-    if (browseScanRunning || document.visibilityState !== "visible" || !Store.apiKey()) return;
+    if (browseScanRunning || !pageVisible() || !Store.apiKey()) return;
     if (detectSurface() !== "itemmarket" || getItemIdFromLocation()) return;
     browseScanRunning = true;
     try {
@@ -4833,6 +5209,7 @@
     // unless the caller only saw part of the page.
     const next = Array.from(byKey.values()).filter((entry) => !prune || entry.venue !== venue || seen.has(`${entry.venue}:${entry.itemId}`));
     Store.saveSellWatch(next);
+    ensureWatchTimer();
   }
 
   async function sellWatchTick() {
@@ -4840,7 +5217,7 @@
     const entries = Store.sellWatch();
     if (!entries.length || !Store.apiKey()) return;
     for (const entry of entries) {
-      if (document.visibilityState !== "visible") break;
+      if (!pageVisible()) break;
       try {
         const bundle = await loadSnapshot(entry.itemId, { limit: API_LIST_LIMIT, priority: -60, queueGroup: "watch" });
         const outcome = evaluateSellWatch(entry, bundle.snapshot);
@@ -5590,6 +5967,7 @@
     const entries = Store.watchlist().filter((entry) => entry.itemId !== id);
     entries.push({ itemId: id, name: String(name || `Item ${id}`), target: price, addedAt: Math.floor(Date.now() / 1000) });
     Store.saveWatchlist(entries);
+    ensureWatchTimer();
     return true;
   }
 
@@ -5607,7 +5985,7 @@
     if (timeoutMs > 0) setTimeout(() => toast.remove(), timeoutMs);
     if (!document.title.startsWith("[ME] ")) document.title = `[ME] ${originalTitle}`;
     const resetTitle = () => {
-      if (document.visibilityState === "visible") {
+      if (document.visibilityState === "visible") { // real tab visibility
         document.title = originalTitle;
         document.removeEventListener("visibilitychange", resetTitle);
       }
@@ -5618,7 +5996,7 @@
 
   async function watchTick({ force = false } = {}) {
     if (!settings.watchlistEnabled || watchRunning) return;
-    if (document.visibilityState !== "visible") return;
+    if (!pageVisible()) return;
     const entries = Store.watchlist();
     if (!Store.apiKey()) return;
     if (!entries.length && (settings.undercutAlerts === false || !Store.sellWatch().length)) return;
@@ -5628,7 +6006,7 @@
     watchRunning = true;
     try {
       for (const entry of entries) {
-        if (document.visibilityState !== "visible") break;
+        if (!pageVisible()) break;
         try {
           const bundle = await loadSnapshot(entry.itemId, { limit: API_LIST_LIMIT, priority: -50, queueGroup: "watch" });
           const outcome = evaluateWatchItem(entry, bundle.snapshot);
@@ -5650,10 +6028,31 @@
     }
   }
 
+  // The poll timer only exists while there is something to poll: an empty
+  // watchlist on a page far from any market costs nothing.
+  function watchNeeded() {
+    if (!settings.watchlistEnabled || !Store.apiKey()) return false;
+    if (Store.watchlist().length) return true;
+    return settings.undercutAlerts !== false && Store.sellWatch().length > 0;
+  }
+
   function startWatchlist() {
     if (watchTimer) clearInterval(watchTimer);
-    watchTimer = setInterval(() => { watchTick().catch((error) => log("Watchlist tick failed", error.message)); }, 15000);
+    watchTimer = null;
+    if (!watchNeeded()) return;
+    watchTimer = setInterval(() => {
+      if (!watchNeeded()) {
+        clearInterval(watchTimer);
+        watchTimer = null;
+        return;
+      }
+      watchTick().catch((error) => log("Watchlist tick failed", error.message));
+    }, 15000);
     setTimeout(() => { watchTick().catch(() => {}); }, 4000);
+  }
+
+  function ensureWatchTimer() {
+    if (!watchTimer && watchNeeded()) startWatchlist();
   }
 
   function restartWatchlist() {
@@ -5831,7 +6230,7 @@
   function scheduleSignatureCheck(forceScan = false) {
     clearTimeout(signatureTimer);
     signatureTimer = setTimeout(() => {
-      if (document.visibilityState !== "visible") return;
+      if (!pageVisible()) return;
       const surface = detectSurface();
       if (surface === "itemmarket" && !getItemIdFromLocation() && settings.browseOverlayEnabled !== false) {
         // Browse grid: new cards appear on scroll/category change.
@@ -5862,7 +6261,7 @@
   }
 
   async function refresh(force = false) {
-    if (document.visibilityState !== "visible") return;
+    if (!pageVisible()) return;
     const surface = detectSurface();
     const locationKey = `${surface}|${location.pathname}|${location.search}|${location.hash}`;
     const locationChanged = locationKey !== lastLocationKey || ui.currentSurface !== surface;
@@ -5878,12 +6277,19 @@
     clearBadges();
     lastListSignature = "";
 
+    resetRowWatcher();
     if (surface === "other") {
       cancelQueuedListRequests("Market Edge left a supported market/list view.");
       clearInlineAnalysis();
       removeFloatingUi(true);
+      // Nothing to annotate here: stop watching Torn's DOM until the next
+      // navigation. Attack, chat and crime pages mutate constantly.
+      detachContentObserver();
+      updateLauncher(surface);
       return;
     }
+    attachContentObserver();
+    updateLauncher(surface);
     if (surface === "itemmarket") {
       cancelQueuedListRequests("Market Edge opened detailed Item Market analysis.");
       clearInlineAnalysis();
@@ -5944,7 +6350,7 @@
     };
 
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState !== "visible") return;
+      if (!pageVisible()) return;
       scheduleRefresh(false);
       scheduleSignatureCheck(false);
     });
@@ -5957,10 +6363,9 @@
     // and details panels opening. Attribute mutations (hover classes, inline
     // styles) fire constantly on Torn's React pages and are ignored.
     const observerOptions = { childList: true, subtree: true };
-    let observedRoot = null;
-    const contentObserver = new MutationObserver(() => {
+    contentObserver = new MutationObserver(() => {
       try {
-        if (document.visibilityState !== "visible") return;
+        if (!pageVisible()) return;
         const currentKey = `${detectSurface()}|${location.pathname}|${location.search}|${location.hash}`;
         if (currentKey !== lastLocationKey) {
           scheduleRefresh(true);
@@ -5973,20 +6378,25 @@
       }
     });
 
-    // Rows beyond the scan limit are picked up as they scroll into view.
+    // Rows beyond the scan limit are picked up as they scroll into view: by
+    // the IntersectionObserver where available, else by a throttled scroll
+    // listener. The browse grid always uses the scroll listener (its cards
+    // are found by the signature pass, not deferred rows).
     let scrollTimer = null;
+    const hasIntersectionObserver = typeof IntersectionObserver === "function";
     window.addEventListener("scroll", () => {
       if (scrollTimer) return;
       scrollTimer = setTimeout(() => {
         scrollTimer = null;
-        if (document.visibilityState !== "visible") return;
+        if (!pageVisible()) return;
         const surface = detectSurface();
         if (surface === "itemmarket") scheduleSignatureCheck(false);
-        else if (LIST_SURFACES.includes(surface)) scanVisibleSurface(surface, { retryIfEmpty: false, force: false, cancelObsolete: false });
+        else if (!hasIntersectionObserver && LIST_SURFACES.includes(surface)) scanVisibleSurface(surface, { retryIfEmpty: false, force: false, cancelObsolete: false });
       }, 350);
     }, { passive: true });
 
-    const attachContentObserver = () => {
+    attachContentObserver = () => {
+      if (!contentObserver) return;
       const root = document.querySelector("#mainContainer, .content-wrapper, #bazaarRoot, #react-root") || document.body;
       if (!root || root === observedRoot) return;
       contentObserver.disconnect();
@@ -6006,12 +6416,53 @@
       }
     });
     rootObserver.observe(document.body, { childList: true });
+
+    // Torn PDA: background WebView tabs stay "visible" to the document; the
+    // app reports the real state through its tab-state event.
+    const readPdaTabState = (state) => {
+      if (!state || typeof state !== "object") return;
+      const visible = state.isWebViewVisible !== false && state.isActiveTab !== false;
+      if (visible === pdaTab.visible) return;
+      pdaTab.visible = visible;
+      if (visible) {
+        scheduleRefresh(false);
+        scheduleSignatureCheck(false);
+      }
+    };
+    try {
+      readPdaTabState(window.__tornpda?.tab?.state);
+      window.addEventListener("tornpda:tabState", (event) => readPdaTabState(event?.detail?.state || event?.detail));
+    } catch {
+      // not PDA
+    }
+  }
+
+  let contentObserver = null;
+  let observedRoot = null;
+  let attachContentObserver = () => {};
+
+  function detachContentObserver() {
+    if (!contentObserver || !observedRoot) return;
+    contentObserver.disconnect();
+    observedRoot = null;
+  }
+
+  // On-page entry point. Torn PDA has no userscript menu, so the launcher is
+  // always there; with a userscript menu it appears on supported pages only,
+  // where players actually look for the panels.
+  function updateLauncher(surface) {
+    if (ENV.isPda || !ENV.hasGmMenu) {
+      ensureLauncher();
+      return;
+    }
+    if (surface && surface !== "other") ensureLauncher();
+    else if (launcher?.isConnected) launcher.remove();
   }
 
   function analyzeCurrentPage() {
     const surface = detectSurface();
     if (surface === "itemmarket") renderItemMarket();
-    else if (LIST_SURFACES.includes(surface)) scanVisibleSurface(surface, { force: true });
+    else if (LIST_SURFACES.includes(surface)) scanVisibleSurface(surface, { force: true, fresh: true });
   }
 
   function registerMenu() {
@@ -6088,9 +6539,25 @@
       ui
     });
   } else {
-    registerMenu();
-    installNavigationHooks();
-    scheduleRefresh(true);
-    startWatchlist();
+    // Torn PDA's SQLite store is async: load it before anything reads settings.
+    Store.ready().then(() => {
+      settings = Store.settings();
+      registerMenu();
+      installNavigationHooks();
+      scheduleRefresh(true);
+      startWatchlist();
+      // Bound the persisted per-item records once per session, off the
+      // critical path.
+      setTimeout(() => {
+        try {
+          const pruned = Store.prune();
+          if (pruned) log("Pruned stored item records", pruned);
+        } catch (error) {
+          log("Prune failed", error?.message || error);
+        }
+      }, 20000);
+    }).catch((error) => {
+      console.warn(APP.logPrefix, "Startup failed", error);
+    });
   }
 })(typeof globalThis !== "undefined" ? globalThis : this);

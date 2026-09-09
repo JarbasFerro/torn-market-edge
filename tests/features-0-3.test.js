@@ -296,7 +296,7 @@ test("key access rank and selection support", () => {
 
 test("v0.3.0 guards remain present in the assembled userscript", () => {
   const source = require("node:fs").readFileSync(path.join(__dirname, "..", "torn-market-edge.user.js"), "utf8");
-  assert.match(source, /function transportGet\(url, headers\)/);
+  assert.match(source, /function transportGet\(url, headers/);
   assert.match(source, /PDA_httpGet/);
   assert.match(source, /###PDA-APIKEY###/);
   assert.match(source, /function officialAgreement\(snapshot\)/);

@@ -623,6 +623,13 @@
   // ---------------------------------------------------------------------------
 
   const LOCAL_STORAGE_PREFIX = "marketEdge.local.";
+  const ITEM_RECORD_PREFIXES = Object.freeze([
+    STORAGE_KEYS.snapshotPrefix,
+    STORAGE_KEYS.historyPrefix,
+    STORAGE_KEYS.itemMetaPrefix,
+    STORAGE_KEYS.auctionSalesPrefix
+  ]);
+  const DELETED = Symbol("deleted");
 
   function localFallbackGet(key, fallback) {
     try {
@@ -650,46 +657,219 @@
     }
   }
 
-  class Store {
-    static get(key, fallback) {
-      if (!ENV.hasGmStorage) return localFallbackGet(key, fallback);
-      try {
-        const value = GM_getValue(key, fallback);
-        if (value === undefined) return fallback;
-        // Some userscript bridges (Torn PDA) persist values as strings.
-        if (typeof value === "string" && fallback !== undefined && typeof fallback !== "string") {
-          try { return JSON.parse(value); } catch { return value; }
-        }
-        return value;
-      } catch (error) {
-        console.warn(APP.logPrefix, "Storage read failed", key, error);
-        return localFallbackGet(key, fallback);
+  function localFallbackKeys() {
+    const keys = [];
+    try {
+      for (let index = 0; index < window.localStorage.length; index += 1) {
+        const name = window.localStorage.key(index) || "";
+        if (name.startsWith(LOCAL_STORAGE_PREFIX)) keys.push(name.slice(LOCAL_STORAGE_PREFIX.length));
       }
+    } catch {
+      // ignore
+    }
+    return keys;
+  }
+
+  function gmRead(key, fallback) {
+    try {
+      const value = GM_getValue(key, fallback);
+      if (value === undefined) return fallback;
+      // Some userscript bridges (Torn PDA) persist values as strings.
+      if (typeof value === "string" && fallback !== undefined && typeof fallback !== "string") {
+        try { return JSON.parse(value); } catch { return value; }
+      }
+      return value;
+    } catch (error) {
+      console.warn(APP.logPrefix, "Storage read failed", key, error);
+      return localFallbackGet(key, fallback);
+    }
+  }
+
+  function gmWrite(key, value) {
+    try {
+      GM_setValue(key, value);
+    } catch (error) {
+      console.warn(APP.logPrefix, "Storage write failed", key, error);
+      localFallbackSet(key, value);
+    }
+  }
+
+  function gmDelete(key) {
+    if (!ENV.hasGmDelete) {
+      localFallbackDelete(key);
+      return;
+    }
+    try {
+      GM_deleteValue(key);
+    } catch (error) {
+      console.warn(APP.logPrefix, "Storage delete failed", key, error);
+    }
+  }
+
+  function gmKeys() {
+    try {
+      if (typeof GM_listValues === "function") return Array.from(GM_listValues() || []).map(String);
+    } catch {
+      // fall through
+    }
+    return localFallbackKeys();
+  }
+
+  // Torn PDA 3.15+ offers an async SQLite store (PDA_storage) with its own
+  // quota, separate from the shared, evictable localStorage that backs the
+  // GM_* shim. When present it is loaded once and becomes the backend.
+  const pdaStorage = (() => {
+    try {
+      // eslint-disable-next-line no-undef
+      const candidate = typeof PDA_storage !== "undefined" ? PDA_storage : null;
+      return candidate && typeof candidate.loadAll === "function" && typeof candidate.setMany === "function" ? candidate : null;
+    } catch {
+      return null;
+    }
+  })();
+
+  // Every read goes through an in-memory map; writes land in memory at once
+  // and reach the backend in one batched flush shortly after (or on
+  // pagehide). Per-row code can therefore call Store.pricingRules() or
+  // Store.history() freely without re-parsing JSON each time.
+  class Store {
+    static ready() {
+      if (Store.readyPromise) return Store.readyPromise;
+      Store.readyPromise = (async () => {
+        if (Store.backend !== "pda") return;
+        try {
+          const all = await pdaStorage.loadAll();
+          const entries = all instanceof Map ? Array.from(all.entries()) : Object.entries(all || {});
+          entries.forEach(([key, value]) => {
+            if (!Store.dirty.has(key)) Store.memory.set(key, value);
+          });
+          // First run on PDA_storage: carry the player's settings over from
+          // the localStorage-backed GM shim so nothing is lost.
+          if (!Store.memory.has(STORAGE_KEYS.settings) && ENV.hasGmStorage) {
+            const migrate = [STORAGE_KEYS.settings, STORAGE_KEYS.apiKey, STORAGE_KEYS.keyInfo, STORAGE_KEYS.playerId, STORAGE_KEYS.panelState,
+              STORAGE_KEYS.watchlist, STORAGE_KEYS.sellWatch, STORAGE_KEYS.pricingRules];
+            migrate.forEach((key) => {
+              const value = gmRead(key, undefined);
+              if (value !== undefined && value !== null && value !== "") Store.set(key, value);
+            });
+          }
+        } catch (error) {
+          console.warn(APP.logPrefix, "PDA storage unavailable; using the GM shim", error);
+          Store.backend = ENV.hasGmStorage ? "gm" : "local";
+        }
+      })();
+      return Store.readyPromise;
+    }
+
+    static backendGet(key, fallback) {
+      if (Store.backend === "pda") return fallback;
+      if (Store.backend === "gm") return gmRead(key, fallback);
+      return localFallbackGet(key, fallback);
+    }
+
+    static get(key, fallback) {
+      if (Store.memory.has(key)) {
+        const value = Store.memory.get(key);
+        return value === undefined || value === DELETED ? fallback : value;
+      }
+      const value = Store.backendGet(key, fallback);
+      if (value !== fallback) Store.memory.set(key, value);
+      return value;
     }
 
     static set(key, value) {
-      if (!ENV.hasGmStorage) {
-        localFallbackSet(key, value);
-        return;
-      }
-      try {
-        GM_setValue(key, value);
-      } catch (error) {
-        console.warn(APP.logPrefix, "Storage write failed", key, error);
-        localFallbackSet(key, value);
-      }
+      Store.memory.set(key, value);
+      Store.dirty.set(key, value);
+      Store.scheduleFlush();
     }
 
     static delete(key) {
-      if (!ENV.hasGmStorage || !ENV.hasGmDelete) {
-        localFallbackDelete(key);
+      Store.memory.set(key, DELETED);
+      Store.dirty.set(key, DELETED);
+      Store.scheduleFlush();
+    }
+
+    static scheduleFlush() {
+      if (Store.flushTimer) return;
+      Store.flushTimer = setTimeout(() => Store.flush(), STORE_FLUSH_DELAY_MS);
+    }
+
+    static flush() {
+      if (Store.flushTimer) {
+        clearTimeout(Store.flushTimer);
+        Store.flushTimer = null;
+      }
+      if (!Store.dirty.size) return;
+      const batch = Array.from(Store.dirty.entries());
+      Store.dirty.clear();
+      if (Store.backend === "pda") {
+        const sets = {};
+        let setCount = 0;
+        batch.forEach(([key, value]) => {
+          if (value === DELETED) {
+            Promise.resolve(pdaStorage.delete(key)).catch(() => {});
+            return;
+          }
+          sets[key] = value;
+          setCount += 1;
+        });
+        if (setCount) {
+          Promise.resolve(pdaStorage.setMany(sets)).catch((error) => {
+            console.warn(APP.logPrefix, "PDA storage write failed", error?.code || error);
+            // Quota pressure: drop the oldest item records and keep the
+            // player's own data (settings, key, rules) in the GM shim.
+            if (/quota/i.test(String(error?.code || error?.message || ""))) Store.prune({ max: Math.floor(STORE_MAX_ITEM_RECORDS / 2) });
+            if (ENV.hasGmStorage) Object.entries(sets).forEach(([key, value]) => { if (!ITEM_RECORD_PREFIXES.some((prefix) => key.startsWith(prefix))) gmWrite(key, value); });
+          });
+        }
         return;
       }
+      batch.forEach(([key, value]) => {
+        if (value === DELETED) {
+          if (Store.backend === "gm") gmDelete(key); else localFallbackDelete(key);
+        } else if (Store.backend === "gm") gmWrite(key, value);
+        else localFallbackSet(key, value);
+      });
+    }
+
+    static keys() {
+      const known = new Set(Array.from(Store.memory.keys()).filter((key) => Store.memory.get(key) !== DELETED));
+      let stored = [];
       try {
-        GM_deleteValue(key);
-      } catch (error) {
-        console.warn(APP.logPrefix, "Storage delete failed", key, error);
+        if (Store.backend === "pda") stored = [];
+        else if (Store.backend === "gm") stored = gmKeys();
+        else stored = localFallbackKeys();
+      } catch {
+        stored = [];
       }
+      stored.forEach((key) => { if (Store.memory.get(key) !== DELETED) known.add(key); });
+      return Array.from(known);
+    }
+
+    // Keep the persisted per-item records (order books, history, metadata,
+    // auction sales) bounded: oldest first, once the count exceeds the cap.
+    static prune({ max = STORE_MAX_ITEM_RECORDS } = {}) {
+      const records = Store.keys().filter((key) => ITEM_RECORD_PREFIXES.some((prefix) => key.startsWith(prefix)));
+      if (records.length <= max) return 0;
+      const aged = records.map((key) => {
+        const value = Store.get(key, null);
+        const savedAt = asInt(value?.savedAt, 0)
+          || asInt(value?.timestampObserved, 0) * 1000
+          || (Array.isArray(value) && value.length ? asInt(value[value.length - 1]?.timestamp, 0) * 1000 : 0);
+        return { key, savedAt };
+      }).sort((a, b) => a.savedAt - b.savedAt);
+      const excess = aged.slice(0, records.length - max);
+      excess.forEach((entry) => Store.delete(entry.key));
+      return excess.length;
+    }
+
+    // Another Torn tab may have written settings or rules while this one was
+    // hidden: forget cached reads when the tab comes back.
+    static invalidate() {
+      Store.flush();
+      Store.memory.forEach((value, key) => {
+        if (Store.backend !== "pda" && !ITEM_RECORD_PREFIXES.some((prefix) => key.startsWith(prefix))) Store.memory.delete(key);
+      });
     }
 
     static settings() {
@@ -817,7 +997,12 @@
     }
 
     static pricingRules() {
-      return normalizePricingRules(Store.get(STORAGE_KEYS.pricingRules, {}));
+      // Normalised once per stored object; rows ask for the rules repeatedly.
+      const raw = Store.get(STORAGE_KEYS.pricingRules, {});
+      if (Store.rulesCache?.raw === raw) return Store.rulesCache.rules;
+      const rules = normalizePricingRules(raw);
+      Store.rulesCache = { raw, rules };
+      return rules;
     }
 
     static savePricingRule(itemId, rule) {
@@ -901,7 +1086,23 @@
     }
   }
 
+  Store.memory = new Map();
+  Store.dirty = new Map();
+  Store.flushTimer = null;
+  Store.readyPromise = null;
+  Store.backend = pdaStorage ? "pda" : (ENV.hasGmStorage ? "gm" : "local");
+
   let settings = Store.settings();
+
+  window.addEventListener("pagehide", () => Store.flush());
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      Store.flush();
+      return;
+    }
+    Store.invalidate();
+    settings = Store.settings();
+  });
 
   function log(...args) {
     if (settings.developerMode) console.log(APP.logPrefix, ...args);
@@ -981,12 +1182,27 @@
   // Transport abstraction: Torn PDA exposes PDA_httpGet, userscript managers
   // expose GM_xmlhttpRequest, and plain fetch is the last resort (the Torn API
   // sends permissive CORS headers). All three only ever talk to api.torn.com.
-  function transportGet(url, headers) {
+  const PDA_DEDUPE_WINDOW_MS = 2100;
+
+  function normalizeTransportResponse(response) {
+    if (typeof response?.text === "function" && response.responseText === undefined) {
+      return Promise.resolve(response.text()).then((text) => ({ status: asInt(response.status, 200), responseText: String(text ?? "") }));
+    }
+    return Promise.resolve({ status: asInt(response?.status, 200), responseText: String(response?.responseText ?? "") });
+  }
+
+  function transportGet(url, headers, { attempt = 0 } = {}) {
     if (ENV.hasPdaRequest) {
-      return Promise.resolve(PDA_httpGet(url, headers)).then((response) => ({
-        status: asInt(response?.status, 200),
-        responseText: String(response?.responseText ?? "")
-      }));
+      // Torn PDA returns undefined (no request made) when the same URL was
+      // requested within the last two seconds. Waiting out that window and
+      // retrying keeps the cache hit free; a nonce parameter would cost quota.
+      return Promise.resolve(PDA_httpGet(url, headers)).then((response) => {
+        if (response === undefined || response === null) {
+          if (attempt >= 1) throw new Error("Torn PDA skipped a duplicate request; try again in a moment.");
+          return new Promise((resolve) => setTimeout(resolve, PDA_DEDUPE_WINDOW_MS)).then(() => transportGet(url, headers, { attempt: attempt + 1 }));
+        }
+        return normalizeTransportResponse(response);
+      });
     }
     if (ENV.hasGmRequest) {
       return new Promise((resolve, reject) => {
@@ -1023,6 +1239,23 @@
       });
       this.memoryCache = new Map();
       this.inFlight = new Map();
+    }
+
+    remember(cacheKey, data) {
+      // Bounded, least-recently-set: expired entries go first, then the oldest.
+      if (this.memoryCache.size >= API_MEMORY_CACHE_MAX) {
+        const now = Date.now();
+        for (const [key, entry] of this.memoryCache) {
+          if (now - entry.at > 5 * ONE_MINUTE_MS) this.memoryCache.delete(key);
+        }
+        while (this.memoryCache.size >= API_MEMORY_CACHE_MAX) {
+          const oldest = this.memoryCache.keys().next().value;
+          if (oldest === undefined) break;
+          this.memoryCache.delete(oldest);
+        }
+      }
+      this.memoryCache.delete(cacheKey);
+      this.memoryCache.set(cacheKey, { at: Date.now(), data });
     }
 
     buildUrl(path) {
@@ -1065,7 +1298,7 @@
         });
       }, priority, { path, queueGroup })
         .then((data) => {
-          this.memoryCache.set(cacheKey, { at: Date.now(), data });
+          this.remember(cacheKey, data);
           return data;
         })
         .finally(() => this.inFlight.delete(cacheKey));

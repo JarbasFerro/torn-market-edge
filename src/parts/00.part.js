@@ -43,7 +43,7 @@
   const ONE_MINUTE_MS = 60 * 1000;
   const ONE_DAY_MS = 24 * 60 * 60 * 1000;
   const HISTORY_MIN_GAP_MS = ONE_MINUTE_MS;
-  const HISTORY_MAX_POINTS = 1000;
+  const HISTORY_MAX_POINTS = 400;
   // Torn allows 100 requests/minute per player across all keys. Market Edge
   // keeps a comfortable margin so other tools sharing the key keep working.
   const API_MAX_REQUESTS_PER_MINUTE = 70;
@@ -58,6 +58,18 @@
   // not need that freshness, and refreshes were starving unpriced rows of
   // the request budget on long lists.
   const SELL_SIDE_SNAPSHOT_MAX_AGE_MS = 5 * ONE_MINUTE_MS;
+  // Buy-side lists (Bazaar browse, travel, auction, city shops) reuse an
+  // order book for two minutes: Torn re-renders rows constantly and every
+  // lost overlay would otherwise cost a request once the 30 s cache expired.
+  const BUY_SIDE_SNAPSHOT_MAX_AGE_MS = 2 * ONE_MINUTE_MS;
+  // In-memory API cache and persisted per-item records are bounded so a long
+  // session (or Torn PDA's 5 MB shared localStorage) can never fill up.
+  const API_MEMORY_CACHE_MAX = 300;
+  const STORE_MAX_ITEM_RECORDS = 400;
+  const STORE_FLUSH_DELAY_MS = 300;
+  // Rows further than this many viewport heights below the fold wait for the
+  // IntersectionObserver instead of being scanned (and fetched) up front.
+  const VIEWPORT_PREFETCH_FACTOR = 0.5;
   const ITEM_META_TTL_MS = 7 * ONE_DAY_MS;
   const SET_META_TTL_MS = ONE_DAY_MS;
   const POINTS_MARKET_TTL_MS = 5 * ONE_MINUTE_MS;

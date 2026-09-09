@@ -330,7 +330,19 @@
   // DOM/page detection and visible-page parsing
   // ---------------------------------------------------------------------------
 
+  // detectSurface() is asked on every mutation and inside collector loops;
+  // the answer only depends on the URL (plus a short-lived DOM probe).
+  let surfaceCache = { href: "", at: 0, surface: "other" };
+
   function detectSurface() {
+    const now = Date.now();
+    if (surfaceCache.href === location.href && now - surfaceCache.at < 250) return surfaceCache.surface;
+    const surface = detectSurfaceUncached();
+    surfaceCache = { href: location.href, at: now, surface };
+    return surface;
+  }
+
+  function detectSurfaceUncached() {
     const url = new URL(location.href);
     const sid = String(url.searchParams.get("sid") || "").toLowerCase();
     const path = url.pathname.toLowerCase();

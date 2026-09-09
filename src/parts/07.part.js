@@ -10,7 +10,7 @@
     } catch (error) {
       log("Museum context unavailable", error.message);
     }
-    if (detectSurface() !== surface || document.visibilityState !== "visible") return;
+    if (detectSurface() !== surface || !pageVisible()) return;
 
     // Own Bazaar listings feed the sell-side (undercut) watch.
     if (surface === "bazaar" && ownBazaar && !bazaarAddRouteActive()) {
@@ -48,7 +48,9 @@
           limit: API_LIST_LIMIT,
           priority,
           queueGroup,
-          maxAgeMs: sellSideSurface ? SELL_SIDE_SNAPSHOT_MAX_AGE_MS : 0,
+          // "Analyze page" asks for fresh books; otherwise recent order books
+          // are reused so re-rendered rows cost no request.
+          maxAgeMs: fresh ? 0 : (sellSideSurface ? SELL_SIDE_SNAPSHOT_MAX_AGE_MS : BUY_SIDE_SNAPSHOT_MAX_AGE_MS),
           onCached: (cached) => {
             if (!visible.card?.isConnected || detectSurface() !== surface) return;
             renderedCached = true;
@@ -107,7 +109,7 @@
   let browseScanRunning = false;
 
   async function scanBrowseGrid({ force = false } = {}) {
-    if (browseScanRunning || document.visibilityState !== "visible" || !Store.apiKey()) return;
+    if (browseScanRunning || !pageVisible() || !Store.apiKey()) return;
     if (detectSurface() !== "itemmarket" || getItemIdFromLocation()) return;
     browseScanRunning = true;
     try {
@@ -173,6 +175,7 @@
     // unless the caller only saw part of the page.
     const next = Array.from(byKey.values()).filter((entry) => !prune || entry.venue !== venue || seen.has(`${entry.venue}:${entry.itemId}`));
     Store.saveSellWatch(next);
+    ensureWatchTimer();
   }
 
   async function sellWatchTick() {
@@ -180,7 +183,7 @@
     const entries = Store.sellWatch();
     if (!entries.length || !Store.apiKey()) return;
     for (const entry of entries) {
-      if (document.visibilityState !== "visible") break;
+      if (!pageVisible()) break;
       try {
         const bundle = await loadSnapshot(entry.itemId, { limit: API_LIST_LIMIT, priority: -60, queueGroup: "watch" });
         const outcome = evaluateSellWatch(entry, bundle.snapshot);
@@ -930,6 +933,7 @@
     const entries = Store.watchlist().filter((entry) => entry.itemId !== id);
     entries.push({ itemId: id, name: String(name || `Item ${id}`), target: price, addedAt: Math.floor(Date.now() / 1000) });
     Store.saveWatchlist(entries);
+    ensureWatchTimer();
     return true;
   }
 
@@ -947,7 +951,7 @@
     if (timeoutMs > 0) setTimeout(() => toast.remove(), timeoutMs);
     if (!document.title.startsWith("[ME] ")) document.title = `[ME] ${originalTitle}`;
     const resetTitle = () => {
-      if (document.visibilityState === "visible") {
+      if (document.visibilityState === "visible") { // real tab visibility
         document.title = originalTitle;
         document.removeEventListener("visibilitychange", resetTitle);
       }
@@ -958,7 +962,7 @@
 
   async function watchTick({ force = false } = {}) {
     if (!settings.watchlistEnabled || watchRunning) return;
-    if (document.visibilityState !== "visible") return;
+    if (!pageVisible()) return;
     const entries = Store.watchlist();
     if (!Store.apiKey()) return;
     if (!entries.length && (settings.undercutAlerts === false || !Store.sellWatch().length)) return;
@@ -968,7 +972,7 @@
     watchRunning = true;
     try {
       for (const entry of entries) {
-        if (document.visibilityState !== "visible") break;
+        if (!pageVisible()) break;
         try {
           const bundle = await loadSnapshot(entry.itemId, { limit: API_LIST_LIMIT, priority: -50, queueGroup: "watch" });
           const outcome = evaluateWatchItem(entry, bundle.snapshot);
@@ -990,10 +994,31 @@
     }
   }
 
+  // The poll timer only exists while there is something to poll: an empty
+  // watchlist on a page far from any market costs nothing.
+  function watchNeeded() {
+    if (!settings.watchlistEnabled || !Store.apiKey()) return false;
+    if (Store.watchlist().length) return true;
+    return settings.undercutAlerts !== false && Store.sellWatch().length > 0;
+  }
+
   function startWatchlist() {
     if (watchTimer) clearInterval(watchTimer);
-    watchTimer = setInterval(() => { watchTick().catch((error) => log("Watchlist tick failed", error.message)); }, 15000);
+    watchTimer = null;
+    if (!watchNeeded()) return;
+    watchTimer = setInterval(() => {
+      if (!watchNeeded()) {
+        clearInterval(watchTimer);
+        watchTimer = null;
+        return;
+      }
+      watchTick().catch((error) => log("Watchlist tick failed", error.message));
+    }, 15000);
     setTimeout(() => { watchTick().catch(() => {}); }, 4000);
+  }
+
+  function ensureWatchTimer() {
+    if (!watchTimer && watchNeeded()) startWatchlist();
   }
 
   function restartWatchlist() {
@@ -1171,7 +1196,7 @@
   function scheduleSignatureCheck(forceScan = false) {
     clearTimeout(signatureTimer);
     signatureTimer = setTimeout(() => {
-      if (document.visibilityState !== "visible") return;
+      if (!pageVisible()) return;
       const surface = detectSurface();
       if (surface === "itemmarket" && !getItemIdFromLocation() && settings.browseOverlayEnabled !== false) {
         // Browse grid: new cards appear on scroll/category change.
@@ -1202,7 +1227,7 @@
   }
 
   async function refresh(force = false) {
-    if (document.visibilityState !== "visible") return;
+    if (!pageVisible()) return;
     const surface = detectSurface();
     const locationKey = `${surface}|${location.pathname}|${location.search}|${location.hash}`;
     const locationChanged = locationKey !== lastLocationKey || ui.currentSurface !== surface;
@@ -1218,12 +1243,19 @@
     clearBadges();
     lastListSignature = "";
 
+    resetRowWatcher();
     if (surface === "other") {
       cancelQueuedListRequests("Market Edge left a supported market/list view.");
       clearInlineAnalysis();
       removeFloatingUi(true);
+      // Nothing to annotate here: stop watching Torn's DOM until the next
+      // navigation. Attack, chat and crime pages mutate constantly.
+      detachContentObserver();
+      updateLauncher(surface);
       return;
     }
+    attachContentObserver();
+    updateLauncher(surface);
     if (surface === "itemmarket") {
       cancelQueuedListRequests("Market Edge opened detailed Item Market analysis.");
       clearInlineAnalysis();
@@ -1284,7 +1316,7 @@
     };
 
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState !== "visible") return;
+      if (!pageVisible()) return;
       scheduleRefresh(false);
       scheduleSignatureCheck(false);
     });
@@ -1297,10 +1329,9 @@
     // and details panels opening. Attribute mutations (hover classes, inline
     // styles) fire constantly on Torn's React pages and are ignored.
     const observerOptions = { childList: true, subtree: true };
-    let observedRoot = null;
-    const contentObserver = new MutationObserver(() => {
+    contentObserver = new MutationObserver(() => {
       try {
-        if (document.visibilityState !== "visible") return;
+        if (!pageVisible()) return;
         const currentKey = `${detectSurface()}|${location.pathname}|${location.search}|${location.hash}`;
         if (currentKey !== lastLocationKey) {
           scheduleRefresh(true);
@@ -1313,20 +1344,25 @@
       }
     });
 
-    // Rows beyond the scan limit are picked up as they scroll into view.
+    // Rows beyond the scan limit are picked up as they scroll into view: by
+    // the IntersectionObserver where available, else by a throttled scroll
+    // listener. The browse grid always uses the scroll listener (its cards
+    // are found by the signature pass, not deferred rows).
     let scrollTimer = null;
+    const hasIntersectionObserver = typeof IntersectionObserver === "function";
     window.addEventListener("scroll", () => {
       if (scrollTimer) return;
       scrollTimer = setTimeout(() => {
         scrollTimer = null;
-        if (document.visibilityState !== "visible") return;
+        if (!pageVisible()) return;
         const surface = detectSurface();
         if (surface === "itemmarket") scheduleSignatureCheck(false);
-        else if (LIST_SURFACES.includes(surface)) scanVisibleSurface(surface, { retryIfEmpty: false, force: false, cancelObsolete: false });
+        else if (!hasIntersectionObserver && LIST_SURFACES.includes(surface)) scanVisibleSurface(surface, { retryIfEmpty: false, force: false, cancelObsolete: false });
       }, 350);
     }, { passive: true });
 
-    const attachContentObserver = () => {
+    attachContentObserver = () => {
+      if (!contentObserver) return;
       const root = document.querySelector("#mainContainer, .content-wrapper, #bazaarRoot, #react-root") || document.body;
       if (!root || root === observedRoot) return;
       contentObserver.disconnect();
@@ -1346,12 +1382,53 @@
       }
     });
     rootObserver.observe(document.body, { childList: true });
+
+    // Torn PDA: background WebView tabs stay "visible" to the document; the
+    // app reports the real state through its tab-state event.
+    const readPdaTabState = (state) => {
+      if (!state || typeof state !== "object") return;
+      const visible = state.isWebViewVisible !== false && state.isActiveTab !== false;
+      if (visible === pdaTab.visible) return;
+      pdaTab.visible = visible;
+      if (visible) {
+        scheduleRefresh(false);
+        scheduleSignatureCheck(false);
+      }
+    };
+    try {
+      readPdaTabState(window.__tornpda?.tab?.state);
+      window.addEventListener("tornpda:tabState", (event) => readPdaTabState(event?.detail?.state || event?.detail));
+    } catch {
+      // not PDA
+    }
+  }
+
+  let contentObserver = null;
+  let observedRoot = null;
+  let attachContentObserver = () => {};
+
+  function detachContentObserver() {
+    if (!contentObserver || !observedRoot) return;
+    contentObserver.disconnect();
+    observedRoot = null;
+  }
+
+  // On-page entry point. Torn PDA has no userscript menu, so the launcher is
+  // always there; with a userscript menu it appears on supported pages only,
+  // where players actually look for the panels.
+  function updateLauncher(surface) {
+    if (ENV.isPda || !ENV.hasGmMenu) {
+      ensureLauncher();
+      return;
+    }
+    if (surface && surface !== "other") ensureLauncher();
+    else if (launcher?.isConnected) launcher.remove();
   }
 
   function analyzeCurrentPage() {
     const surface = detectSurface();
     if (surface === "itemmarket") renderItemMarket();
-    else if (LIST_SURFACES.includes(surface)) scanVisibleSurface(surface, { force: true });
+    else if (LIST_SURFACES.includes(surface)) scanVisibleSurface(surface, { force: true, fresh: true });
   }
 
   function registerMenu() {
@@ -1428,9 +1505,25 @@
       ui
     });
   } else {
-    registerMenu();
-    installNavigationHooks();
-    scheduleRefresh(true);
-    startWatchlist();
+    // Torn PDA's SQLite store is async: load it before anything reads settings.
+    Store.ready().then(() => {
+      settings = Store.settings();
+      registerMenu();
+      installNavigationHooks();
+      scheduleRefresh(true);
+      startWatchlist();
+      // Bound the persisted per-item records once per session, off the
+      // critical path.
+      setTimeout(() => {
+        try {
+          const pruned = Store.prune();
+          if (pruned) log("Pruned stored item records", pruned);
+        } catch (error) {
+          log("Prune failed", error?.message || error);
+        }
+      }, 20000);
+    }).catch((error) => {
+      console.warn(APP.logPrefix, "Startup failed", error);
+    });
   }
 })(typeof globalThis !== "undefined" ? globalThis : this);

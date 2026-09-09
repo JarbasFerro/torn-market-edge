@@ -542,9 +542,9 @@
   }
 
   function viewportPriority(visible, index = 0) {
-    const rect = visible?.card?.getBoundingClientRect?.();
+    const rect = rectOf(visible?.card);
     if (!rect) return 100 - index;
-    const viewportHeight = Math.max(window.innerHeight || 0, document.documentElement.clientHeight || 0);
+    const viewportHeight = layoutPass.viewportHeight || currentViewportHeight();
     const inViewport = rect.bottom >= 0 && rect.top <= viewportHeight;
     if (inViewport) return 1000 - Math.max(0, Math.round(rect.top / 10)) - index;
     if (rect.top > viewportHeight) return 500 - Math.min(300, Math.round((rect.top - viewportHeight) / 20)) - index;
@@ -655,6 +655,61 @@
     setTimeout(() => scanVisibleSurface(surface, { retryIfEmpty: true, force: false, cancelObsolete: true }), 250);
   }
 
+  // Visibility: the browser tab must be visible and, inside Torn PDA, the
+  // WebView tab must be the active one (PDA keeps background tabs "visible"
+  // as far as the document is concerned).
+  const pdaTab = { visible: true };
+
+  function pageVisible() {
+    return document.visibilityState === "visible" && pdaTab.visible;
+  }
+
+  // Rows left for later (off screen or beyond the scan limit) are observed;
+  // the first one to scroll into view triggers a scan. Falls back to the
+  // throttled scroll listener where IntersectionObserver is unavailable.
+  let rowWatcher = null;
+  let deferredScanTimer = null;
+
+  function watchDeferredRows(surface) {
+    const nodes = deferredRows();
+    if (typeof IntersectionObserver !== "function") return false;
+    if (!rowWatcher) {
+      rowWatcher = new IntersectionObserver((entries) => {
+        let hit = false;
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) return;
+          rowWatcher.unobserve(entry.target);
+          hit = true;
+        });
+        if (hit) scheduleDeferredScan();
+      }, { rootMargin: `${Math.round(VIEWPORT_PREFETCH_FACTOR * 100)}% 0px` });
+    }
+    let watched = 0;
+    nodes.forEach((node) => {
+      if (!node?.isConnected) return;
+      if (node.querySelector?.('.me-inline-analysis[data-me-complete="1"]')) return;
+      rowWatcher.observe(node);
+      watched += 1;
+    });
+    if (watched) rowWatcher.meSurface = surface;
+    return watched > 0;
+  }
+
+  function scheduleDeferredScan() {
+    clearTimeout(deferredScanTimer);
+    deferredScanTimer = setTimeout(() => {
+      if (!pageVisible()) return;
+      const surface = detectSurface();
+      if (!LIST_SURFACES.includes(surface)) return;
+      scanVisibleSurface(surface, { retryIfEmpty: false, force: false, cancelObsolete: false });
+    }, 120);
+  }
+
+  function resetRowWatcher() {
+    if (rowWatcher) rowWatcher.disconnect();
+    clearTimeout(deferredScanTimer);
+  }
+
   // One scan at a time per page. A scan requested while another is running
   // is coalesced into a single follow-up pass, so mutation storms cannot
   // stack overlapping scans (duplicate overlays, wasted requests).
@@ -675,30 +730,33 @@
       scanState.running = false;
       const pending = scanState.pending;
       scanState.pending = null;
-      if (pending && document.visibilityState === "visible" && detectSurface() === pending.surface) {
+      if (pending && pageVisible() && detectSurface() === pending.surface) {
         setTimeout(() => scanVisibleSurface(pending.surface, pending.options), 60);
       }
     }
   }
 
-  async function scanVisibleSurfaceNow(surface, { retryIfEmpty = false, force = false, cancelObsolete = false } = {}) {
+  async function scanVisibleSurfaceNow(surface, { retryIfEmpty = false, force = false, cancelObsolete = false, fresh = false } = {}) {
     const scanStartedAt = Date.now();
     removeFloatingUi();
-    if (document.visibilityState !== "visible") return;
+    if (!pageVisible()) return;
 
     const queueGroup = beginListQueueGroup(surface, { cancelObsolete });
     const ownBazaar = surface === "bazaar" ? await isOwnBazaar() : false;
-    if (detectSurface() !== surface || document.visibilityState !== "visible") return;
+    if (detectSurface() !== surface || !pageVisible()) return;
 
     const requireMoney = !["inventory", "imsell"].includes(surface);
+    beginLayoutPass();
     let items = surface === "auction"
       ? collectAuctionItems()
       : (surface === "imsell" ? collectSellFormRows() : (surface === "bazaar" && ownBazaar ? collectOwnBazaarItems() : collectVisibleItems({ requireMoney })));
+    // Rows off screen or beyond the limit wait for the IntersectionObserver.
+    watchDeferredRows(surface);
 
     if (!items.length) {
       if (retryIfEmpty) {
         setTimeout(() => {
-          if (detectSurface() === surface && document.visibilityState === "visible") {
+          if (detectSurface() === surface && pageVisible()) {
             scanVisibleSurface(surface, { retryIfEmpty: false, force, cancelObsolete: false });
           }
         }, 650);
@@ -726,7 +784,7 @@
       return;
     }
 
-    items.sort((a, b) => viewportPriority(b) - viewportPriority(a));
+    items = sortByViewport(items);
     items.forEach((visible) => {
       if (visible.card?.dataset) {
         visible.card.dataset.meScanning = String(visible.itemId);
