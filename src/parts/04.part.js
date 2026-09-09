@@ -558,8 +558,9 @@
           quantityCheckbox,
           bazaarAdd: true,
           bazaarControls: controlHost,
-          inlineAnchor: controlHost,
-          inlineMode: "bazaar-below-controls",
+          inlineAnchor: card,
+          inlineMode: "row-line",
+          rowLine: true,
           domTextLength: score
         });
       }
@@ -641,8 +642,10 @@
         // the price only, never the quantity.
         priceOnly: /viewlisting|view-listing/i.test(String(location.hash || "")),
         bazaarControls: controlHost,
-        inlineAnchor: controlHost,
-        inlineMode: "bazaar-below-controls",
+        // Full-width strip under the whole row, not inside the controls.
+        inlineAnchor: card,
+        inlineMode: "row-line",
+        rowLine: true,
         domTextLength: Math.min(text.length, 1200)
       });
     }

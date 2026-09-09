@@ -55,6 +55,10 @@
     .me-bazaar-add-controls { flex-wrap:wrap !important; overflow:visible !important; }
     .me-bazaar-add-controls > .me-inline-analysis { display:flex !important; flex:0 0 100% !important; width:100% !important; max-width:none !important; grid-column:1 / -1 !important; justify-content:flex-end !important; margin:4px 0 1px !important; z-index:10 !important; }
     .me-inline-analysis.me-bazaar-add { pointer-events:auto !important; padding-right:3px !important; }
+    div.me-inline-analysis.me-bazaar-add.me-row-line { gap:8px !important; padding:5px 8px !important; align-items:center !important; }
+    .me-bazaar-fill-btn.me-fill-main { height:30px !important; min-width:0 !important; padding:0 12px !important; font:700 12px/1 Arial,sans-serif !important; white-space:nowrap !important; border-radius:6px !important; background:rgba(255,255,255,.12) !important; }
+    .me-bazaar-fill-btn.me-fill-main.me-applied { background:rgba(74,165,100,.28) !important; border-color:rgba(74,165,100,.7) !important; color:#dff5e4 !important; }
+    .me-inline-analysis.me-bazaar-add .me-inline-secondary { white-space:nowrap !important; }
     .me-row-host { height:auto !important; max-height:none !important; overflow:visible !important; flex-wrap:wrap !important; }
     .me-row-host.me-row-float-host { position:relative !important; }
     div.me-inline-analysis.me-row-line { display:flex !important; flex:0 0 100% !important; width:100% !important; max-width:none !important; height:auto !important; min-height:16px !important; clear:both !important; margin:0 !important; padding:2px 8px !important; border:0 !important; border-top:1px solid rgba(255,255,255,.08) !important; border-radius:0 !important; background:rgba(0,0,0,.28) !important; justify-content:flex-start !important; white-space:normal !important; flex-wrap:wrap !important; position:relative !important; z-index:5 !important; line-height:1.3 !important; visibility:visible !important; opacity:1 !important; }

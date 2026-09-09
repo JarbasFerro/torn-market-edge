@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.5.4
+// @version      0.5.5
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.5.4",
+    version: "0.5.5",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -63,7 +63,7 @@
   const WATCHLIST_MAX_ITEMS = 25;
   const WATCHLIST_ALERT_COOLDOWN_MS = 10 * ONE_MINUTE_MS;
   const OWN_LISTINGS_MAX = 25;
-  // v0.5.4 surfaces: portfolio, shop runs, travel planner, auction guidance.
+  // v0.5.5 surfaces: portfolio, shop runs, travel planner, auction guidance.
   const INVENTORY_TTL_MS = 60 * ONE_MINUTE_MS;
   const INVENTORY_PAGE_LIMIT = 250;
   const INVENTORY_MAX_PAGES = 8;
@@ -3066,8 +3066,9 @@
           quantityCheckbox,
           bazaarAdd: true,
           bazaarControls: controlHost,
-          inlineAnchor: controlHost,
-          inlineMode: "bazaar-below-controls",
+          inlineAnchor: card,
+          inlineMode: "row-line",
+          rowLine: true,
           domTextLength: score
         });
       }
@@ -3149,8 +3150,10 @@
         // the price only, never the quantity.
         priceOnly: /viewlisting|view-listing/i.test(String(location.hash || "")),
         bazaarControls: controlHost,
-        inlineAnchor: controlHost,
-        inlineMode: "bazaar-below-controls",
+        // Full-width strip under the whole row, not inside the controls.
+        inlineAnchor: card,
+        inlineMode: "row-line",
+        rowLine: true,
         domTextLength: Math.min(text.length, 1200)
       });
     }
@@ -3457,6 +3460,10 @@
     .me-bazaar-add-controls { flex-wrap:wrap !important; overflow:visible !important; }
     .me-bazaar-add-controls > .me-inline-analysis { display:flex !important; flex:0 0 100% !important; width:100% !important; max-width:none !important; grid-column:1 / -1 !important; justify-content:flex-end !important; margin:4px 0 1px !important; z-index:10 !important; }
     .me-inline-analysis.me-bazaar-add { pointer-events:auto !important; padding-right:3px !important; }
+    div.me-inline-analysis.me-bazaar-add.me-row-line { gap:8px !important; padding:5px 8px !important; align-items:center !important; }
+    .me-bazaar-fill-btn.me-fill-main { height:30px !important; min-width:0 !important; padding:0 12px !important; font:700 12px/1 Arial,sans-serif !important; white-space:nowrap !important; border-radius:6px !important; background:rgba(255,255,255,.12) !important; }
+    .me-bazaar-fill-btn.me-fill-main.me-applied { background:rgba(74,165,100,.28) !important; border-color:rgba(74,165,100,.7) !important; color:#dff5e4 !important; }
+    .me-inline-analysis.me-bazaar-add .me-inline-secondary { white-space:nowrap !important; }
     .me-row-host { height:auto !important; max-height:none !important; overflow:visible !important; flex-wrap:wrap !important; }
     .me-row-host.me-row-float-host { position:relative !important; }
     div.me-inline-analysis.me-row-line { display:flex !important; flex:0 0 100% !important; width:100% !important; max-width:none !important; height:auto !important; min-height:16px !important; clear:both !important; margin:0 !important; padding:2px 8px !important; border:0 !important; border-top:1px solid rgba(255,255,255,.08) !important; border-radius:0 !important; background:rgba(0,0,0,.28) !important; justify-content:flex-start !important; white-space:normal !important; flex-wrap:wrap !important; position:relative !important; z-index:5 !important; line-height:1.3 !important; visibility:visible !important; opacity:1 !important; }
@@ -3933,59 +3940,96 @@
     return parseIntegerField(input.value) === target;
   }
 
+  // Torn re-renders a sell-form row after each field change (React), so the
+  // elements captured at scan time may be dead by the time the second field
+  // is written. Re-resolve them from the live page by item id.
+  function resolveSellFormInputs(visible) {
+    const alive = (node) => node && node.isConnected;
+    if (alive(visible.priceInput) && (visible.priceOnly || alive(visible.quantityCheckbox) || alive(visible.quantityInput))) return visible;
+    try {
+      const rows = visible.sellForm ? collectSellFormRows() : collectBazaarAddItems();
+      const fresh = rows.find((row) => row.itemId === visible.itemId && (!alive(visible.card) || row.card === visible.card || visible.card.contains(row.card) || row.card.contains(visible.card)))
+        || rows.find((row) => row.itemId === visible.itemId);
+      if (fresh) {
+        visible.card = fresh.card;
+        visible.priceInput = fresh.priceInput;
+        visible.quantityInput = fresh.quantityInput;
+        visible.quantityCheckbox = fresh.quantityCheckbox;
+        visible.maxAvailable = fresh.maxAvailable || visible.maxAvailable;
+      }
+    } catch (error) {
+      log("Sell-form input refresh failed", visible.itemId, error.message);
+    }
+    return visible;
+  }
+
+  function fillSellFormRow(visible, target) {
+    const qty = Math.max(1, asInt(visible.maxAvailable || visible.quantity, 1));
+    let quantityFilled = visible.priceOnly === true;
+    if (!visible.priceOnly) {
+      resolveSellFormInputs(visible);
+      if (visible.quantityCheckbox?.isConnected) {
+        if (!visible.quantityCheckbox.checked) visible.quantityCheckbox.click();
+        quantityFilled = Boolean(visible.quantityCheckbox.checked);
+      } else if (visible.quantityInput?.isConnected) {
+        quantityFilled = setBazaarInputValue(visible.quantityInput, qty);
+        visible.quantityInput.dispatchEvent(new Event("keyup", { bubbles: true, composed: true }));
+      }
+    }
+    // The quantity write may have re-rendered the row: fetch the price field
+    // again before writing it.
+    resolveSellFormInputs(visible);
+    const priceFilled = visible.priceInput?.isConnected ? setBazaarInputValue(visible.priceInput, target) : false;
+    if (priceFilled) visible.price = target;
+    return { priceFilled, quantityFilled, qty };
+  }
+
   function renderBazaarAddSuggestion(result) {
     const visible = result.visible;
     const source = result?.sellForm || result?.ownBazaar || {};
     const target = source.target;
     const stale = staleMarker(result);
-    const venue = result?.sellForm ? "Item Market" : "Bazaar";
     if (!Number.isFinite(target) || target <= 0) {
       return renderInlineHtml(
         visible,
         `<span class="me-inline-brand">ME</span><span class="me-inline-secondary">${escapeHtml(source.reason || "price unavailable")}</span>${stale}`,
-        "GREY"
+        "GREY",
+        "me-bazaar-add"
       );
     }
 
-    const targetText = formatMoney(target);
+    const exact = formatMoney(target, true);
     const qty = Math.max(1, asInt(visible.maxAvailable || visible.quantity, 1));
-    const totalHtml = qty > 1
-      ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Total at this price for the ${qty} you own">x${qty} ${formatMoney(target * qty)}</span>`
+    const filled = asInt(visible.price, 0) === target;
+    const label = `${filled ? "Filled" : "Fill"} ${visible.priceOnly || qty === 1 ? exact : `${qty.toLocaleString("en-US")} \u00d7 ${exact}`}`;
+    const totalHtml = qty > 1 && !visible.priceOnly
+      ? `<span class="me-inline-secondary">total ${formatMoney(target * qty)}</span>`
       : "";
     const netHtml = result?.sellForm && Number.isFinite(source.net)
-      ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Net per unit after the ${source.feeBps / 100}% Item Market fee">net ${formatMoney(source.net)}</span>`
+      ? `<span class="me-inline-secondary">net ${formatMoney(qty > 1 && !visible.priceOnly ? source.net * qty : source.net)}${source.feeBps ? ` after ${source.feeBps / 100}%` : ""}</span>`
       : "";
-    const priceTitle = `Suggested ${venue} selling price${source.floor ? ` (Item Market floor ${formatMoney(source.floor, true)})` : ""}`;
+    // No title attributes: mobile webviews pop them up as bubbles over the row.
     const block = renderInlineHtml(
       visible,
-      `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="${escapeHtml(priceTitle)}">${targetText}</span><button class="me-bazaar-fill-btn" type="button" aria-label="Fill price and maximum quantity" title="Fill price with ${escapeHtml(targetText)} and quantity with max available; ${escapeHtml(venue === "Bazaar" ? "ADD TO BAZAAR" : "listing")} stays manual">^</button>${totalHtml}${netHtml}${stale}`,
-      "GREY",
+      `<span class="me-inline-brand">ME</span><button class="me-bazaar-fill-btn me-fill-main${filled ? " me-applied" : ""}" type="button" aria-label="${escapeHtml(label)}; ${escapeHtml(result?.sellForm ? "listing" : "adding to the Bazaar")} stays manual">${escapeHtml(label)}</button>${totalHtml}${netHtml}${stale}`,
+      filled ? "GREEN" : "GREY",
       "me-bazaar-add"
     );
     const button = block?.querySelector?.(".me-bazaar-fill-btn");
     if (!button || !visible.priceInput) return block;
 
     const apply = () => {
-      if (!visible.priceInput?.isConnected) return;
-      const priceFilled = setBazaarInputValue(visible.priceInput, target);
-      const maxAvailable = Math.max(1, asInt(visible.maxAvailable || visible.quantity, 1));
-      let quantityFilled = false;
-      if (visible.priceOnly) {
-        // Existing listing: the quantity is not ours to change.
-      } else if (visible.quantityCheckbox?.isConnected) {
-        if (!visible.quantityCheckbox.checked) visible.quantityCheckbox.click();
-        quantityFilled = Boolean(visible.quantityCheckbox.checked);
-      } else if (visible.quantityInput?.isConnected) {
-        quantityFilled = setBazaarInputValue(visible.quantityInput, maxAvailable);
-        visible.quantityInput.dispatchEvent(new Event("keyup", { bubbles: true, composed: true }));
+      const outcome = fillSellFormRow(visible, target);
+      if (!outcome.priceFilled) {
+        button.textContent = "Price field not found";
+        return;
       }
-      if (!priceFilled) return;
-      visible.price = target;
-      block.classList.add("me-applied");
-      button.title = quantityFilled
-        ? `Filled ${maxAvailable} units at ${targetText}`
-        : `Price filled with ${targetText}; quantity field was not detected`;
-      setTimeout(() => block?.classList?.remove("me-applied"), 700);
+      button.textContent = `Filled ${visible.priceOnly || outcome.qty === 1 ? exact : `${outcome.qty.toLocaleString("en-US")} \u00d7 ${exact}`}${outcome.quantityFilled || visible.priceOnly ? "" : " (set quantity by hand)"}`;
+      button.classList.add("me-applied");
+      block.classList.add("GREEN");
+      // Torn may replace the row after the write; a rescan puts the strip
+      // back in its filled state.
+      setTimeout(() => scheduleSignatureCheck(true), 350);
     };
     // "Fill all" from the menu reuses the same handler without synthesising
     // a click on any element.
@@ -4077,8 +4121,8 @@
       const fillPrice = fill?.price || null;
       const ruleLabel = data?.rule ? ` (rule: ${data.rule.mode}${data.rule.minPrice ? `, min ${formatMoney(data.rule.minPrice)}` : ""})` : "";
       const fillHtml = visible.priceInput && fillPrice
-        ? `<button class="me-bazaar-fill-btn me-manage-fill" type="button" title="Fill Torn's price field with ${escapeHtml(formatMoney(fillPrice, true))}${escapeHtml(ruleLabel)}. Saving stays manual.">^</button>`
-        : (fill?.reason === "held by rule" ? `<span class="me-inline-secondary" title="Pricing rule: hold">hold</span>` : "");
+        ? `<button class="me-bazaar-fill-btn me-manage-fill" type="button" aria-label="Fill the price field with ${escapeHtml(formatMoney(fillPrice, true))}${escapeHtml(ruleLabel)}; saving stays manual">Fill ${escapeHtml(formatMoney(fillPrice, true))}</button>`
+        : (fill?.reason === "held by rule" ? `<span class="me-inline-secondary">hold</span>` : "");
       const floorHtml = data?.floor ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Cheapest Item Market listing">floor ${formatMoney(data.floor)}</span>` : "";
       const block = renderInlineHtml(visible,
         `<span class="me-inline-brand">ME</span><span class="me-inline-primary">Target ${formatMoney(data?.target)}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${deltaText}</span>${floorHtml}${fillHtml}<span class="me-inline-status">${data?.delta > 0 ? "LOW" : "OK"}</span>${stale}`,

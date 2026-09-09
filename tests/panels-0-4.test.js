@@ -294,11 +294,14 @@ run("Item Market sell form (add listing) rows get an Item Market price with net 
   const xanax = blocks.find((block) => block.dataset.meItemId === "206");
   const rifle = blocks.find((block) => block.dataset.meItemId === "1");
   assert.ok(xanax && rifle, "both rows annotated");
-  assert.match(xanax.textContent, /\$789k|\$790k/, "floor minus undercut");
+  assert.match(xanax.textContent, /Fill 12 \u00d7 \$789,999/, "one explicit button with quantity and exact price");
   assert.match(xanax.textContent, /net \$/);
+  assert.equal(xanax.querySelector("[title]"), null, "no tooltip attributes on the strip");
+  assert.equal(xanax.parentElement, xanax.closest(".sellRow___t7"), "strip is a child of the row itself");
   const button = xanax.querySelector(".me-bazaar-fill-btn");
   assert.ok(button);
   button.click();
+  assert.match(button.textContent, /^Filled 12 \u00d7 \$789,999$/, "button turns into a confirmation");
   const priceInput = env.document.querySelector(".sellRow___t7 input.price___m5");
   assert.equal(priceInput.value, "789999");
   assert.equal(env.document.querySelector(".sellRow___t7 input.quantity___q1").value, "12", "quantity filled with everything owned");
@@ -455,15 +458,15 @@ run("Inventory overlays are block-level children of the row, never inside Torn's
   assert.match(report, /row children: /);
 });
 
-run("Item Market sell-form overlays are hosted in the row's info container, not inside the money-input group", async (t) => {
+run("Item Market sell-form strips are full-width children of the row, never inside the money-input group", async (t) => {
   const env = boot(fixture("itemmarket-addlisting.html"), "https://www.torn.com/page.php?sid=ItemMarket#/addListing");
   t.after(env.close);
   await env.ME.scanVisibleSurface("imsell", { force: true });
   const overlay = env.document.querySelector(".me-inline-analysis[data-me-item-id='206']");
   assert.ok(overlay);
   assert.equal(overlay.closest(".input-money-group"), null, "never inside the money group");
-  assert.match(overlay.parentElement.className, /info___/, "hosted by the info container");
-  assert.ok(overlay.parentElement.classList.contains("me-bazaar-add-controls"), "host gets the wrapping layout class");
+  assert.match(overlay.parentElement.className, /itemRow___/, "hosted by the row itself as a full-width strip");
+  assert.ok(overlay.parentElement.classList.contains("me-row-host"), "row is allowed to wrap");
 });
 
 run("Inventory line floats over the row when Torn's CSS collapses it to zero size", async (t) => {
@@ -537,4 +540,25 @@ run("Torn's real inventory markup: wrapper is not a list, action entries are not
   const report = env.ME.buildPageDiagnostics();
   assert.match(report, /rows collected: 2/);
   assert.match(report, /1\/1 visible on this tab/);
+});
+
+run("Sell-form fill survives Torn replacing the row's fields after the first write", async (t) => {
+  const env = boot(fixture("itemmarket-addlisting.html"), "https://www.torn.com/page.php?sid=ItemMarket#/addListing");
+  t.after(env.close);
+  await env.ME.scanVisibleSurface("imsell", { force: true });
+  const row = env.document.querySelector(".itemRowWrapper___f6 .itemRow___g7");
+  const qtyInput = row.querySelector(".amountInputWrapper___l2 input:not([type='hidden'])");
+  // React-style: the quantity write causes the price field to be replaced.
+  qtyInput.addEventListener("input", () => {
+    const group = row.querySelector(".priceInputWrapper___k1 .input-money-group");
+    const fresh = group.cloneNode(true);
+    group.replaceWith(fresh);
+  });
+  const oldPrice = row.querySelector(".priceInputWrapper___k1 input:not([type='hidden'])");
+  row.querySelector(".me-bazaar-fill-btn").click();
+  assert.equal(qtyInput.value, "12", "quantity written first");
+  assert.ok(!oldPrice.isConnected, "the original price field was replaced by Torn");
+  const newPrice = row.querySelector(".priceInputWrapper___k1 input:not([type='hidden'])");
+  assert.equal(newPrice.value, "789999", "price written into the fresh field");
+  assert.match(row.querySelector(".me-bazaar-fill-btn").textContent, /^Filled/);
 });

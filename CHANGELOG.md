@@ -6,6 +6,18 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-09-09
+
+### Changed
+
+- **Sell-form strip redesigned (Bazaar add, Item Market add listing).** One full-width line under the row with a single explicit button, "Fill 28 × $29,175", followed by the total and, on the Item Market, the net after the fee. The cryptic `^` control and the rounded price are gone; the button shows the exact price it writes. After a fill the button becomes a green "Filled 28 × $29,175" confirmation, and that state is recognised again after Torn re-renders the row.
+- **No tooltip bubbles.** Title attributes on the strip were popping up over the row on tap in Torn PDA; explanations moved to accessible labels only.
+- Bazaar manage rows show "Fill $29,175" instead of `^`.
+
+### Fixed
+
+- **Item Market quantity was not filled.** Torn re-renders the row after the first field write, so the second field held a dead element. The quantity is now written first and every field is looked up again from the live page before it is written.
+
 ## [0.5.4] - 2026-09-09
 
 ### Fixed
