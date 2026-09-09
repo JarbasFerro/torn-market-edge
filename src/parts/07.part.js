@@ -672,7 +672,7 @@
     if (!(node instanceof Element)) return String(node?.nodeName || "?");
     const id = node.id ? `#${node.id}` : "";
     const classes = String(node.className || "").split(/\s+/).filter(Boolean).slice(0, 4).map((name) => `.${name}`).join("");
-    const data = Array.from(node.attributes || []).filter((attr) => attr.name.startsWith("data-") && !attr.name.startsWith("data-me")).slice(0, 3).map((attr) => `[${attr.name}=${String(attr.value).slice(0, 20)}]`).join("");
+    const data = Array.from(node.attributes || []).filter((attr) => (attr.name.startsWith("data-") || /id$/i.test(attr.name)) && !attr.name.startsWith("data-me") && attr.name !== "id").slice(0, 8).map((attr) => `[${attr.name}=${String(attr.value).slice(0, 20)}]`).join("");
     const text = (node.textContent || "").replace(/\s+/g, " ").trim().slice(0, 40);
     return `${node.tagName.toLowerCase()}${id}${classes}${data} (${node.childElementCount} children) "${text}"`;
   }
@@ -725,6 +725,56 @@
     }
   });
 
+  // Are the overlays actually visible? An overlay is counted as clipped when
+  // an ancestor with overflow hidden/clip/auto/scroll does not contain its
+  // box, and as zero-size when layout gave it no box at all.
+  function overlayVisibilityLine() {
+    const overlays = Array.from(document.querySelectorAll(".me-inline-analysis:not(.me-hidden)"));
+    if (!overlays.length) return "overlay visibility: none rendered";
+    let visible = 0;
+    let zero = 0;
+    let clipped = 0;
+    let offscreen = 0;
+    const samples = [];
+    overlays.slice(0, 80).forEach((overlay) => {
+      const rect = overlay.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) {
+        zero += 1;
+        if (samples.length < 2) samples.push(`zero-size in ${describeNode(overlay.parentElement)}`);
+        return;
+      }
+      let clippedBy = null;
+      for (let node = overlay.parentElement, depth = 0; node && node !== document.body && depth < 12; depth += 1, node = node.parentElement) {
+        let overflow = "";
+        try {
+          const style = window.getComputedStyle(node);
+          overflow = `${style.overflow} ${style.overflowX} ${style.overflowY}`;
+        } catch {
+          overflow = "";
+        }
+        if (!/hidden|clip|auto|scroll/.test(overflow)) continue;
+        const box = node.getBoundingClientRect();
+        if (rect.left >= box.right - 1 || rect.right <= box.left + 1 || rect.top >= box.bottom - 1 || rect.bottom <= box.top + 1) {
+          clippedBy = node;
+          break;
+        }
+      }
+      if (clippedBy) {
+        clipped += 1;
+        if (samples.length < 2) samples.push(`clipped by ${describeNode(clippedBy)}`);
+        return;
+      }
+      const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+      if (rect.right <= 0 || rect.left >= viewportWidth) {
+        offscreen += 1;
+        return;
+      }
+      visible += 1;
+    });
+    const checked = Math.min(overlays.length, 80);
+    return `overlay visibility: ${visible}/${checked} visible, ${clipped} clipped, ${zero} zero-size, ${offscreen} off-screen horizontally${samples.length ? ` (${samples.join("; ")})` : ""}`;
+  }
+
   function runtimeReportLines() {
     const surfaces = {};
     runtimeLog.filter((entry) => entry.kind === "scan" && entry.extra).forEach((entry) => {
@@ -742,6 +792,7 @@
       lines.push(`  ${surface}: ${bucket.scans} scans, last pass ${bucket.annotated}/${bucket.rows} rows annotated, avg ${Math.round(bucket.ms / bucket.scans)} ms, worst ${bucket.worstMs} ms`);
     });
     lines.push(`overlays on page: ${document.querySelectorAll(".me-inline-analysis").length} (${document.querySelectorAll(".me-inline-analysis.RED").length} errors), pricing cards: ${document.querySelectorAll(".me-equip-card").length}`);
+    lines.push(overlayVisibilityLine());
     lines.push(`queue: ${api.scheduler.queue.length} waiting, ${api.scheduler.active} in flight, ${api.scheduler.requestTimes.length} requests in the last minute`);
     runtimeLog.filter((entry) => entry.kind !== "scan").slice(-12).forEach((entry) => {
       lines.push(`  [${entry.kind}] ${formatAge(Math.floor((Date.now() - entry.at) / 1000))} ago: ${entry.message}`);
@@ -780,8 +831,11 @@
       const rows = surface === "bazaar" ? collectBazaarAddItems() : collectVisibleItems({ requireMoney: surface !== "inventory" });
       lines.push("", `rows collected: ${rows.length}`);
       rows.slice(0, 3).forEach((item, index) => {
-        lines.push(`--- row ${index + 1}: item ${item.itemId} "${item.name}"`);
+        lines.push(`--- row ${index + 1}: item ${item.itemId} "${item.name}" uid: ${rowUid(item.card) || "none"}`);
         lines.push(ancestorChain(item.card, 6));
+        lines.push(`row children: ${Array.from(item.card.children || []).slice(0, 8).map((child) => describeNode(child)).join(" | ")}`);
+        const overlay = item.card.querySelector(".me-inline-analysis");
+        if (overlay) lines.push(`row overlay parent: ${describeNode(overlay.parentElement)} text: ${(overlay.textContent || "").slice(0, 80)}`);
       });
     } catch (error) {
       lines.push(`report failed: ${error.message}`);

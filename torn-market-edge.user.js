@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.4.3
+// @version      0.4.4
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.4.3",
+    version: "0.4.4",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -63,7 +63,7 @@
   const WATCHLIST_MAX_ITEMS = 25;
   const WATCHLIST_ALERT_COOLDOWN_MS = 10 * ONE_MINUTE_MS;
   const OWN_LISTINGS_MAX = 25;
-  // v0.4.3 surfaces: portfolio, shop runs, travel planner, auction guidance.
+  // v0.4.4 surfaces: portfolio, shop runs, travel planner, auction guidance.
   const INVENTORY_TTL_MS = 60 * ONE_MINUTE_MS;
   const INVENTORY_PAGE_LIMIT = 250;
   const INVENTORY_MAX_PAGES = 8;
@@ -3259,6 +3259,9 @@
       const existing = byId.get(card);
       const score = Math.min(text.length, 900);
       if (!existing || score < existing.domTextLength) {
+        // Inventory rows get their own line inside Torn's title block: the
+        // name span is ellipsised on phones and would clip an inline badge.
+        const inventoryRow = detectSurface() === "inventory";
         byId.set(card, {
           itemId,
           name,
@@ -3266,8 +3269,9 @@
           quantity,
           equipped,
           card,
-          inlineAnchor: findItemTextHost(card, name),
-          inlineMode: "inline",
+          inlineAnchor: inventoryRow ? (card.querySelector(":scope > .title-wrap, .title-wrap") || card) : findItemTextHost(card, name),
+          inlineMode: inventoryRow ? "row-line" : "inline",
+          rowLine: inventoryRow,
           domTextLength: score
         });
       }
@@ -3684,7 +3688,9 @@
       const ownedFromInput = parseIntegerField(quantityInput?.getAttribute("data-money"));
       const quantity = ownedFromInput || parseQuantity(text);
       const maxFromInput = parseIntegerField(quantityInput?.getAttribute("max"));
-      const controlHost = priceInput.closest("div[class*='amount___'], div.amount-main-wrap, div[class*='price___'], div[class*='controls'], div[class*='actions']") || priceInput.parentElement || card;
+      // Host for the overlay: the row's controls/info container, never the
+      // money-input group itself (a flex group that would squeeze or clip it).
+      const controlHost = sellFormControlHost(card, priceInput);
       byCard.set(card, {
         itemId,
         name: elementItemName(card, node),
@@ -3707,6 +3713,20 @@
       });
     }
     return Array.from(byCard.values()).sort((a, b) => viewportPriority(b) - viewportPriority(a)).slice(0, limit);
+  }
+
+  function sellFormControlHost(card, priceInput) {
+    if (!card) return null;
+    let node = priceInput?.parentElement || null;
+    for (let depth = 0; node && node !== card && depth < 6; depth += 1, node = node.parentElement) {
+      const className = String(node.className || "");
+      if (/(^|\s)(info___|amount___|controls___|controls|amount-main-wrap|fields___|actions___)/.test(className) || /info___|amount___|controls___|amount-main-wrap/.test(className)) return node;
+    }
+    // No named container: use the price input's grandparent when it is not
+    // the money group, else the card.
+    const group = priceInput?.closest(".input-money-group");
+    const above = group?.parentElement && group.parentElement !== card ? group.parentElement.parentElement || card : null;
+    return above && card.contains(above) ? above : card;
   }
 
   function spacedText(element) {
@@ -3743,7 +3763,20 @@
     const own = read(card, ["data-armoryid", "data-armouryid", "data-armoury-id", "data-uid", "data-item-uid", "uid"]);
     if (own) return own;
     const action = card.querySelector("[data-action='equip'],[data-action='unequip'],button[name='equip'],button[name='unequip'],[data-armoryid],[data-armouryid],[data-uid],.actions[xid],[xid]");
-    if (action) return read(action, ["data-armoryid", "data-armouryid", "data-uid", "data-id", "xid"]);
+    if (action) {
+      const value = read(action, ["data-armoryid", "data-armouryid", "data-uid", "data-id", "xid"]);
+      if (value) return value;
+    }
+    // Last resort: any attribute on the row's nodes whose name mentions an
+    // armoury id or uid (Torn renames these between builds).
+    const nodes = Array.from(card.querySelectorAll("*")).slice(0, 60);
+    for (const node of [card, ...nodes]) {
+      for (const attr of Array.from(node.attributes || [])) {
+        if (!/armou?r(?:y|ies)?[-_]?id|(?:^|[-_])uid$/i.test(attr.name)) continue;
+        const digits = String(attr.value || "").match(/\d{3,}/);
+        if (digits) return asInt(digits[0], 0) || null;
+      }
+    }
     return null;
   }
 
@@ -4200,6 +4233,9 @@
     .me-bazaar-add-controls { flex-wrap:wrap !important; overflow:visible !important; }
     .me-bazaar-add-controls > .me-inline-analysis { display:flex !important; flex:0 0 100% !important; width:100% !important; max-width:none !important; grid-column:1 / -1 !important; justify-content:flex-end !important; margin:4px 0 1px !important; z-index:10 !important; }
     .me-inline-analysis.me-bazaar-add { pointer-events:auto !important; padding-right:3px !important; }
+    .me-row-host { height:auto !important; max-height:none !important; overflow:visible !important; }
+    .me-row-host > .title-wrap, .me-row-host .title-wrap { height:auto !important; max-height:none !important; overflow:visible !important; flex-wrap:wrap !important; }
+    .me-inline-analysis.me-row-line { display:flex !important; flex:0 0 100% !important; width:100% !important; max-width:none !important; clear:both !important; margin:2px 0 0 !important; justify-content:flex-start !important; white-space:normal !important; flex-wrap:wrap !important; position:relative !important; z-index:5 !important; }
     .me-bazaar-fill-btn { display:inline-flex !important; align-items:center !important; justify-content:center !important; min-width:25px !important; height:22px !important; margin:0 0 0 2px !important; padding:0 7px !important; border:1px solid rgba(255,255,255,.24) !important; border-radius:4px !important; background:rgba(255,255,255,.08) !important; color:#eee !important; font:800 13px/1 Arial,sans-serif !important; cursor:pointer !important; pointer-events:auto !important; touch-action:manipulation !important; }
     .me-bazaar-fill-btn:hover, .me-bazaar-fill-btn:focus { background:rgba(255,255,255,.16) !important; border-color:rgba(255,255,255,.4) !important; outline:none !important; }
     .me-inline-analysis.me-bazaar-add.me-applied { border-color:rgba(74,165,100,.65) !important; }
@@ -4567,7 +4603,7 @@
     document.querySelectorAll(".me-bazaar-add-controls,.me-bazaar-add-host").forEach((node) => {
       node.classList.remove("me-bazaar-add-controls", "me-bazaar-add-host");
     });
-    document.querySelectorAll(".me-bazaar-add-row").forEach((node) => node.classList.remove("me-bazaar-add-row"));
+    document.querySelectorAll(".me-bazaar-add-row,.me-row-host").forEach((node) => node.classList.remove("me-bazaar-add-row", "me-row-host"));
   }
 
   function removeFloatingUi(force = false) {
@@ -4584,6 +4620,13 @@
   }
 
   function inlineHostFor(visible) {
+    if (visible?.rowLine) {
+      const host = visible.inlineAnchor?.isConnected ? visible.inlineAnchor : visible.card;
+      if (host?.isConnected) {
+        visible.card?.classList?.add("me-row-host");
+        return { mode: "append", node: host };
+      }
+    }
     if (visible?.bazaarAdd) {
       const controls = visible?.bazaarControls || visible?.inlineAnchor;
       if (controls?.isConnected) {
@@ -4603,7 +4646,7 @@
     if (!host) return null;
     visible.card?.querySelectorAll?.(".me-inline-analysis").forEach((node) => node.remove());
     const block = document.createElement("span");
-    block.className = `me-inline-analysis ${state} ${extraClass}`.trim();
+    block.className = `me-inline-analysis ${state} ${extraClass}${visible?.rowLine ? " me-row-line" : ""}`.trim();
     block.dataset.meItemId = String(visible.itemId);
     block.dataset.meComplete = extraClass.includes("me-loading") ? "0" : "1";
     block.innerHTML = html;
@@ -6285,7 +6328,7 @@
     if (!(node instanceof Element)) return String(node?.nodeName || "?");
     const id = node.id ? `#${node.id}` : "";
     const classes = String(node.className || "").split(/\s+/).filter(Boolean).slice(0, 4).map((name) => `.${name}`).join("");
-    const data = Array.from(node.attributes || []).filter((attr) => attr.name.startsWith("data-") && !attr.name.startsWith("data-me")).slice(0, 3).map((attr) => `[${attr.name}=${String(attr.value).slice(0, 20)}]`).join("");
+    const data = Array.from(node.attributes || []).filter((attr) => (attr.name.startsWith("data-") || /id$/i.test(attr.name)) && !attr.name.startsWith("data-me") && attr.name !== "id").slice(0, 8).map((attr) => `[${attr.name}=${String(attr.value).slice(0, 20)}]`).join("");
     const text = (node.textContent || "").replace(/\s+/g, " ").trim().slice(0, 40);
     return `${node.tagName.toLowerCase()}${id}${classes}${data} (${node.childElementCount} children) "${text}"`;
   }
@@ -6338,6 +6381,56 @@
     }
   });
 
+  // Are the overlays actually visible? An overlay is counted as clipped when
+  // an ancestor with overflow hidden/clip/auto/scroll does not contain its
+  // box, and as zero-size when layout gave it no box at all.
+  function overlayVisibilityLine() {
+    const overlays = Array.from(document.querySelectorAll(".me-inline-analysis:not(.me-hidden)"));
+    if (!overlays.length) return "overlay visibility: none rendered";
+    let visible = 0;
+    let zero = 0;
+    let clipped = 0;
+    let offscreen = 0;
+    const samples = [];
+    overlays.slice(0, 80).forEach((overlay) => {
+      const rect = overlay.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) {
+        zero += 1;
+        if (samples.length < 2) samples.push(`zero-size in ${describeNode(overlay.parentElement)}`);
+        return;
+      }
+      let clippedBy = null;
+      for (let node = overlay.parentElement, depth = 0; node && node !== document.body && depth < 12; depth += 1, node = node.parentElement) {
+        let overflow = "";
+        try {
+          const style = window.getComputedStyle(node);
+          overflow = `${style.overflow} ${style.overflowX} ${style.overflowY}`;
+        } catch {
+          overflow = "";
+        }
+        if (!/hidden|clip|auto|scroll/.test(overflow)) continue;
+        const box = node.getBoundingClientRect();
+        if (rect.left >= box.right - 1 || rect.right <= box.left + 1 || rect.top >= box.bottom - 1 || rect.bottom <= box.top + 1) {
+          clippedBy = node;
+          break;
+        }
+      }
+      if (clippedBy) {
+        clipped += 1;
+        if (samples.length < 2) samples.push(`clipped by ${describeNode(clippedBy)}`);
+        return;
+      }
+      const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+      if (rect.right <= 0 || rect.left >= viewportWidth) {
+        offscreen += 1;
+        return;
+      }
+      visible += 1;
+    });
+    const checked = Math.min(overlays.length, 80);
+    return `overlay visibility: ${visible}/${checked} visible, ${clipped} clipped, ${zero} zero-size, ${offscreen} off-screen horizontally${samples.length ? ` (${samples.join("; ")})` : ""}`;
+  }
+
   function runtimeReportLines() {
     const surfaces = {};
     runtimeLog.filter((entry) => entry.kind === "scan" && entry.extra).forEach((entry) => {
@@ -6355,6 +6448,7 @@
       lines.push(`  ${surface}: ${bucket.scans} scans, last pass ${bucket.annotated}/${bucket.rows} rows annotated, avg ${Math.round(bucket.ms / bucket.scans)} ms, worst ${bucket.worstMs} ms`);
     });
     lines.push(`overlays on page: ${document.querySelectorAll(".me-inline-analysis").length} (${document.querySelectorAll(".me-inline-analysis.RED").length} errors), pricing cards: ${document.querySelectorAll(".me-equip-card").length}`);
+    lines.push(overlayVisibilityLine());
     lines.push(`queue: ${api.scheduler.queue.length} waiting, ${api.scheduler.active} in flight, ${api.scheduler.requestTimes.length} requests in the last minute`);
     runtimeLog.filter((entry) => entry.kind !== "scan").slice(-12).forEach((entry) => {
       lines.push(`  [${entry.kind}] ${formatAge(Math.floor((Date.now() - entry.at) / 1000))} ago: ${entry.message}`);
@@ -6393,8 +6487,11 @@
       const rows = surface === "bazaar" ? collectBazaarAddItems() : collectVisibleItems({ requireMoney: surface !== "inventory" });
       lines.push("", `rows collected: ${rows.length}`);
       rows.slice(0, 3).forEach((item, index) => {
-        lines.push(`--- row ${index + 1}: item ${item.itemId} "${item.name}"`);
+        lines.push(`--- row ${index + 1}: item ${item.itemId} "${item.name}" uid: ${rowUid(item.card) || "none"}`);
         lines.push(ancestorChain(item.card, 6));
+        lines.push(`row children: ${Array.from(item.card.children || []).slice(0, 8).map((child) => describeNode(child)).join(" | ")}`);
+        const overlay = item.card.querySelector(".me-inline-analysis");
+        if (overlay) lines.push(`row overlay parent: ${describeNode(overlay.parentElement)} text: ${(overlay.textContent || "").slice(0, 80)}`);
       });
     } catch (error) {
       lines.push(`report failed: ${error.message}`);

@@ -55,6 +55,9 @@
     .me-bazaar-add-controls { flex-wrap:wrap !important; overflow:visible !important; }
     .me-bazaar-add-controls > .me-inline-analysis { display:flex !important; flex:0 0 100% !important; width:100% !important; max-width:none !important; grid-column:1 / -1 !important; justify-content:flex-end !important; margin:4px 0 1px !important; z-index:10 !important; }
     .me-inline-analysis.me-bazaar-add { pointer-events:auto !important; padding-right:3px !important; }
+    .me-row-host { height:auto !important; max-height:none !important; overflow:visible !important; }
+    .me-row-host > .title-wrap, .me-row-host .title-wrap { height:auto !important; max-height:none !important; overflow:visible !important; flex-wrap:wrap !important; }
+    .me-inline-analysis.me-row-line { display:flex !important; flex:0 0 100% !important; width:100% !important; max-width:none !important; clear:both !important; margin:2px 0 0 !important; justify-content:flex-start !important; white-space:normal !important; flex-wrap:wrap !important; position:relative !important; z-index:5 !important; }
     .me-bazaar-fill-btn { display:inline-flex !important; align-items:center !important; justify-content:center !important; min-width:25px !important; height:22px !important; margin:0 0 0 2px !important; padding:0 7px !important; border:1px solid rgba(255,255,255,.24) !important; border-radius:4px !important; background:rgba(255,255,255,.08) !important; color:#eee !important; font:800 13px/1 Arial,sans-serif !important; cursor:pointer !important; pointer-events:auto !important; touch-action:manipulation !important; }
     .me-bazaar-fill-btn:hover, .me-bazaar-fill-btn:focus { background:rgba(255,255,255,.16) !important; border-color:rgba(255,255,255,.4) !important; outline:none !important; }
     .me-inline-analysis.me-bazaar-add.me-applied { border-color:rgba(74,165,100,.65) !important; }
@@ -422,7 +425,7 @@
     document.querySelectorAll(".me-bazaar-add-controls,.me-bazaar-add-host").forEach((node) => {
       node.classList.remove("me-bazaar-add-controls", "me-bazaar-add-host");
     });
-    document.querySelectorAll(".me-bazaar-add-row").forEach((node) => node.classList.remove("me-bazaar-add-row"));
+    document.querySelectorAll(".me-bazaar-add-row,.me-row-host").forEach((node) => node.classList.remove("me-bazaar-add-row", "me-row-host"));
   }
 
   function removeFloatingUi(force = false) {
@@ -439,6 +442,13 @@
   }
 
   function inlineHostFor(visible) {
+    if (visible?.rowLine) {
+      const host = visible.inlineAnchor?.isConnected ? visible.inlineAnchor : visible.card;
+      if (host?.isConnected) {
+        visible.card?.classList?.add("me-row-host");
+        return { mode: "append", node: host };
+      }
+    }
     if (visible?.bazaarAdd) {
       const controls = visible?.bazaarControls || visible?.inlineAnchor;
       if (controls?.isConnected) {
@@ -458,7 +468,7 @@
     if (!host) return null;
     visible.card?.querySelectorAll?.(".me-inline-analysis").forEach((node) => node.remove());
     const block = document.createElement("span");
-    block.className = `me-inline-analysis ${state} ${extraClass}`.trim();
+    block.className = `me-inline-analysis ${state} ${extraClass}${visible?.rowLine ? " me-row-line" : ""}`.trim();
     block.dataset.meItemId = String(visible.itemId);
     block.dataset.meComplete = extraClass.includes("me-loading") ? "0" : "1";
     block.innerHTML = html;

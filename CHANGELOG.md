@@ -6,6 +6,18 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-09-09
+
+### Fixed
+
+- **Inventory overlays invisible on Torn PDA.** A real-device report showed every row annotated and zero errors while nothing was visible: the badge was appended inside the item name span, which Torn ellipsises on phones. Inventory overlays now render on their own line inside the row's title block, and the row is allowed to grow, the same recipe that fixed the Bazaar add form in 0.2.5.
+- **Item Market sell-form overlays** were appended inside Torn's money-input group. They are now hosted by the row's info/controls container with wrapping layout, like the Bazaar add form.
+- Per-copy id discovery on inventory rows also accepts any attribute whose name mentions an armoury id or uid, whatever Torn's current naming.
+
+### Added
+
+- The page structure report now audits overlay visibility (visible, clipped by which ancestor, zero-size, off-screen), lists each sampled row's children and its per-copy id, and prints up to eight data attributes per node.
+
 ## [0.4.3] - 2026-09-08
 
 ### Added

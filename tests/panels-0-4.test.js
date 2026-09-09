@@ -467,3 +467,30 @@ run("Diagnostics report carries the runtime self-check: scan counts per surface 
   assert.match(report, /overlays on page: 2/);
   assert.doesNotMatch(report, /ABCDEFGHIJKLMNOP/, "the API key never appears in the report");
 });
+
+run("Inventory overlays sit on their own line inside the row's title block, never in the ellipsised name span", async (t) => {
+  const env = boot(fixture("inventory-real.html"), "https://www.torn.com/item.php");
+  t.after(env.close);
+  env.document.querySelectorAll(".hidden-tab, .hidden-tab *").forEach((node) => { node.getBoundingClientRect = () => ({ width: 0, height: 0, top: 0, bottom: 0, left: 0, right: 0, x: 0, y: 0 }); });
+  await env.ME.scanVisibleSurface("inventory", { force: true });
+  const row = env.document.querySelector("#category-wrap li[data-item='206']");
+  const overlay = row.querySelector(".me-inline-analysis");
+  assert.equal(overlay.parentElement.className, "title-wrap", "appended to Torn's title block");
+  assert.ok(overlay.classList.contains("me-row-line"));
+  assert.ok(row.classList.contains("me-row-host"), "row is allowed to grow");
+  assert.equal(row.querySelector(".name .me-inline-analysis"), null, "not inside the name span");
+  const report = env.ME.buildPageDiagnostics();
+  assert.match(report, /overlay visibility: \d+\/\d+ visible/);
+  assert.match(report, /row children: /);
+});
+
+run("Item Market sell-form overlays are hosted in the row's info container, not inside the money-input group", async (t) => {
+  const env = boot(fixture("itemmarket-addlisting.html"), "https://www.torn.com/page.php?sid=ItemMarket#/addListing");
+  t.after(env.close);
+  await env.ME.scanVisibleSurface("imsell", { force: true });
+  const overlay = env.document.querySelector(".me-inline-analysis[data-me-item-id='206']");
+  assert.ok(overlay);
+  assert.equal(overlay.closest(".input-money-group"), null, "never inside the money group");
+  assert.match(overlay.parentElement.className, /info___/, "hosted by the info container");
+  assert.ok(overlay.parentElement.classList.contains("me-bazaar-add-controls"), "host gets the wrapping layout class");
+});

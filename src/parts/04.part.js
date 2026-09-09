@@ -177,6 +177,9 @@
       const existing = byId.get(card);
       const score = Math.min(text.length, 900);
       if (!existing || score < existing.domTextLength) {
+        // Inventory rows get their own line inside Torn's title block: the
+        // name span is ellipsised on phones and would clip an inline badge.
+        const inventoryRow = detectSurface() === "inventory";
         byId.set(card, {
           itemId,
           name,
@@ -184,8 +187,9 @@
           quantity,
           equipped,
           card,
-          inlineAnchor: findItemTextHost(card, name),
-          inlineMode: "inline",
+          inlineAnchor: inventoryRow ? (card.querySelector(":scope > .title-wrap, .title-wrap") || card) : findItemTextHost(card, name),
+          inlineMode: inventoryRow ? "row-line" : "inline",
+          rowLine: inventoryRow,
           domTextLength: score
         });
       }
@@ -602,7 +606,9 @@
       const ownedFromInput = parseIntegerField(quantityInput?.getAttribute("data-money"));
       const quantity = ownedFromInput || parseQuantity(text);
       const maxFromInput = parseIntegerField(quantityInput?.getAttribute("max"));
-      const controlHost = priceInput.closest("div[class*='amount___'], div.amount-main-wrap, div[class*='price___'], div[class*='controls'], div[class*='actions']") || priceInput.parentElement || card;
+      // Host for the overlay: the row's controls/info container, never the
+      // money-input group itself (a flex group that would squeeze or clip it).
+      const controlHost = sellFormControlHost(card, priceInput);
       byCard.set(card, {
         itemId,
         name: elementItemName(card, node),
@@ -625,6 +631,20 @@
       });
     }
     return Array.from(byCard.values()).sort((a, b) => viewportPriority(b) - viewportPriority(a)).slice(0, limit);
+  }
+
+  function sellFormControlHost(card, priceInput) {
+    if (!card) return null;
+    let node = priceInput?.parentElement || null;
+    for (let depth = 0; node && node !== card && depth < 6; depth += 1, node = node.parentElement) {
+      const className = String(node.className || "");
+      if (/(^|\s)(info___|amount___|controls___|controls|amount-main-wrap|fields___|actions___)/.test(className) || /info___|amount___|controls___|amount-main-wrap/.test(className)) return node;
+    }
+    // No named container: use the price input's grandparent when it is not
+    // the money group, else the card.
+    const group = priceInput?.closest(".input-money-group");
+    const above = group?.parentElement && group.parentElement !== card ? group.parentElement.parentElement || card : null;
+    return above && card.contains(above) ? above : card;
   }
 
   function spacedText(element) {
@@ -661,7 +681,20 @@
     const own = read(card, ["data-armoryid", "data-armouryid", "data-armoury-id", "data-uid", "data-item-uid", "uid"]);
     if (own) return own;
     const action = card.querySelector("[data-action='equip'],[data-action='unequip'],button[name='equip'],button[name='unequip'],[data-armoryid],[data-armouryid],[data-uid],.actions[xid],[xid]");
-    if (action) return read(action, ["data-armoryid", "data-armouryid", "data-uid", "data-id", "xid"]);
+    if (action) {
+      const value = read(action, ["data-armoryid", "data-armouryid", "data-uid", "data-id", "xid"]);
+      if (value) return value;
+    }
+    // Last resort: any attribute on the row's nodes whose name mentions an
+    // armoury id or uid (Torn renames these between builds).
+    const nodes = Array.from(card.querySelectorAll("*")).slice(0, 60);
+    for (const node of [card, ...nodes]) {
+      for (const attr of Array.from(node.attributes || [])) {
+        if (!/armou?r(?:y|ies)?[-_]?id|(?:^|[-_])uid$/i.test(attr.name)) continue;
+        const digits = String(attr.value || "").match(/\d{3,}/);
+        if (digits) return asInt(digits[0], 0) || null;
+      }
+    }
     return null;
   }
 
