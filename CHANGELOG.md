@@ -6,6 +6,13 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-09-09
+
+### Fixed
+
+- **Row strips were two lines tall.** The `?` toggle wrapped onto its own line under every abroad and inventory strip (a device report from the United Kingdom shop). The toggle is now pinned to the strip's right edge and no longer sets the strip's height, so a strip is one text line high.
+- **Stale figures after buying abroad.** Torn updates the "purchased 28 / 28 items" message and your cash without touching the item rows, so nothing rescanned and the rows kept promising 28 units. The capacity and cash are now part of the page signature for the abroad shop; a change re-evaluates every row from the order books already held (no new requests) and the summary drops to "0 slots free".
+
 ## [0.6.1] - 2026-09-09
 
 ### Changed

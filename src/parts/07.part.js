@@ -1147,6 +1147,16 @@
   let signatureTimer = null;
   let lastLocationKey = "";
   let lastListSignature = "";
+  // Abroad shop: the capacity and cash in Torn's message change on every
+  // purchase while the rows stay put, so they are part of the signature and
+  // a change forces the rows to be re-evaluated (order books are reused).
+  let lastAbroadKey = "";
+
+  function abroadContextKey() {
+    if (!abroadPagePresent()) return "";
+    const context = abroadContext();
+    return `${context.capacityLeft}|${context.money ?? ""}|${context.travelType}`;
+  }
   const listRowIds = new WeakMap();
   let nextListRowId = 1;
 
@@ -1187,7 +1197,7 @@
     const structuralEntries = Array.from(entries).sort();
     const heading = surface === "inventory"
       ? String(marker?.textContent || "").replace(/\s+/g, " ").trim()
-      : "";
+      : (surface === "travel" ? abroadContextKey() : "");
     return `${surface}|${heading}|${structuralEntries.join(",")}`;
   }
 
@@ -1219,9 +1229,15 @@
       const took = Date.now() - startedAt;
       signatureDelayMs = clamp(Math.round(took * 5), 200, 2500);
       if (!signature) return;
-      if (forceScan || signature !== lastListSignature) {
+      let forceRows = false;
+      if (surface === "travel") {
+        const key = abroadContextKey();
+        if (lastAbroadKey && key !== lastAbroadKey) forceRows = true;
+        lastAbroadKey = key;
+      }
+      if (forceScan || forceRows || signature !== lastListSignature) {
         lastListSignature = signature;
-        scanVisibleSurface(surface, { retryIfEmpty: false, force: false, cancelObsolete: true });
+        scanVisibleSurface(surface, { retryIfEmpty: false, force: forceRows, cancelObsolete: true });
       }
     }, signatureDelayMs);
   }

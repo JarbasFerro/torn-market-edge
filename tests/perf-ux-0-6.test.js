@@ -290,3 +290,32 @@ run("Abroad rows are still found when Torn renames its CSS modules; unknown stoc
   assert.match(strip.textContent, /28 units/, "unknown stock does not limit the units");
   assert.ok(env.document.querySelector(".me-abroad-summary"), "summary still anchored above the rows");
 });
+
+run("A purchase abroad (capacity or cash change in Torn's message) re-evaluates the rows without new requests", async (t) => {
+  const env = boot(fixture("travel-abroad.html"), "https://www.torn.com/page.php?sid=travel", {
+    responses: (url) => {
+      const market = url.match(/\/market\/(\d+)\/itemmarket/);
+      if (market) return book(Number(market[1]), `Item ${market[1]}`, market[1] === "263" ? 6400 : 150);
+      return defaultResponses(url);
+    },
+  });
+  t.after(env.close);
+  const before = env.ME.listSurfaceSignature("travel");
+  await env.ME.scanVisibleSurface("travel", { force: true });
+  const requestsAfterFirst = env.requests.length;
+  const message = env.document.querySelector(".info-msg-cont .msg");
+  message.innerHTML = 'You are in <strong>United Kingdom</strong> and have <strong>$21,552,041</strong>. You have purchased <strong>28 / 28</strong> items so far.';
+  assert.notEqual(env.ME.listSurfaceSignature("travel"), before, "capacity is part of the travel signature");
+  assert.equal(env.ME.abroadContext().capacityLeft, 0);
+  await env.ME.scanVisibleSurface("travel", { force: true });
+  const strip = env.document.querySelector(".me-inline-analysis[data-me-item-id='263']");
+  assert.match(strip.textContent, /0 units = \+\$0\/trip/, "no slots left: nothing to earn this trip");
+  assert.ok(strip.classList.contains("GREY"));
+  assert.match(env.document.querySelector(".me-abroad-summary").textContent, /0 slots free/);
+  assert.equal(env.requests.filter((url) => url.includes("/itemmarket")).length, env.requests.slice(0, requestsAfterFirst).filter((url) => url.includes("/itemmarket")).length, "re-evaluation reuses the order books");
+});
+
+test("row strips keep the why toggle pinned to the right edge instead of wrapping to a second line", () => {
+  assert.match(SOURCE, /div\.me-inline-analysis\.me-row-line > \.me-why-toggle \{ position:absolute !important; top:0 !important; right:0 !important/);
+  assert.match(SOURCE, /div\.me-inline-analysis\.me-row-line\.me-has-why \{ padding-right:34px !important; \}/);
+});

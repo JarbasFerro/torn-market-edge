@@ -1161,6 +1161,8 @@
     .me-key-cta { display:inline-flex !important; align-items:center !important; min-height:var(--me-tap) !important; margin:-4px 0 !important; padding:0 10px !important; border:1px solid var(--me-btn-border) !important; border-radius:6px !important; background:var(--me-btn) !important; color:var(--me-fg) !important; font:700 var(--me-fs-meta)/1 Arial, sans-serif !important; cursor:pointer !important; pointer-events:auto !important; }
 
     div.me-inline-analysis.me-row-line.me-abroad { justify-content:flex-start !important; }
+    div.me-inline-analysis.me-row-line.me-has-why { padding-right:34px !important; }
+    div.me-inline-analysis.me-row-line > .me-why-toggle { position:absolute !important; top:0 !important; right:0 !important; bottom:auto !important; height:100% !important; max-height:34px !important; min-height:0 !important; margin:0 !important; padding:0 8px !important; border-radius:0 !important; }
     div.me-inline-analysis.me-row-line.me-abroad .me-abroad-rate { font-size:13px !important; }
     .me-abroad-summary { margin:6px 0 8px !important; padding:8px 10px !important; border:1px solid var(--me-strip-border) !important; border-radius:6px !important; background:var(--me-strip) !important; color:var(--me-fg) !important; font:500 var(--me-fs-meta)/1.4 Arial, sans-serif !important; font-variant-numeric:tabular-nums !important; }
     .me-abroad-summary .me-abroad-title { display:flex !important; align-items:center !important; gap:6px !important; font-weight:700 !important; font-size:var(--me-fs) !important; }
@@ -1188,7 +1190,7 @@
     .me-inline-analysis.me-bazaar-add.me-applied { border-color:var(--me-good) !important; }
     .me-row-host { height:auto !important; max-height:none !important; overflow:visible !important; flex-wrap:wrap !important; }
     .me-row-host.me-row-float-host { position:relative !important; }
-    div.me-inline-analysis.me-row-line { display:flex !important; flex:0 0 100% !important; width:100% !important; max-width:none !important; height:auto !important; min-height:20px !important; clear:both !important; margin:0 !important; padding:3px 8px !important; border:0 !important; border-top:1px solid var(--me-strip-border) !important; border-radius:0 !important; background:var(--me-strip) !important; justify-content:flex-start !important; white-space:normal !important; flex-wrap:wrap !important; position:relative !important; z-index:5 !important; line-height:1.35 !important; visibility:visible !important; opacity:1 !important; }
+    div.me-inline-analysis.me-row-line { display:flex !important; flex:0 0 100% !important; width:100% !important; max-width:none !important; height:auto !important; min-height:0 !important; clear:both !important; margin:0 !important; padding:2px 8px !important; border:0 !important; border-top:1px solid var(--me-strip-border) !important; border-radius:0 !important; background:var(--me-strip) !important; justify-content:flex-start !important; white-space:normal !important; flex-wrap:wrap !important; position:relative !important; z-index:5 !important; line-height:1.35 !important; visibility:visible !important; opacity:1 !important; }
     div.me-inline-analysis.me-row-line.me-row-float { position:absolute !important; left:0 !important; right:0 !important; bottom:0 !important; width:auto !important; z-index:9 !important; }
     .me-inline-analysis .me-manage-fill { margin-left:4px !important; }
 
