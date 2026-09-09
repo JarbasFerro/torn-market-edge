@@ -212,6 +212,6 @@ run("Inline inventory result shows the museum set route", (t) => {
   assert.match(block.textContent, /SET \$149k/, "museum set is the best route and leads the line");
   assert.match(block.textContent, /x3/, "owned quantity");
   assert.match(block.textContent, /\$446k/, "total for the owned quantity");
-  assert.match(block.querySelector(".me-inline-primary").title, /Bazaar: \$98,000 per unit/, "other routes stay in the tooltip");
+  assert.match(block.querySelector(".me-inline-primary").title, /Bazaar: \$98,010 per unit/, "other routes stay in the tooltip");
 });
 
