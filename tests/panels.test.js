@@ -208,10 +208,10 @@ run("Inventory scan annotates commodity, plushie and unsupported rows end to end
   const blocks = Array.from(env.document.querySelectorAll(".me-inline-analysis"));
   assert.equal(blocks.length, 2);
   const byItem = Object.fromEntries(blocks.map((block) => [block.dataset.meItemId, block.textContent]));
-  assert.match(byItem["206"], /BZ \$820k/);
-  assert.match(byItem["206"], /x10/);
+  assert.match(byItem["206"], /Bazaar \$820k/);
+  assert.match(byItem["206"], /10 owned/);
   assert.match(byItem["206"], /\$8\.20m/, "total for the owned quantity");
-  assert.equal(byItem["258"].includes("SET"), false, "set route is hidden when the implied value is negative");
+  assert.equal(byItem["258"].includes("Plushie set"), false, "set route is hidden when the implied value is negative");
   assert.ok(env.requests.some((url) => url.includes("/market/258/itemmarket")));
   assert.equal(env.requests.filter((url) => url.includes("pointsmarket")).length, 1);
 });

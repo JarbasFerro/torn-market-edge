@@ -141,7 +141,7 @@ test("browse-grid overlay classifies the displayed price against the official ma
   const consider = ME.evaluateBrowseCard({ price: 95_000, marketPrice: 100_000, settings: settings() });
   assert.equal(consider.label, "CONSIDER");
   const above = ME.evaluateBrowseCard({ price: 105_000, marketPrice: 100_000, settings: settings() });
-  assert.equal(above.label, "ABOVE MV");
+  assert.equal(above.label, "PASS", "one vocabulary: above value is a pass");
   assert.equal(above.state, "GREY");
   assert.equal(ME.evaluateBrowseCard({ price: 0, marketPrice: 100_000, settings: settings() }), null);
 });

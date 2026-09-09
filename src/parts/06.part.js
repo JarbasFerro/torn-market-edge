@@ -4,7 +4,7 @@
   }
 
   function staleMarker(result) {
-    return result?.renderMeta?.stale ? `<span class="me-inline-stale" title="Showing cached data while Market Edge refreshes">*</span>` : "";
+    return result?.renderMeta?.stale ? `<span class="me-inline-stale" aria-label="Cached figures, refreshing">*</span>` : "";
   }
 
   function setBazaarInputValue(input, value) {
@@ -125,11 +125,27 @@
     const controls = filled
       ? `<span class="me-fill-done" aria-label="Filled">\u2713</span><button class="me-bazaar-fill-btn me-fill-clear" type="button" aria-label="Clear the quantity and price fields">\u00d7</button>`
       : `<button class="me-bazaar-fill-btn me-fill-main" type="button" aria-label="Fill ${escapeHtml(perUnit)}; ${escapeHtml(manualNote)} stays manual">Fill</button>`;
+    const warning = source.warning ? `<span class="me-inline-warning">${escapeHtml(source.warning.split(":")[0])}</span>` : "";
+    const snapshot = result.snapshot || {};
+    const rule = source.rule;
+    const ruleLine = rule ? `Your rule for this item: ${rule.mode === "hold" ? "never fill" : rule.mode === "anchor" ? "hold the anchor price" : "undercut the floor"}${rule.minPrice ? `, never below ${formatMoney(rule.minPrice, true)}` : ""}.` : "";
+    const why = [
+      snapshot.lowestPrice
+        ? `Cheapest Item Market listing ${formatMoney(snapshot.lowestPrice, true)}; suggested price is ${source.fill?.mode === "anchor" ? "the conservative market anchor" : `that floor minus your ${formatMoney(Math.max(0, asInt(settings.itemMarketUndercut)), true)} undercut`}.`
+        : "No live Item Market listings; the price comes from Torn's daily value.",
+      result?.sellForm && Number.isFinite(source.net) ? `Net per unit after the ${source.feeBps / 100}% Item Market fee: ${formatMoney(source.net, true)}.` : (result?.ownBazaar ? "Bazaar sales carry no fee." : ""),
+      snapshot.averagePrice ? `Torn's daily value: ${formatMoney(snapshot.averagePrice, true)}.` : "",
+      ruleLine,
+      source.warning || "",
+      orderBookAgeLine(result),
+      `${result?.sellForm ? "Listing" : "Adding to the Bazaar"} stays manual: Market Edge only fills the fields.`
+    ];
     const block = renderInlineHtml(
       visible,
-      `<span class="me-inline-brand">ME</span>${controls}<span class="me-inline-primary me-fill-figures">${escapeHtml(perUnit)}</span>${totalHtml}${netHtml}${stale}`,
-      filled ? "GREEN" : "GREY",
-      "me-bazaar-add"
+      `<span class="me-inline-brand">ME</span>${controls}<span class="me-inline-primary me-fill-figures">${escapeHtml(perUnit)}</span>${totalHtml}${netHtml}${warning}${stale}`,
+      filled ? "GREEN" : (source.warning ? "YELLOW" : "GREY"),
+      "me-bazaar-add",
+      { why }
     );
     if (!block || !visible.priceInput) return block;
 
@@ -173,11 +189,11 @@
     const stale = staleMarker(result);
     if (result.error) return renderInlineError(visible, result.error);
     if (result.untradable) {
-      return renderInlineHtml(visible, `<span class="me-inline-brand">ME</span><span class="me-inline-secondary" title="Torn marks this item as not tradable">untradable</span>`, "GREY");
+      return renderInlineHtml(visible, `<span class="me-inline-brand">ME</span><span class="me-inline-secondary">untradable</span>`, "GREY", "", { why: ["Torn marks this item as not tradable, so it cannot be sold or listed."] });
     }
     if (result.noListings) {
-      const mv = result.snapshot?.averagePrice ? `MV ${formatMoney(result.snapshot.averagePrice)}` : "no market value";
-      return renderInlineHtml(visible, `<span class="me-inline-brand">ME</span><span class="me-inline-secondary" title="No Item Market listings right now; Torn's market value is shown">${mv}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">no listings</span>${stale}`, "GREY");
+      const mv = result.snapshot?.averagePrice ? `Torn value ${formatMoney(result.snapshot.averagePrice)}` : "no Torn value";
+      return renderInlineHtml(visible, `<span class="me-inline-brand">ME</span><span class="me-inline-secondary">${mv}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">no listings</span>${stale}`, "GREY", "", { why: ["No Item Market listings right now; Torn's daily value is shown instead.", orderBookAgeLine(result)] });
     }
     if (result.unsupported) {
       // Weapons and armor are not priced: an invisible completed marker keeps
@@ -204,25 +220,34 @@
       ].filter(Boolean);
       const best = routeOptions.find((option) => option.key === routes.bestRoute) || routeOptions[0];
       const total = best.unit * qty;
-      const title = [
-        `${best.name}: ${formatMoney(best.unit, true)} per unit, ${formatMoney(total, true)} for ${qty}`,
-        ...routeOptions.filter((option) => option !== best).map((option) => `${option.name}: ${formatMoney(option.unit, true)} per unit (net ${formatMoney(Math.floor(option.net / qty), true)} after fees)`),
-        snapshot.lowestPrice ? `Item Market floor ${formatMoney(snapshot.lowestPrice, true)}` : "",
-        snapshot.averagePrice ? `Torn value ${formatMoney(snapshot.averagePrice, true)}` : ""
-      ].filter(Boolean).join("\n");
+      const why = [
+        `${best.name} pays the most: ${formatMoney(best.unit, true)} per unit, ${formatMoney(total, true)} for the ${qty} you own.`,
+        ...routeOptions.filter((option) => option !== best).map((option) => `${option.name}: ${formatMoney(option.unit, true)} per unit, ${formatMoney(Math.floor(option.net / qty), true)} net after fees.`),
+        snapshot.lowestPrice ? `Cheapest Item Market listing: ${formatMoney(snapshot.lowestPrice, true)}.` : "",
+        snapshot.averagePrice ? `Torn's daily value: ${formatMoney(snapshot.averagePrice, true)}.` : "",
+        orderBookAgeLine(result)
+      ];
       return renderInlineHtml(visible,
-        `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="${escapeHtml(title)}">${best.label} ${formatMoney(best.unit)}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Owned quantity">x${qty}</span><span class="me-inline-sep">|</span><span class="me-inline-primary" title="Total for the ${qty} you own at ${formatMoney(best.unit, true)}">${formatMoney(total)}</span>${stale}`,
-        "GREY"
+        `<span class="me-inline-brand">ME</span><span class="me-inline-primary">${escapeHtml(best.name)} ${formatMoney(best.unit)}</span><span class="me-inline-secondary">each</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${qty.toLocaleString("en-US")} owned</span><span class="me-inline-sep">|</span><span class="me-inline-primary">${formatMoney(total)}</span><span class="me-inline-secondary">total</span>${stale}`,
+        "GREY",
+        "",
+        { why }
       );
     }
 
     if (result.browse) {
       const data = result.browse;
       const discount = `${data.discount >= 0 ? "-" : "+"}${Math.abs(data.discount * 100).toFixed(1)}%`;
-      const title = `Displayed price versus Torn's official market value ${formatMoney(data.marketPrice, true)}.${Number.isFinite(data.profitPerUnit) ? ` Estimated net per unit after fees via ${data.bestRoute}: ${formatMoney(data.profitPerUnit, true)}.` : ""} Open the item for order-book analysis.`;
+      const why = [
+        `Displayed price against Torn's daily value of ${formatMoney(data.marketPrice, true)}.`,
+        Number.isFinite(data.profitPerUnit) ? `Estimated net per unit after fees via ${data.bestRoute}: ${formatMoney(data.profitPerUnit, true)}.` : "",
+        "Open the item for order-book analysis."
+      ];
       return renderInlineHtml(visible,
-        `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="${escapeHtml(title)}">${discount} vs MV</span><span class="me-inline-status">${data.label}</span>${stale}`,
-        data.state
+        `<span class="me-inline-brand">ME</span><span class="me-inline-primary">${discount} vs value</span><span class="me-inline-status">${data.label}</span>${stale}`,
+        data.state,
+        "",
+        { why }
       );
     }
 
@@ -231,10 +256,18 @@
       const state = data?.headroom > 0 ? "YELLOW" : "GREY";
       const headroomText = data?.headroom > 0 ? `+${formatMoney(data.headroom)}` : "-";
       const sales = data?.salesSummary;
-      const salesHtml = sales?.count ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Median of ${sales.count} ended Auction House sales in 30 days (range ${formatMoney(sales.low, true)} - ${formatMoney(sales.high, true)})">sold ${formatMoney(sales.median)}</span>` : "";
+      const salesHtml = sales?.count ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary">sold ${formatMoney(sales.median)}</span>` : "";
+      const why = [
+        `Highest rational bid ${formatMoney(data?.maxBid, true)}: resale after the 3% fee, haircut and your minimum profit.`,
+        data?.headroom > 0 ? `Current bid leaves ${formatMoney(data.headroom, true)} of headroom.` : "The current bid is already at or above that ceiling.",
+        sales?.count ? `Median of ${sales.count} ended Auction House sales in 30 days: ${formatMoney(sales.median, true)} (range ${formatMoney(sales.low, true)} to ${formatMoney(sales.high, true)}).` : "",
+        orderBookAgeLine(result)
+      ];
       return renderInlineHtml(visible,
-        `<span class="me-inline-brand">ME</span><span class="me-inline-primary">Max ${formatMoney(data?.maxBid)}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${headroomText}</span>${salesHtml}<span class="me-inline-status">${data?.headroom > 0 ? "CONSIDER" : "PASS"}</span>${stale}`,
-        state
+        `<span class="me-inline-brand">ME</span><span class="me-inline-primary">Max bid ${formatMoney(data?.maxBid)}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${headroomText}</span>${salesHtml}<span class="me-inline-status">${data?.headroom > 0 ? "CONSIDER" : "PASS"}</span>${stale}`,
+        state,
+        "",
+        { why }
       );
     }
 
@@ -247,11 +280,21 @@
       const ruleLabel = data?.rule ? ` (rule: ${data.rule.mode}${data.rule.minPrice ? `, min ${formatMoney(data.rule.minPrice)}` : ""})` : "";
       const fillHtml = visible.priceInput && fillPrice
         ? `<button class="me-bazaar-fill-btn me-manage-fill" type="button" aria-label="Fill the price field with ${escapeHtml(formatMoney(fillPrice, true))}${escapeHtml(ruleLabel)}; saving stays manual">Fill ${escapeHtml(formatMoney(fillPrice, true))}</button>`
-        : (fill?.reason === "held by rule" ? `<span class="me-inline-secondary">hold</span>` : "");
-      const floorHtml = data?.floor ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Cheapest Item Market listing">floor ${formatMoney(data.floor)}</span>` : "";
+        : (fill?.reason === "held by rule" ? `<span class="me-inline-secondary">held by rule</span>` : "");
+      const floorHtml = data?.floor ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary">floor ${formatMoney(data.floor)}</span>` : "";
+      const warningHtml = data?.warning ? `<span class="me-inline-warning">${escapeHtml(data.warning.split(":")[0])}</span>` : "";
+      const why = [
+        `Target ${formatMoney(data?.target, true)} is the conservative Bazaar exit; your price is ${Number.isFinite(data?.delta) ? (data.delta > 0 ? `${formatMoney(data.delta, true)} below it` : `${formatMoney(-data.delta, true)} above it`) : "unknown"}.`,
+        data?.floor ? `Cheapest Item Market listing: ${formatMoney(data.floor, true)}.` : "",
+        fillPrice ? `Fill writes ${formatMoney(fillPrice, true)} (${fill.mode === "anchor" ? "anchor price" : "floor minus undercut"}${fill.clamped ? ", raised to your minimum" : ""}); saving stays manual.` : "",
+        data?.warning || "",
+        orderBookAgeLine(result)
+      ];
       const block = renderInlineHtml(visible,
-        `<span class="me-inline-brand">ME</span><span class="me-inline-primary">Target ${formatMoney(data?.target)}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${deltaText}</span>${floorHtml}${fillHtml}<span class="me-inline-status">${data?.delta > 0 ? "LOW" : "OK"}</span>${stale}`,
-        state
+        `<span class="me-inline-brand">ME</span><span class="me-inline-primary">Target ${formatMoney(data?.target)}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${deltaText}</span>${floorHtml}${fillHtml}${warningHtml}<span class="me-inline-status">${data?.delta > 0 ? "BELOW TARGET" : "ON TARGET"}</span>${stale}`,
+        data?.warning ? "YELLOW" : state,
+        "",
+        { why }
       );
       const manageButton = block?.querySelector?.(".me-manage-fill");
       if (manageButton) {
@@ -297,32 +340,52 @@
       const perUnit = Math.trunc(direct.expectedProfit / qty);
       const route = direct.routes?.bestRoute || "";
       return renderInlineHtml(visible,
-        `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="Expected net profit per unit after fees via ${escapeHtml(route)}">${perUnit >= 0 ? "+" : ""}${formatMoney(perUnit)} ea</span><span class="me-inline-sep">|</span><span class="me-inline-secondary" title="For ${qty} units">${profit} / ${qty}</span><span class="me-inline-status">${CLASS_META[state].label}</span>${stale}`,
-        state
+        `<span class="me-inline-brand">ME</span><span class="me-inline-primary">${perUnit >= 0 ? "+" : ""}${formatMoney(perUnit)} each</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${profit} for ${qty}</span><span class="me-inline-status">${CLASS_META[state].label}</span>${stale}`,
+        state,
+        "",
+        { why: [
+          `Expected net profit per unit after fees via ${route}: ${formatMoney(perUnit, true)}.`,
+          `For a run of ${qty} units: ${formatMoney(direct.expectedProfit, true)} (ROI ${roi}).`,
+          ...classificationWhy(direct),
+          orderBookAgeLine(result)
+        ] }
       );
     }
 
     if (surface === "travel") {
       const qty = Math.max(1, asInt(result.quantityUsed || visible.quantity, 1));
       const perUnit = Math.trunc(direct.expectedProfit / qty);
-      const trip = result.perItemOnly ? `ROI ${roi}` : `${profit} trip`;
+      const trip = result.perItemOnly ? `ROI ${roi}` : `${profit} per trip`;
       return renderInlineHtml(visible,
-        `<span class="me-inline-brand">ME</span><span class="me-inline-primary">${perUnit >= 0 ? "+" : ""}${formatMoney(perUnit)} ea</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${trip}</span>${stale}`,
-        state
+        `<span class="me-inline-brand">ME</span><span class="me-inline-primary">${perUnit >= 0 ? "+" : ""}${formatMoney(perUnit)} each</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${trip}</span><span class="me-inline-status">${CLASS_META[state].label}</span>${stale}`,
+        state,
+        "",
+        { why: [
+          `Expected net profit per unit after fees when sold back in Torn: ${formatMoney(perUnit, true)}.`,
+          result.perItemOnly ? "Set your travel capacity in settings to see profit per trip." : `${qty} items per trip: ${formatMoney(direct.expectedProfit, true)}.`,
+          ...classificationWhy(direct),
+          orderBookAgeLine(result)
+        ] }
       );
     }
 
-    if (surface === "bazaar") {
-      return renderInlineHtml(visible,
-        `<span class="me-inline-brand">ME</span><span class="me-inline-primary">${roi}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${profit}</span><span class="me-inline-status">${CLASS_META[state].label}</span>${stale}`,
-        state
-      );
-    }
-
+    const why = [
+      `Buying ${result.quantityUsed || visible.quantity || 1} at ${formatMoney(visible.price, true)} and reselling via ${direct.routes?.bestRoute || "the best route"} after fees: ${formatMoney(direct.expectedProfit, true)} expected (ROI ${roi}).`,
+      ...classificationWhy(direct),
+      orderBookAgeLine(result)
+    ];
     return renderInlineHtml(visible,
-      `<span class="me-inline-brand">ME</span><span class="me-inline-primary">${roi}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${profit}</span><span class="me-inline-status">${CLASS_META[state].label}</span>${stale}`,
-      state
+      `<span class="me-inline-brand">ME</span><span class="me-inline-primary">${roi} ROI</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${profit} profit</span><span class="me-inline-status">${CLASS_META[state].label}</span>${stale}`,
+      state,
+      "",
+      { why }
     );
+  }
+
+  // The classification's own pass/fail reasons, in words.
+  function classificationWhy(direct) {
+    const reasons = direct?.classification?.reasons || [];
+    return reasons.slice(0, 4).map((reason) => `${reason.pass ? "OK" : "Not met"}: ${reason.text}`);
   }
 
   // ---------------------------------------------------------------------------
@@ -335,7 +398,7 @@
   }
 
   function panelToolbarHtml() {
-    return `<div class="me-actions">
+    return `<div class="me-actions me-panel-toolbar">
       <button class="me-btn me-open-listings" type="button" title="Compare your Item Market listings with the live floor (Limited key)">My listings</button>
       <button class="me-btn me-open-watchlist" type="button" title="Watched items and alert targets">Watchlist</button>
       <button class="me-btn me-open-portfolio" type="button" title="Value your whole inventory through the official API (Minimal key)">Portfolio</button>
@@ -551,6 +614,19 @@
     return 200 - index;
   }
 
+  // Guard against a suggested sell price that is clearly too low: below what
+  // an NPC shop pays, or under half of Torn's daily value (a thin or
+  // manipulated order book). The fill stays available; the strip says why.
+  function underpriceWarning(price, snapshot, shopSell) {
+    const target = asInt(price, 0);
+    if (!target) return null;
+    const shopPrice = asInt(shopSell?.price, 0);
+    if (shopPrice && target < shopPrice) return `Below the ${shopSell.label || "shop"} price of ${formatMoney(shopPrice, true)}: sell to the shop instead.`;
+    const value = asInt(snapshot?.averagePrice, 0);
+    if (value && target < value * 0.5) return `Under half of Torn's value (${formatMoney(value, true)}): the order book looks thin or skewed.`;
+    return null;
+  }
+
   function resultForSurface(surface, visible, snapshot, historyStats, ownBazaar, renderMeta = {}, museum = null, extras = {}) {
     const shopSell = extras?.shopSell || null;
     const salesSummary = extras?.salesSummary || null;
@@ -573,7 +649,8 @@
       const fill = applyPricingRule({ rule, floorSuggestion, anchorSuggestion: estimate.routes.itemMarket.suggestedPrice });
       const target = fill.price || estimate.routes.itemMarket.suggestedPrice;
       const feeBps = itemMarketFeeBps(settings);
-      return { visible, snapshot, historyStats, sellForm: { target, net: grossToNet(target, feeBps), feeBps, floor: snapshot.lowestPrice, rule, estimate }, renderMeta };
+      const warning = underpriceWarning(target, snapshot, shopSell);
+      return { visible, snapshot, historyStats, sellForm: { target, net: grossToNet(target, feeBps), feeBps, floor: snapshot.lowestPrice, rule, fill, estimate, warning }, renderMeta };
     }
 
     if (surface === "auction") {
@@ -596,7 +673,8 @@
       const floorSuggestion = snapshot.lowestPrice ? Math.max(1, snapshot.lowestPrice - Math.max(0, asInt(settings.itemMarketUndercut))) : null;
       const rule = Store.pricingRules()[visible.itemId] || null;
       const fill = applyPricingRule({ rule, floorSuggestion, anchorSuggestion: target });
-      return { visible, snapshot, historyStats, ownBazaar: { target, delta, estimate, fill, rule, floor: snapshot.lowestPrice }, renderMeta };
+      const warning = underpriceWarning(fill.price || target, snapshot, shopSell);
+      return { visible, snapshot, historyStats, ownBazaar: { target, delta, estimate, fill, rule, floor: snapshot.lowestPrice, warning }, renderMeta };
     }
 
     let quantity = visible.quantity;
@@ -780,7 +858,7 @@
     if (!items.length) return;
 
     if (!Store.apiKey()) {
-      items.forEach((visible) => renderInlineError(visible, "Add API key in Market Edge settings"));
+      items.forEach((visible) => renderInlineKeyPrompt(visible));
       return;
     }
 

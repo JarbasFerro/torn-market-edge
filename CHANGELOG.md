@@ -6,6 +6,28 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-09
+
+Performance and UI/UX release, from a research pass over Torn's API (swagger v6.13.4: no market-relevant change), the Torn PDA source, the top Greasy Fork market scripts and their feedback pages, and an audit of this script.
+
+### Performance
+
+- **Viewport-first scanning.** Collectors no longer read a bounding box inside sort comparators (a forced reflow per comparison on Torn's large DOM). Layout reads are cached per pass, priorities are computed once per row, and money-text checks run before any layout read. Rows more than half a viewport below the fold, or beyond the per-scan limit, are handed to an IntersectionObserver and priced when they scroll into view instead of being fetched up front. The throttled scroll listener remains only where IntersectionObserver is unavailable.
+- **Observers stop on pages with nothing to annotate.** Attack, chat and crime pages no longer trigger the document-wide signature query on every mutation; the content observer is attached on supported surfaces only. Surface detection is memoised per URL.
+- **Request budget.** Buy-side lists (Bazaar browse, travel, Auction House, city shops) reuse an order book for two minutes, like the sell surfaces since 0.5.6, so rows that Torn re-renders cost no request. "Analyze page" from the menu still fetches fresh books. The in-memory API cache is capped at 300 entries.
+- **Torn PDA transport.** PDA returns `undefined` (no request made) when the same URL was asked within two seconds; that was parsed as an empty order book. It is now retried once after the window. No nonce parameter is added because only service-cache hits are free of quota.
+- **Bounded storage with batched writes.** Every read goes through memory; writes reach the backend in one batch shortly after (and on page hide). Per-item records (order books, history, metadata, auction sales) are capped at 400, oldest first, and history keeps at most 400 points per item. On Torn PDA 3.15+ the async SQLite `PDA_storage` is used instead of the shared, evictable localStorage; settings, key, watchlist and rules are migrated on first run.
+- **Idle discipline.** The watchlist timer only runs while there is something to poll. Inside Torn PDA, background WebView tabs (reported through PDA's tab-state event) pause scanning like a hidden browser tab.
+
+### UI/UX
+
+- **One visual system that follows Torn's theme.** Colours, spacing and type come from tokens that switch with Torn's `dark-mode` body class, so strips no longer render as dark blobs on the light theme. Type scale 12/11/10 px with tabular figures; every control has at least a 32 px hit area, 40 px on touch screens; one responsive breakpoint at 784 px like the other Torn scripts.
+- **Rows in words, with a "why".** Inventory lines read `Bazaar $820k each | 10 owned | $8.20m total` instead of `ME BZ $820k | x10 | $8.20m`; auction lines say `Max bid`; shop and travel lines say `each`; the browse grid compares "vs value". Every strip has a `?` toggle that opens a plain-language explanation underneath (cheapest listing, Torn's value, net after fee, rule in force, order-book age, what stays manual). Tooltips are gone from rows; Torn PDA cannot show them.
+- **One status vocabulary.** STRONG / CONSIDER / PASS everywhere a verdict is given (the browse grid's FAIR and ABOVE MV are now PASS with the percentage alongside); own Bazaar rows say BELOW TARGET / ON TARGET; the workbench button says Fill instead of `^`.
+- **Underprice guard on sell surfaces.** When the suggested price is below what an NPC shop pays or under half of Torn's daily value, the strip turns amber with a short warning and the why panel explains it. The fill stays available.
+- **API key onboarding.** Without a key, every priced row shows an "Add API key" button that opens settings. The settings dialog is grouped into collapsible sections (API key, Selling, Buying, Watchlist, Panels and travel, Scanning and diagnostics), every control has a label, Escape closes it, Tab stays inside, and there is a "Reset to defaults" button plus a link to Torn's key page. The panel header uses icon buttons with accessible names; list removals and toast dismissals are real buttons.
+- **On-page launcher on desktop too**, on supported pages, so the panels are reachable without the userscript menu. Panel toolbars sit at the top of the panel instead of below long tables.
+
 ## [0.5.6] - 2026-09-09
 
 ### Fixed

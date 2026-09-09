@@ -209,9 +209,15 @@ run("Inline inventory result shows the museum set route", (t) => {
   const result = env.ME.resultForSurface("inventory", plushie, snapshot, history, false, {}, { impliedValue: 150000, label: "Plushie set", complete: true });
   assert.equal(result.inventory.routes.bestRoute, "Museum set");
   const block = env.ME.renderInlineResult("inventory", result, false);
-  assert.match(block.textContent, /SET \$149k/, "museum set is the best route and leads the line");
-  assert.match(block.textContent, /x3/, "owned quantity");
+  assert.match(block.textContent, /Plushie set \$149k/, "museum set is the best route and leads the line, in words");
+  assert.match(block.textContent, /3 owned/, "owned quantity");
   assert.match(block.textContent, /\$446k/, "total for the owned quantity");
-  assert.match(block.querySelector(".me-inline-primary").title, /Bazaar: \$98,010 per unit/, "other routes stay in the tooltip");
+  assert.equal(block.querySelector("[title]"), null, "no tooltip attributes on the line");
+  assert.match(block.querySelector(".me-why").textContent, /Bazaar: \$98,010 per unit/, "other routes are in the why panel");
+  const toggle = block.querySelector(".me-why-toggle");
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+  toggle.click();
+  assert.equal(toggle.getAttribute("aria-expanded"), "true", "tapping ? opens the explanation");
+  assert.ok(block.querySelector(".me-why").classList.contains("me-open"));
 });
 

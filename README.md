@@ -14,9 +14,9 @@ Torn Market Edge is **decision support, not trading automation**. It never buys,
 
 ## Current status
 
-**v0.4.0**
+**v0.6.0**
 
-The current release adds a repricing workbench with per-item pricing rules and undercut alerts, a DOM-free portfolio panel with per-copy equipment pricing by uid, city shop runs and a travel plan from official shop data, Auction House transaction evidence with per-copy bid guidance and end-timing, and an Item Market browse-grid overlay. Torn DOM integration is still validated page by page, so treat new surfaces as beta.
+The current release is a performance and UI/UX pass: viewport-first scanning with cached layout reads and IntersectionObserver pickup, a bounded store with batched writes (Torn PDA's SQLite storage when available), a fix for PDA's duplicate-request behaviour, one theme-aware visual system that follows Torn's dark mode, rows written in words with a "why this price" toggle, an underprice guard on sell surfaces, and an in-row API key prompt with a grouped, keyboard-complete settings dialog. Torn DOM integration is still validated page by page, so treat new surfaces as beta.
 
 ## Supported surfaces
 
@@ -52,18 +52,22 @@ The valuation model covers fungible/stackable items only. Weapons and armor are 
 - Sell-to-shop exit route and museum pieces recognised by name (Meteorite Fragment, Patagonian Fossil, Arrowhead set)
 - Auction House: ended-sales median as evidence and cap for stackable bids, and a best end-time window from ended sales
 - Item Market browse-grid overlay versus Torn's official market value with no per-item requests
-- Watchlist with in-page alerts, polled only while a Torn tab is visible
-- Local price-history observations
+- Watchlist with in-page alerts, polled only while a Torn tab is visible (the timer only runs while there is something to poll)
+- Every row line in plain words with a `?` toggle that explains the price (cheapest listing, Torn's value, net after fee, rule in force, order-book age); no tooltips, so it works in Torn PDA
+- Underprice guard: sell suggestions below an NPC shop price or under half of Torn's value are flagged before you fill
+- One visual system that follows Torn's light and dark theme, 12/11/10 px type with tabular figures, 32 px controls (40 px on touch screens)
+- Local price-history observations (at most 400 points per item)
 - `cache_timestamp`/`cache_delay` aware caching
 - Persistent stale-while-revalidate snapshots
 - Four-request bounded concurrency with a 70 requests/minute Market Edge ceiling
-- In-flight request deduplication
+- In-flight request deduplication; buy-side lists reuse an order book for two minutes, sell surfaces for five
 - Fast 20-listing snapshots on list pages and deeper analysis on Item Market pages
 - SPA-safe inventory category detection
 - Incremental per-row overlays instead of large floating panels on list pages
-- Viewport-first loading
-- Foreground-only DOM analysis
-- Torn PDA compatible (API key injection, PDA transport, on-page launcher)
+- Viewport-first loading: layout reads cached per pass, rows below the fold priced as they scroll into view (IntersectionObserver)
+- Foreground-only DOM analysis; observers detach on pages with nothing to annotate; Torn PDA background tabs pause scanning
+- Bounded storage: per-item records capped at 400 with batched writes; Torn PDA 3.15+ uses the app's SQLite script storage
+- Torn PDA compatible (API key injection, PDA transport with duplicate-request retry, PDA_storage, on-page launcher)
 - Local settings and API-key storage via userscript-manager storage
 
 ## Installation
@@ -81,7 +85,7 @@ Install a compatible userscript manager such as Tampermonkey, then install:
 After installation:
 
 1. Open Torn.
-2. Open the userscript menu and choose **Market Edge settings**.
+2. On any supported page, rows show an **Add API key** button; it opens Market Edge settings (also available from the userscript menu or the **ME** launcher at the bottom-left of supported pages).
 3. Enter your Torn API key.
 4. Use **Test API key**. The status line reports the key's access level.
 5. Open a supported Torn market/inventory page.

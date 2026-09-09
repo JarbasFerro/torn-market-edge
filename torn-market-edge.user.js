@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.5.6
+// @version      0.6.0
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.5.6",
+    version: "0.6.0",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -80,7 +80,7 @@
   const WATCHLIST_MAX_ITEMS = 25;
   const WATCHLIST_ALERT_COOLDOWN_MS = 10 * ONE_MINUTE_MS;
   const OWN_LISTINGS_MAX = 25;
-  // v0.5.6 surfaces: portfolio, shop runs, travel planner, auction guidance.
+  // v0.4.0 surfaces: portfolio, shop runs, travel planner, auction guidance.
   const INVENTORY_TTL_MS = 60 * ONE_MINUTE_MS;
   const INVENTORY_PAGE_LIMIT = 250;
   const INVENTORY_MAX_PAGES = 8;
@@ -1304,9 +1304,11 @@
     const routes = exit ? routeEconomics(exit, 1, settings) : null;
     const netPerUnit = routes ? routes.bestNetPerUnit : null;
     const profit = Number.isFinite(netPerUnit) ? netPerUnit - unit : null;
+    // One vocabulary everywhere: STRONG / CONSIDER / PASS. A card above
+    // Torn's value is simply a pass; the percentage says by how much.
     let state = "GREY";
-    let label = "FAIR";
-    if (discount < 0) label = "ABOVE MV";
+    let label = "PASS";
+    if (discount < 0) label = "PASS";
     else if (profit > 0 && discount >= Math.max(0.10, settings.minimumDiscount * 2)) { state = "GREEN"; label = "STRONG"; }
     else if (profit > 0 && discount >= settings.minimumDiscount) { state = "YELLOW"; label = "CONSIDER"; }
     return { discount, profitPerUnit: profit, bestRoute: routes?.bestRoute || null, state, label, marketPrice: value };
@@ -2046,7 +2048,7 @@
   // Transport abstraction: Torn PDA exposes PDA_httpGet, userscript managers
   // expose GM_xmlhttpRequest, and plain fetch is the last resort (the Torn API
   // sends permissive CORS headers). All three only ever talk to api.torn.com.
-  const PDA_DEDUPE_WINDOW_MS = 2100;
+  const PDA_DEDUPE_WINDOW_MS = asInt(global.__MARKET_EDGE_PDA_WAIT_MS__, 0) || 2100;
 
   function normalizeTransportResponse(response) {
     if (typeof response?.text === "function" && response.responseText === undefined) {
@@ -3711,128 +3713,167 @@
     currentPanel: null
   };
 
+  // ---------------------------------------------------------------------------
+  // One visual system. Colours come from tokens that follow Torn's own theme
+  // (body.dark-mode), so strips sit naturally on light and dark rows. Type
+  // scale: 12 px base, 11 px meta, tabular figures. Every control has at
+  // least a 32 px hit area, 40 px on touch screens.
+  // ---------------------------------------------------------------------------
+
   const CSS = `
-    #market-edge-root { position: fixed; right: 12px; bottom: 12px; z-index: 999998; width: min(370px, calc(100vw - 24px)); font-family: Arial, sans-serif; color: #e9e9e9; }
-    #market-edge-root * { box-sizing: border-box; }
-    .me-shell { background: rgba(28, 28, 30, .97); border: 1px solid rgba(255,255,255,.13); border-radius: 8px; box-shadow: 0 8px 28px rgba(0,0,0,.4); overflow: hidden; }
-    .me-header { display:flex; align-items:center; gap:8px; min-height:38px; padding:7px 9px; background:#242426; border-bottom:1px solid rgba(255,255,255,.08); }
-    .me-title { font-size:12px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; flex:1; }
-    .me-status { font-size:10px; color:#a7a7a7; white-space:nowrap; }
-    .me-icon-btn, .me-btn { border:1px solid rgba(255,255,255,.15); background:#343436; color:#eee; border-radius:5px; cursor:pointer; font-size:11px; padding:5px 8px; }
-    .me-icon-btn { width:27px; padding:4px 0; text-align:center; }
-    .me-icon-btn:hover, .me-btn:hover { background:#414143; }
-    .me-body { padding:10px; max-height:min(72vh, 620px); overflow:auto; }
+    body { --me-bg:#ffffff; --me-bg-2:#f3f3f4; --me-fg:#1f1f21; --me-muted:#5b5f66; --me-faint:#8a8f97; --me-border:rgba(0,0,0,.14); --me-strip:rgba(0,0,0,.045); --me-strip-border:rgba(0,0,0,.10); --me-good:#1d7a3b; --me-warn:#8a5a00; --me-bad:#a83a3a; --me-good-bg:rgba(29,122,59,.10); --me-warn-bg:rgba(184,124,0,.12); --me-bad-bg:rgba(168,58,58,.10); --me-btn:rgba(0,0,0,.06); --me-btn-hover:rgba(0,0,0,.12); --me-btn-border:rgba(0,0,0,.18); --me-shadow:0 8px 28px rgba(0,0,0,.18); --me-fs:12px; --me-fs-meta:11px; --me-fs-small:10px; --me-tap:32px; }
+    body.dark-mode { --me-bg:#242426; --me-bg-2:#1c1c1e; --me-fg:#e9e9e9; --me-muted:#b3b3b3; --me-faint:#8a8a8a; --me-border:rgba(255,255,255,.14); --me-strip:rgba(0,0,0,.28); --me-strip-border:rgba(255,255,255,.08); --me-good:#7fd193; --me-warn:#f0ca66; --me-bad:#e27a7a; --me-good-bg:rgba(74,165,100,.18); --me-warn-bg:rgba(211,170,66,.16); --me-bad-bg:rgba(189,81,81,.16); --me-btn:rgba(255,255,255,.10); --me-btn-hover:rgba(255,255,255,.18); --me-btn-border:rgba(255,255,255,.22); --me-shadow:0 8px 28px rgba(0,0,0,.45); }
+    @media (pointer: coarse) { body { --me-tap:40px; } }
+
+    #market-edge-root { position:fixed; right:12px; bottom:12px; z-index:999998; width:min(390px, calc(100vw - 24px)); font-family:Arial, sans-serif; font-size:var(--me-fs); color:var(--me-fg); }
+    #market-edge-root * { box-sizing:border-box; }
+    .me-shell { background:var(--me-bg); border:1px solid var(--me-border); border-radius:8px; box-shadow:var(--me-shadow); overflow:hidden; }
+    .me-header { display:flex; align-items:center; gap:6px; min-height:40px; padding:5px 8px; background:var(--me-bg-2); border-bottom:1px solid var(--me-border); }
+    .me-title { font-size:var(--me-fs); font-weight:700; letter-spacing:.05em; text-transform:uppercase; flex:1; }
+    .me-status { font-size:var(--me-fs-small); color:var(--me-muted); white-space:nowrap; }
+    .me-btn, .me-icon-btn { display:inline-flex; align-items:center; justify-content:center; min-height:var(--me-tap); border:1px solid var(--me-btn-border); background:var(--me-btn); color:var(--me-fg); border-radius:6px; cursor:pointer; font:600 var(--me-fs)/1.2 Arial, sans-serif; padding:4px 10px; touch-action:manipulation; }
+    .me-icon-btn { min-width:var(--me-tap); padding:4px 0; }
+    .me-btn:hover, .me-icon-btn:hover, .me-btn:focus-visible, .me-icon-btn:focus-visible { background:var(--me-btn-hover); outline:none; }
+    .me-body { display:flex; flex-direction:column; padding:10px; max-height:min(72vh, 620px); overflow:auto; }
     .me-body[hidden] { display:none; }
-    .me-kicker { color:#aaa; text-transform:uppercase; letter-spacing:.08em; font-size:9px; margin-bottom:3px; }
+    .me-body > .me-actions.me-panel-toolbar { order:-1; margin:0 0 8px; padding-bottom:8px; border-bottom:1px solid var(--me-border); }
+    .me-kicker { color:var(--me-muted); text-transform:uppercase; letter-spacing:.08em; font-size:var(--me-fs-small); margin-bottom:3px; }
     .me-item-name { font-size:16px; font-weight:700; margin-bottom:9px; }
-    .me-grid { display:grid; grid-template-columns:1fr auto; gap:4px 12px; font-size:11px; }
-    .me-grid .label { color:#aaa; }
+    .me-grid { display:grid; grid-template-columns:1fr auto; gap:4px 12px; font-size:var(--me-fs-meta); }
+    .me-grid .label { color:var(--me-muted); }
     .me-grid .value { font-variant-numeric:tabular-nums; text-align:right; }
-    .me-rule { height:1px; background:rgba(255,255,255,.08); margin:9px 0; }
-    .me-callout { border-left:3px solid #777; background:rgba(255,255,255,.04); padding:8px; border-radius:4px; }
-    .me-callout.GREEN { border-color:#4aa564; }
-    .me-callout.YELLOW { border-color:#d3aa42; }
-    .me-callout.GREY { border-color:#808080; }
-    .me-callout.RED { border-color:#bd5151; }
-    .me-decision { display:flex; align-items:center; gap:6px; font-weight:700; font-size:12px; }
-    .me-decision.GREEN { color:#7fd193; }
-    .me-decision.YELLOW { color:#f0ca66; }
-    .me-decision.GREY { color:#bbb; }
-    .me-decision.RED { color:#e27a7a; }
-    .me-note { font-size:10px; color:#aaa; line-height:1.35; margin-top:6px; }
-    .me-good { color:#7fd193; }
-    .me-warn { color:#f0ca66; }
-    .me-bad { color:#e27a7a; }
+    .me-rule { height:1px; background:var(--me-border); margin:9px 0; }
+    .me-callout { border-left:3px solid var(--me-faint); background:var(--me-strip); padding:8px; border-radius:4px; }
+    .me-callout.GREEN { border-color:var(--me-good); }
+    .me-callout.YELLOW { border-color:var(--me-warn); }
+    .me-callout.GREY { border-color:var(--me-faint); }
+    .me-callout.RED { border-color:var(--me-bad); }
+    .me-decision { display:flex; align-items:center; gap:6px; font-weight:700; font-size:var(--me-fs); }
+    .me-decision.GREEN, .me-good { color:var(--me-good); }
+    .me-decision.YELLOW, .me-warn, .me-learning { color:var(--me-warn); }
+    .me-decision.GREY { color:var(--me-muted); }
+    .me-decision.RED, .me-bad { color:var(--me-bad); }
+    .me-note { font-size:var(--me-fs-small); color:var(--me-muted); line-height:1.4; margin-top:6px; }
     .me-actions { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
-    .me-progress { height:4px; background:#3b3b3e; border-radius:3px; overflow:hidden; margin:8px 0; }
-    .me-progress > div { height:100%; background:#888; transition:width .15s linear; }
-    .me-result { padding:7px 0; border-top:1px solid rgba(255,255,255,.07); font-size:11px; }
+    .me-progress { height:4px; background:var(--me-border); border-radius:3px; overflow:hidden; margin:8px 0; }
+    .me-progress > div { height:100%; background:var(--me-muted); transition:width .15s linear; }
+    .me-result { padding:7px 0; border-top:1px solid var(--me-border); font-size:var(--me-fs-meta); }
     .me-result:first-child { border-top:0; }
     .me-result-head { display:flex; align-items:center; gap:6px; }
     .me-result-name { font-weight:700; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-    .me-result-metrics { display:flex; gap:8px; margin-top:3px; color:#bbb; font-variant-numeric:tabular-nums; }
-    .me-diag { margin:8px 0 0; padding:7px; background:rgba(0,0,0,.18); border-radius:4px; }
-    .me-diag-row { font-size:10px; line-height:1.5; }
-    .me-diag-row.pass { color:#b9d9c0; }
-    .me-diag-row.fail { color:#dfb1b1; }
-    .me-badge { display:inline-flex !important; align-items:center; gap:3px; padding:2px 5px !important; margin-left:5px !important; border-radius:4px !important; font:700 10px/1.25 Arial,sans-serif !important; white-space:nowrap !important; vertical-align:middle !important; pointer-events:none !important; }
-    .me-badge.GREEN { background:rgba(54,137,76,.18) !important; color:#4fa968 !important; border:1px solid rgba(79,169,104,.45) !important; }
-    .me-badge.YELLOW { background:rgba(183,135,35,.17) !important; color:#c99c3e !important; border:1px solid rgba(201,156,62,.45) !important; }
-    .me-badge.GREY { background:rgba(100,100,100,.14) !important; color:#999 !important; border:1px solid rgba(130,130,130,.35) !important; }
-    .me-badge.RED { background:rgba(165,58,58,.15) !important; color:#c76262 !important; border:1px solid rgba(199,98,98,.4) !important; }
-    .me-inline-analysis { position:static !important; display:inline-flex !important; align-items:center !important; flex-wrap:nowrap !important; gap:4px !important; width:auto !important; max-width:100% !important; min-width:0 !important; margin:0 0 0 8px !important; padding:1px 5px !important; border:1px solid rgba(255,255,255,.12) !important; border-radius:4px !important; background:rgba(15,15,17,.52) !important; color:#bbb !important; font:700 10px/1.25 Arial,sans-serif !important; box-sizing:border-box !important; vertical-align:middle !important; white-space:nowrap !important; pointer-events:none !important; }
-    .me-inline-brand { color:#ddd !important; letter-spacing:.04em !important; }
-    .me-inline-primary { color:#eee !important; }
-    .me-inline-secondary { color:#999 !important; font-weight:600 !important; }
-    .me-inline-sep { color:#666 !important; font-weight:400 !important; }
-    .me-inline-stale { color:#d3aa42 !important; font-weight:700 !important; }
-    .me-inline-analysis.GREEN { border-color:rgba(74,165,100,.58) !important; }
-    .me-inline-analysis.YELLOW { border-color:rgba(211,170,66,.62) !important; }
-    .me-inline-analysis.GREY { border-color:rgba(128,128,128,.42) !important; }
-    .me-inline-analysis.RED { border-color:rgba(189,81,81,.58) !important; }
-    .me-inline-brand { font-weight:800 !important; color:#eee !important; letter-spacing:.04em !important; }
-    .me-inline-status { font-weight:800 !important; white-space:nowrap !important; }
-    .me-inline-analysis.GREEN .me-inline-status { color:#7fd193 !important; }
-    .me-inline-analysis.YELLOW .me-inline-status { color:#f0ca66 !important; }
-    .me-inline-analysis.RED .me-inline-status { color:#e27a7a !important; }
+    .me-result-metrics { display:flex; gap:8px; margin-top:3px; color:var(--me-muted); font-variant-numeric:tabular-nums; }
+    .me-diag { margin:8px 0 0; padding:7px; background:var(--me-strip); border-radius:4px; }
+    .me-diag summary { cursor:pointer; min-height:var(--me-tap); display:flex; align-items:center; }
+    .me-diag-row { font-size:var(--me-fs-small); line-height:1.5; }
+    .me-diag-row.pass { color:var(--me-good); }
+    .me-diag-row.fail { color:var(--me-bad); }
+
+    .me-badge { display:inline-flex !important; align-items:center; gap:3px; padding:2px 6px !important; margin-left:5px !important; border-radius:4px !important; font:700 var(--me-fs-small)/1.25 Arial, sans-serif !important; white-space:nowrap !important; vertical-align:middle !important; pointer-events:none !important; border:1px solid var(--me-border) !important; color:var(--me-muted) !important; background:var(--me-strip) !important; }
+    .me-badge.GREEN { background:var(--me-good-bg) !important; color:var(--me-good) !important; }
+    .me-badge.YELLOW { background:var(--me-warn-bg) !important; color:var(--me-warn) !important; }
+    .me-badge.RED { background:var(--me-bad-bg) !important; color:var(--me-bad) !important; }
+
+    .me-inline-analysis { position:static !important; display:inline-flex !important; align-items:center !important; flex-wrap:wrap !important; gap:4px 6px !important; width:auto !important; max-width:100% !important; min-width:0 !important; margin:0 0 0 8px !important; padding:2px 6px !important; border:1px solid var(--me-strip-border) !important; border-radius:4px !important; background:var(--me-strip) !important; color:var(--me-fg) !important; font:600 var(--me-fs-meta)/1.3 Arial, sans-serif !important; font-variant-numeric:tabular-nums !important; box-sizing:border-box !important; vertical-align:middle !important; white-space:nowrap !important; pointer-events:none !important; text-align:left !important; }
+    .me-inline-analysis.GREEN { border-color:var(--me-good) !important; }
+    .me-inline-analysis.YELLOW { border-color:var(--me-warn) !important; }
+    .me-inline-analysis.RED { border-color:var(--me-bad) !important; }
+    .me-inline-brand { font-weight:800 !important; color:var(--me-faint) !important; letter-spacing:.06em !important; font-size:var(--me-fs-small) !important; }
+    .me-inline-primary { color:var(--me-fg) !important; font-weight:700 !important; }
+    .me-inline-secondary { color:var(--me-muted) !important; font-weight:500 !important; }
+    .me-inline-sep { color:var(--me-faint) !important; font-weight:400 !important; }
+    .me-inline-stale { color:var(--me-warn) !important; font-weight:700 !important; }
+    .me-inline-status { font-weight:800 !important; white-space:nowrap !important; color:var(--me-muted) !important; }
+    .me-inline-analysis.GREEN .me-inline-status { color:var(--me-good) !important; }
+    .me-inline-analysis.YELLOW .me-inline-status { color:var(--me-warn) !important; }
+    .me-inline-analysis.RED .me-inline-status { color:var(--me-bad) !important; }
+    .me-inline-warning { color:var(--me-warn) !important; font-weight:700 !important; }
     .me-inline-metric { white-space:nowrap !important; font-variant-numeric:tabular-nums !important; }
     .me-inline-analysis.me-loading { opacity:.65 !important; font-weight:400 !important; }
     .me-inline-analysis.me-hidden, div.me-inline-analysis.me-row-line.me-hidden { display:none !important; visibility:hidden !important; height:0 !important; min-height:0 !important; padding:0 !important; border:0 !important; }
+    .me-inline-analysis.me-bazaar-add, .me-inline-analysis.me-has-cta { pointer-events:auto !important; }
+
+    .me-why-toggle { display:inline-flex !important; align-items:center !important; justify-content:center !important; min-width:var(--me-tap) !important; min-height:var(--me-tap) !important; margin:-6px 0 !important; padding:0 6px !important; border:0 !important; background:transparent !important; color:var(--me-muted) !important; font:700 var(--me-fs-meta)/1 Arial, sans-serif !important; cursor:pointer !important; pointer-events:auto !important; touch-action:manipulation !important; border-radius:6px !important; }
+    .me-why-toggle:hover, .me-why-toggle:focus-visible { background:var(--me-btn) !important; color:var(--me-fg) !important; outline:none !important; }
+    .me-why-toggle[aria-expanded="true"] { color:var(--me-fg) !important; }
+    .me-why { display:none !important; flex:0 0 100% !important; width:100% !important; margin:2px 0 0 !important; padding:4px 0 2px !important; border-top:1px solid var(--me-strip-border) !important; color:var(--me-muted) !important; font:500 var(--me-fs-small)/1.45 Arial, sans-serif !important; white-space:normal !important; }
+    .me-why.me-open { display:block !important; }
+    .me-why-line { display:block !important; }
+    .me-key-cta { display:inline-flex !important; align-items:center !important; min-height:var(--me-tap) !important; margin:-4px 0 !important; padding:0 10px !important; border:1px solid var(--me-btn-border) !important; border-radius:6px !important; background:var(--me-btn) !important; color:var(--me-fg) !important; font:700 var(--me-fs-meta)/1 Arial, sans-serif !important; cursor:pointer !important; pointer-events:auto !important; }
+
     .me-bazaar-add-row { height:auto !important; min-height:72px !important; overflow:visible !important; }
     .me-bazaar-add-controls { flex-wrap:wrap !important; overflow:visible !important; }
     .me-bazaar-add-controls > .me-inline-analysis { display:flex !important; flex:0 0 100% !important; width:100% !important; max-width:none !important; grid-column:1 / -1 !important; justify-content:flex-end !important; margin:4px 0 1px !important; z-index:10 !important; }
-    .me-inline-analysis.me-bazaar-add { pointer-events:auto !important; padding-right:3px !important; }
-    div.me-inline-analysis.me-bazaar-add.me-row-line { gap:8px !important; padding:5px 8px !important; align-items:center !important; }
-    .me-bazaar-fill-btn.me-fill-main { height:24px !important; min-width:0 !important; padding:0 12px !important; font:700 12px/1 Arial,sans-serif !important; white-space:nowrap !important; border-radius:5px !important; background:rgba(255,255,255,.12) !important; }
-    .me-bazaar-fill-btn.me-fill-clear { height:24px !important; min-width:24px !important; padding:0 7px !important; font:700 14px/1 Arial,sans-serif !important; border-radius:5px !important; color:#f0b3b3 !important; border-color:rgba(189,81,81,.55) !important; background:rgba(189,81,81,.14) !important; }
-    .me-fill-done { display:inline-flex !important; align-items:center !important; justify-content:center !important; height:24px !important; min-width:24px !important; padding:0 6px !important; border-radius:5px !important; color:#dff5e4 !important; background:rgba(74,165,100,.28) !important; border:1px solid rgba(74,165,100,.7) !important; font:700 13px/1 Arial,sans-serif !important; }
-    .me-inline-analysis.me-bazaar-add .me-fill-figures { font-size:12px !important; color:#f2f2f2 !important; }
+    .me-inline-analysis.me-bazaar-add { padding-right:4px !important; }
+    div.me-inline-analysis.me-bazaar-add.me-row-line { gap:6px 8px !important; padding:4px 8px !important; align-items:center !important; }
+    .me-bazaar-fill-btn { display:inline-flex !important; align-items:center !important; justify-content:center !important; min-width:var(--me-tap) !important; min-height:var(--me-tap) !important; margin:-4px 0 !important; padding:0 12px !important; border:1px solid var(--me-btn-border) !important; border-radius:6px !important; background:var(--me-btn) !important; color:var(--me-fg) !important; font:700 var(--me-fs)/1 Arial, sans-serif !important; cursor:pointer !important; pointer-events:auto !important; touch-action:manipulation !important; white-space:nowrap !important; }
+    .me-bazaar-fill-btn:hover, .me-bazaar-fill-btn:focus-visible { background:var(--me-btn-hover) !important; outline:none !important; }
+    .me-bazaar-fill-btn.me-fill-clear { min-width:var(--me-tap) !important; padding:0 8px !important; font-size:15px !important; color:var(--me-bad) !important; border-color:var(--me-bad) !important; background:var(--me-bad-bg) !important; }
+    .me-fill-done { display:inline-flex !important; align-items:center !important; justify-content:center !important; min-width:28px !important; min-height:28px !important; padding:0 6px !important; border-radius:6px !important; color:var(--me-good) !important; background:var(--me-good-bg) !important; border:1px solid var(--me-good) !important; font:700 13px/1 Arial, sans-serif !important; }
+    .me-inline-analysis.me-bazaar-add .me-fill-figures { font-size:var(--me-fs) !important; color:var(--me-fg) !important; }
     .me-inline-analysis.me-bazaar-add .me-inline-secondary { white-space:nowrap !important; }
+    .me-inline-analysis.me-bazaar-add.me-applied { border-color:var(--me-good) !important; }
     .me-row-host { height:auto !important; max-height:none !important; overflow:visible !important; flex-wrap:wrap !important; }
     .me-row-host.me-row-float-host { position:relative !important; }
-    div.me-inline-analysis.me-row-line { display:flex !important; flex:0 0 100% !important; width:100% !important; max-width:none !important; height:auto !important; min-height:16px !important; clear:both !important; margin:0 !important; padding:2px 8px !important; border:0 !important; border-top:1px solid rgba(255,255,255,.08) !important; border-radius:0 !important; background:rgba(0,0,0,.28) !important; justify-content:flex-start !important; white-space:normal !important; flex-wrap:wrap !important; position:relative !important; z-index:5 !important; line-height:1.3 !important; visibility:visible !important; opacity:1 !important; }
-    div.me-inline-analysis.me-row-line.me-row-float { position:absolute !important; left:0 !important; right:0 !important; bottom:0 !important; width:auto !important; z-index:9 !important; pointer-events:none !important; }
-    .me-bazaar-fill-btn { display:inline-flex !important; align-items:center !important; justify-content:center !important; min-width:25px !important; height:22px !important; margin:0 0 0 2px !important; padding:0 7px !important; border:1px solid rgba(255,255,255,.24) !important; border-radius:4px !important; background:rgba(255,255,255,.08) !important; color:#eee !important; font:800 13px/1 Arial,sans-serif !important; cursor:pointer !important; pointer-events:auto !important; touch-action:manipulation !important; }
-    .me-bazaar-fill-btn:hover, .me-bazaar-fill-btn:focus { background:rgba(255,255,255,.16) !important; border-color:rgba(255,255,255,.4) !important; outline:none !important; }
-    .me-inline-analysis.me-bazaar-add.me-applied { border-color:rgba(74,165,100,.65) !important; }
-    .me-modal-backdrop { position:fixed; inset:0; z-index:999999; background:rgba(0,0,0,.64); display:flex; align-items:center; justify-content:center; padding:18px; }
-    .me-modal { width:min(620px, 100%); max-height:90vh; overflow:auto; background:#242426; color:#eee; border:1px solid #555; border-radius:8px; box-shadow:0 14px 46px rgba(0,0,0,.55); padding:14px; }
-    .me-modal h2 { margin:0 0 12px; font-size:17px; }
-    .me-section-title { margin:13px 0 7px; font-size:11px; color:#bbb; text-transform:uppercase; letter-spacing:.06em; }
-    .me-form-grid { display:grid; grid-template-columns:minmax(170px, 1fr) minmax(120px, .7fr); gap:7px 12px; align-items:center; font-size:11px; }
-    .me-form-grid input, .me-form-grid select { width:100%; padding:6px; border:1px solid #555; border-radius:4px; background:#171719; color:#eee; }
-    .me-form-grid input[type='checkbox'] { width:auto; justify-self:start; }
-    .me-form-help { color:#999; font-size:10px; margin-top:8px; line-height:1.4; }
-    .me-modal-actions { display:flex; gap:7px; justify-content:flex-end; margin-top:14px; }
-    .me-error { color:#e27a7a; font-size:11px; line-height:1.4; }
-    .me-learning { color:#f0ca66; }
-    .me-table { width:100%; border-collapse:collapse; font-size:10px; margin-top:6px; }
-    .me-table th, .me-table td { padding:3px 4px; text-align:right; border-bottom:1px solid rgba(255,255,255,.06); white-space:nowrap; font-variant-numeric:tabular-nums; }
-    .me-table th { color:#aaa; font-weight:600; text-transform:uppercase; letter-spacing:.04em; font-size:9px; }
+    div.me-inline-analysis.me-row-line { display:flex !important; flex:0 0 100% !important; width:100% !important; max-width:none !important; height:auto !important; min-height:20px !important; clear:both !important; margin:0 !important; padding:3px 8px !important; border:0 !important; border-top:1px solid var(--me-strip-border) !important; border-radius:0 !important; background:var(--me-strip) !important; justify-content:flex-start !important; white-space:normal !important; flex-wrap:wrap !important; position:relative !important; z-index:5 !important; line-height:1.35 !important; visibility:visible !important; opacity:1 !important; }
+    div.me-inline-analysis.me-row-line.me-row-float { position:absolute !important; left:0 !important; right:0 !important; bottom:0 !important; width:auto !important; z-index:9 !important; }
+    .me-inline-analysis .me-manage-fill { margin-left:4px !important; }
+
+    .me-modal-backdrop { position:fixed; inset:0; z-index:999999; background:rgba(0,0,0,.6); display:flex; align-items:center; justify-content:center; padding:18px; }
+    .me-modal { width:min(640px, 100%); max-height:90vh; overflow:auto; background:var(--me-bg); color:var(--me-fg); border:1px solid var(--me-border); border-radius:8px; box-shadow:var(--me-shadow); padding:14px; font-family:Arial, sans-serif; font-size:var(--me-fs); }
+    .me-modal * { box-sizing:border-box; }
+    .me-modal h2 { margin:0 0 10px; font-size:17px; }
+    .me-modal-intro { color:var(--me-muted); font-size:var(--me-fs-meta); line-height:1.45; margin:0 0 10px; }
+    .me-section { border:1px solid var(--me-border); border-radius:6px; margin:8px 0; background:var(--me-bg); }
+    .me-section > summary { list-style:none; cursor:pointer; display:flex; align-items:center; gap:8px; min-height:var(--me-tap); padding:6px 10px; font-size:var(--me-fs-meta); font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--me-muted); }
+    .me-section > summary::-webkit-details-marker { display:none; }
+    .me-section > summary::before { content:"\\25B8"; font-size:10px; color:var(--me-faint); }
+    .me-section[open] > summary::before { content:"\\25BE"; }
+    .me-section > summary .me-section-hint { font-weight:500; text-transform:none; letter-spacing:0; color:var(--me-faint); flex:1; }
+    .me-section-body { padding:4px 10px 10px; }
+    .me-section-title { margin:13px 0 7px; font-size:var(--me-fs-meta); color:var(--me-muted); text-transform:uppercase; letter-spacing:.06em; }
+    .me-form-grid { display:grid; grid-template-columns:minmax(170px, 1fr) minmax(120px, .7fr); gap:7px 12px; align-items:center; font-size:var(--me-fs-meta); }
+    .me-form-grid label { min-height:24px; display:flex; align-items:center; cursor:pointer; }
+    .me-form-grid input, .me-form-grid select { width:100%; min-height:var(--me-tap); padding:6px; border:1px solid var(--me-border); border-radius:4px; background:var(--me-bg-2); color:var(--me-fg); font-size:var(--me-fs); }
+    .me-form-grid input[type='checkbox'] { width:20px; height:20px; min-height:0; justify-self:start; accent-color:var(--me-good); }
+    .me-form-help { color:var(--me-muted); font-size:var(--me-fs-small); margin-top:8px; line-height:1.4; }
+    .me-visually-hidden { position:absolute !important; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
+    .me-modal-actions { display:flex; gap:7px; justify-content:flex-end; margin-top:14px; position:sticky; bottom:-14px; padding:10px 0 0; background:var(--me-bg); }
+    .me-error { color:var(--me-bad); font-size:var(--me-fs-meta); line-height:1.4; }
+    .me-table { width:100%; border-collapse:collapse; font-size:var(--me-fs-small); margin-top:6px; }
+    .me-table th, .me-table td { padding:4px; text-align:right; border-bottom:1px solid var(--me-border); white-space:nowrap; font-variant-numeric:tabular-nums; }
+    .me-table th { color:var(--me-muted); font-weight:600; text-transform:uppercase; letter-spacing:.04em; font-size:9px; }
     .me-table td:first-child, .me-table th:first-child { text-align:left; max-width:150px; overflow:hidden; text-overflow:ellipsis; }
-    .me-table tr.GREEN td { color:#b9e2c3; }
-    .me-table tr.YELLOW td { color:#f0d79a; }
-    .me-table tr.RED td { color:#e5a3a3; }
-    .me-pill { display:inline-block; padding:1px 5px; border-radius:3px; font-size:9px; font-weight:700; border:1px solid rgba(255,255,255,.2); }
-    .me-pill.GREEN { color:#7fd193; border-color:rgba(79,169,104,.5); }
-    .me-pill.YELLOW { color:#f0ca66; border-color:rgba(201,156,62,.5); }
-    .me-pill.GREY { color:#aaa; }
-    .me-pill.RED { color:#e27a7a; border-color:rgba(199,98,98,.5); }
-    .me-inline-input { width:110px; padding:4px 6px; border:1px solid #555; border-radius:4px; background:#171719; color:#eee; font-size:11px; }
-    .me-launcher { position:fixed; left:10px; bottom:10px; z-index:999997; padding:6px 9px; border-radius:16px; border:1px solid rgba(255,255,255,.25); background:rgba(28,28,30,.94); color:#eee; font:800 11px/1 Arial,sans-serif; cursor:pointer; box-shadow:0 4px 14px rgba(0,0,0,.4); }
-    .me-toast-host { position:fixed; left:10px; bottom:48px; z-index:999999; display:flex; flex-direction:column; gap:6px; max-width:min(360px, calc(100vw - 20px)); }
-    .me-toast { background:rgba(28,28,30,.97); border:1px solid rgba(74,165,100,.6); border-radius:6px; padding:8px 10px; color:#eee; font:12px/1.35 Arial,sans-serif; box-shadow:0 8px 24px rgba(0,0,0,.45); }
-    .me-toast a { color:#7fd193; font-weight:700; }
-    .me-toast .me-toast-close { float:right; margin-left:8px; cursor:pointer; color:#aaa; font-weight:700; }
+    .me-table tr.GREEN td { color:var(--me-good); }
+    .me-table tr.YELLOW td { color:var(--me-warn); }
+    .me-table tr.RED td { color:var(--me-bad); }
+    .me-pill { display:inline-block; padding:1px 5px; border-radius:3px; font-size:9px; font-weight:700; border:1px solid var(--me-border); color:var(--me-muted); }
+    .me-pill.GREEN { color:var(--me-good); border-color:var(--me-good); }
+    .me-pill.YELLOW { color:var(--me-warn); border-color:var(--me-warn); }
+    .me-pill.RED { color:var(--me-bad); border-color:var(--me-bad); }
+    .me-inline-input { width:110px; min-height:var(--me-tap); padding:4px 6px; border:1px solid var(--me-border); border-radius:4px; background:var(--me-bg-2); color:var(--me-fg); font-size:var(--me-fs-meta); }
+    .me-launcher { position:fixed; left:10px; bottom:10px; z-index:999997; min-height:var(--me-tap); min-width:var(--me-tap); padding:6px 12px; border-radius:20px; border:1px solid var(--me-border); background:var(--me-bg); color:var(--me-fg); font:800 var(--me-fs-meta)/1 Arial, sans-serif; cursor:pointer; box-shadow:var(--me-shadow); touch-action:manipulation; }
+    .me-toast-host { position:fixed; left:10px; bottom:56px; z-index:999999; display:flex; flex-direction:column; gap:6px; max-width:min(380px, calc(100vw - 20px)); }
+    .me-toast { background:var(--me-bg); border:1px solid var(--me-good); border-radius:6px; padding:8px 10px; color:var(--me-fg); font:var(--me-fs)/1.4 Arial, sans-serif; box-shadow:var(--me-shadow); }
+    .me-toast a { color:var(--me-good); font-weight:700; }
+    .me-toast .me-toast-close { float:right; border:0; background:transparent; font:inherit; display:inline-flex; align-items:center; justify-content:center; min-width:var(--me-tap); min-height:var(--me-tap); margin:-6px -6px 0 8px; cursor:pointer; color:var(--me-muted); font-weight:700; border-radius:6px; }
+    .me-toast .me-toast-close:hover { background:var(--me-btn); }
+    .me-launcher-menu { border-color:var(--me-border); }
     .me-workbench-cell { white-space:nowrap; }
-    .me-workbench-cell .me-inline-input { width:78px; font-size:10px; padding:2px 3px; margin-left:3px; }
-    .me-workbench-cell .me-rule-mode { width:96px; }
-    .me-workbench-cell .me-listing-fill { padding:2px 6px; margin-left:3px; }
-    .me-inline-analysis .me-manage-fill { margin-left:4px; }
-    .me-watch-row { display:flex; align-items:center; gap:6px; font-size:11px; padding:3px 0; border-bottom:1px solid rgba(255,255,255,.06); }
+    .me-workbench-cell .me-inline-input { width:78px; font-size:var(--me-fs-small); padding:2px 3px; margin-left:3px; }
+    .me-workbench-cell .me-rule-mode { width:104px; }
+    .me-workbench-cell .me-listing-fill { padding:2px 8px; margin-left:3px; }
+    .me-watch-row { display:flex; align-items:center; gap:6px; font-size:var(--me-fs-meta); padding:2px 0; border-bottom:1px solid var(--me-border); }
     .me-watch-row .me-watch-name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-    .me-watch-row .me-watch-remove { cursor:pointer; color:#e27a7a; font-weight:700; padding:0 4px; }
-    @media (max-width: 600px) { #market-edge-root { right:6px; bottom:6px; width:calc(100vw - 12px); } .me-body { max-height:58vh; } }
+    .me-watch-row .me-watch-remove { display:inline-flex; align-items:center; justify-content:center; min-width:var(--me-tap); min-height:var(--me-tap); border:0; background:transparent; cursor:pointer; color:var(--me-bad); font-weight:700; border-radius:6px; }
+    .me-watch-row .me-watch-remove:hover, .me-watch-row .me-watch-remove:focus-visible { background:var(--me-bad-bg); outline:none; }
+    @media (max-width: 784px) {
+      #market-edge-root { right:6px; bottom:6px; width:calc(100vw - 12px); }
+      .me-body { max-height:58vh; }
+      .me-form-grid { grid-template-columns:1fr; gap:3px 0; }
+      .me-form-grid label { min-height:0; margin-top:6px; }
+      .me-modal-backdrop { padding:8px; align-items:flex-end; }
+      .me-modal { max-height:92vh; }
+    }
   `;
 
   function injectStyles(css) {
@@ -3865,9 +3906,9 @@
         <div class="me-header">
           <div class="me-title">Market Edge</div>
           <div class="me-status"></div>
-          <button class="me-icon-btn me-settings" type="button" title="Settings">S</button>
-          <button class="me-icon-btn me-collapse" type="button" title="Collapse">-</button>
-          <button class="me-icon-btn me-close" type="button" title="Close panel">X</button>
+          <button class="me-icon-btn me-settings" type="button" aria-label="Market Edge settings">⚙</button>
+          <button class="me-icon-btn me-collapse" type="button" aria-label="Collapse panel">–</button>
+          <button class="me-icon-btn me-close" type="button" aria-label="Close panel">×</button>
         </div>
         <div class="me-body"></div>
       </div>`;
@@ -3889,7 +3930,8 @@
     const body = ui.root.querySelector(".me-body");
     const button = ui.root.querySelector(".me-collapse");
     body.hidden = state === "collapsed";
-    button.textContent = state === "collapsed" ? "+" : "-";
+    button.textContent = state === "collapsed" ? "+" : "–";
+    button.setAttribute("aria-label", state === "collapsed" ? "Expand panel" : "Collapse panel");
   }
 
   function togglePanelState() {
@@ -3942,101 +3984,171 @@
     return `<details class="me-diag"><summary>Why ${escapeHtml(CLASS_META[opportunity.classification.state].label)}?</summary>${opportunity.classification.reasons.map((reason) => `<div class="me-diag-row ${reason.pass ? "pass" : "fail"}">${reason.pass ? "OK" : "X"} ${escapeHtml(reason.text)}</div>`).join("")}</details>`;
   }
 
+  // Settings: grouped, every control labelled, keyboard-complete (Escape
+  // closes, Tab stays inside), with a reset. Ids used by the diagnostics and
+  // watchlist flows are stable.
+  function settingsFieldHtml(current, key, label, { type = "number", percent = false, premium = false, min, max, step, help = "" } = {}) {
+    const id = `me-set-${key}`;
+    const value = current[key];
+    if (type === "checkbox") {
+      return `<label for="${id}">${escapeHtml(label)}</label><input id="${id}" data-setting="${key}" type="checkbox" ${value ? "checked" : ""}${help ? ` aria-describedby="${id}-help"` : ""}>${help ? `<div class="me-form-help" id="${id}-help" style="grid-column:1 / -1;margin-top:-4px">${escapeHtml(help)}</div>` : ""}`;
+    }
+    const shown = premium ? ((Number(value) - 1) * 100).toFixed(1) : (percent ? (Number(value) * 100).toFixed(2).replace(/\.?0+$/, "") : value);
+    const attrs = [
+      Number.isFinite(min) ? `min="${min}"` : "",
+      Number.isFinite(max) ? `max="${max}"` : "",
+      step !== undefined ? `step="${step}"` : "",
+      percent ? 'data-percent="1"' : "",
+      premium ? 'data-premium="1"' : ""
+    ].filter(Boolean).join(" ");
+    return `<label for="${id}">${escapeHtml(label)}</label><input id="${id}" data-setting="${key}" type="number" ${attrs} value="${escapeHtml(String(shown))}"${help ? ` aria-describedby="${id}-help"` : ""}>${help ? `<div class="me-form-help" id="${id}-help" style="grid-column:1 / -1;margin-top:-4px">${escapeHtml(help)}</div>` : ""}`;
+  }
+
+  function settingsSectionHtml(title, hint, body, { open = false } = {}) {
+    return `<details class="me-section" ${open ? "open" : ""}><summary>${escapeHtml(title)}<span class="me-section-hint">${escapeHtml(hint)}</span></summary><div class="me-section-body">${body}</div></details>`;
+  }
+
   function showSettings() {
     if (document.querySelector(".me-modal-backdrop")) return;
     const current = Store.settings();
+    const hasKey = Boolean(Store.apiKey());
     const backdrop = document.createElement("div");
     backdrop.className = "me-modal-backdrop";
+    const f = (key, label, options) => settingsFieldHtml(current, key, label, options);
     backdrop.innerHTML = `
-      <div class="me-modal" role="dialog" aria-modal="true" aria-label="Market Edge settings">
-        <h2>Market Edge settings</h2>
-        <div class="me-section-title">API</div>
-        <div class="me-form-grid">
-          <label for="me-api-key">API key</label><input id="me-api-key" type="password" autocomplete="off" value="${escapeHtml(Store.apiKey())}">
-          <span>API status</span><span id="me-api-status">Not tested</span>
-        </div>
-        <div class="me-actions"><button class="me-btn" id="me-test-key" type="button">Test API key</button></div>
+      <div class="me-modal" role="dialog" aria-modal="true" aria-labelledby="me-settings-title">
+        <h2 id="me-settings-title">Market Edge settings</h2>
+        <p class="me-modal-intro">Market Edge reads the official Torn API and annotates the pages you open. It never buys, sells, lists or submits anything; fill buttons only write Torn's fields for you to review.</p>
 
-        <div class="me-section-title">Trading</div>
-        <div class="me-form-grid">
-          <label>Available trading capital ($)</label><input data-setting="availableCapital" type="number" min="0" step="1000000" value="${current.availableCapital}">
-          <label>Max capital / opportunity ($)</label><input data-setting="maxCapitalOpportunity" type="number" min="1" step="1000000" value="${current.maxCapitalOpportunity}">
-          <label>Max capital / item ($)</label><input data-setting="maxCapitalItem" type="number" min="1" step="1000000" value="${current.maxCapitalItem}">
-          <label>Minimum ROI (%)</label><input data-setting="minimumROI" data-percent="1" type="number" min="0" max="100" step="0.1" value="${current.minimumROI * 100}">
-          <label>Minimum expected profit ($)</label><input data-setting="minimumProfit" type="number" min="0" step="50000" value="${current.minimumProfit}">
-          <label>Minimum discount (%)</label><input data-setting="minimumDiscount" data-percent="1" type="number" min="0" max="100" step="0.1" value="${current.minimumDiscount * 100}">
-        </div>
+        ${settingsSectionHtml("API key", hasKey ? "saved" : "needed to price anything", `
+          <div class="me-form-grid">
+            <label for="me-api-key">Torn API key</label><input id="me-api-key" type="password" autocomplete="off" value="${escapeHtml(Store.apiKey())}" aria-describedby="me-api-key-help">
+            <span>Status</span><span id="me-api-status" aria-live="polite">${hasKey ? "Saved, not tested this session" : "No key yet"}</span>
+          </div>
+          <div class="me-actions"><button class="me-btn" id="me-test-key" type="button">Test API key</button><a class="me-btn" href="https://www.torn.com/preferences.php#tab=api" target="_blank" rel="noopener">Create a key on Torn</a></div>
+          <div class="me-form-help" id="me-api-key-help">A Public key prices every page. Minimal access adds the Portfolio panel (your inventory). Limited access adds the panel for your own Item Market listings. The key stays in userscript storage and is sent only to api.torn.com.${ENV.isPda ? " Torn PDA supplies its own key automatically when this field is empty." : ""}</div>
+        `, { open: true })}
 
-        <div class="me-section-title">Exit assumptions and fees</div>
-        <div class="me-form-grid">
-          <label>Bazaar enabled</label><input data-setting="bazaarEnabled" type="checkbox" ${current.bazaarEnabled ? "checked" : ""}>
-          <label>Bazaar discount (%)</label><input data-setting="bazaarDiscount" data-percent="1" type="number" min="0" max="20" step="0.1" value="${current.bazaarDiscount * 100}">
-          <label>Safety haircut (%)</label><input data-setting="safetyHaircut" data-percent="1" type="number" min="0" max="10" step="0.1" value="${current.safetyHaircut * 100}">
-          <label>Historical premium cap (%)</label><input data-setting="allowedHistoricalPremium" data-premium="1" type="number" min="0" max="10" step="0.1" value="${(current.allowedHistoricalPremium - 1) * 100}">
-          <label>Item Market undercut ($)</label><input data-setting="itemMarketUndercut" type="number" min="0" step="1" value="${current.itemMarketUndercut}">
-          <label>I list anonymously on the Item Market (+10% fee)</label><input data-setting="anonymousListing" type="checkbox" ${current.anonymousListing ? "checked" : ""}>
-          <label>Anonymous fee waived by 5-star company perk</label><input data-setting="anonymousFeeWaived" type="checkbox" ${current.anonymousFeeWaived ? "checked" : ""}>
-          <label>Museum set route for plushies/flowers</label><input data-setting="museumSetsEnabled" type="checkbox" ${current.museumSetsEnabled ? "checked" : ""}>
-        </div>
+        ${settingsSectionHtml("Selling", "undercut, fees, routes", `
+          <div class="me-form-grid">
+            ${f("itemMarketUndercut", "Undercut the cheapest listing by ($)", { min: 0, step: 1, help: "Fill buttons write the cheapest Item Market price minus this amount." })}
+            ${f("anonymousListing", "I list anonymously on the Item Market (+10% fee)", { type: "checkbox" })}
+            ${f("anonymousFeeWaived", "Anonymous fee waived by a 5-star company perk", { type: "checkbox" })}
+            ${f("bazaarEnabled", "Consider the Bazaar as an exit route", { type: "checkbox" })}
+            ${f("bazaarDiscount", "Bazaar price below the Item Market floor (%)", { percent: true, min: 0, max: 20, step: 0.1 })}
+            ${f("museumSetsEnabled", "Value plushies and flowers as museum sets", { type: "checkbox" })}
+            ${f("undercutAlerts", "Warn me when my own listings are undercut", { type: "checkbox" })}
+          </div>
+        `, { open: true })}
 
-        <div class="me-section-title">Risk & scanning</div>
-        <div class="me-form-grid">
-          <label>Minimum confidence for green</label><select data-setting="minimumGreenConfidence">${["VERY LOW", "LOW", "MEDIUM", "HIGH"].map((value) => `<option ${value === current.minimumGreenConfidence ? "selected" : ""}>${value}</option>`).join("")}</select>
-          <label>Max MAD volatility (%)</label><input data-setting="maxVolatility" data-percent="1" type="number" min="0" max="100" step="0.1" value="${current.maxVolatility * 100}">
-          <label>Max visible items / scan</label><input data-setting="scanMaxVisibleItems" type="number" min="1" max="50" step="1" value="${current.scanMaxVisibleItems}">
-          <label>Travel capacity (0 = per-item only)</label><input data-setting="travelCapacity" type="number" min="0" max="1000" step="1" value="${current.travelCapacity}">
-          <label>City shop run quantity (units per run)</label><input data-setting="shopRunQuantity" type="number" min="1" max="10000" step="1" value="${current.shopRunQuantity}">
-          <label>Portfolio refine budget (requests per press)</label><input data-setting="portfolioRefineRequests" type="number" min="1" max="60" step="1" value="${current.portfolioRefineRequests}">
-          <label>Use ended Auction House sales as evidence</label><input data-setting="auctionEvidenceEnabled" type="checkbox" ${current.auctionEvidenceEnabled !== false ? "checked" : ""}>
-          <label>Item Market browse-grid overlay (vs market value)</label><input data-setting="browseOverlayEnabled" type="checkbox" ${current.browseOverlayEnabled !== false ? "checked" : ""}>
-          <label>History retention (days)</label><input data-setting="historyRetentionDays" type="number" min="1" max="90" step="1" value="${current.historyRetentionDays}">
-          <label>Developer diagnostics in console</label><input data-setting="developerMode" type="checkbox" ${current.developerMode ? "checked" : ""}>
-        </div>
+        ${settingsSectionHtml("Buying", "capital and thresholds", `
+          <div class="me-form-grid">
+            ${f("availableCapital", "Available trading capital ($)", { min: 0, step: 1000000 })}
+            ${f("maxCapitalOpportunity", "Max capital per opportunity ($)", { min: 1, step: 1000000 })}
+            ${f("maxCapitalItem", "Max capital per item ($)", { min: 1, step: 1000000 })}
+            ${f("minimumROI", "Minimum ROI (%)", { percent: true, min: 0, max: 100, step: 0.1 })}
+            ${f("minimumProfit", "Minimum expected profit ($)", { min: 0, step: 50000 })}
+            ${f("minimumDiscount", "Minimum discount versus value (%)", { percent: true, min: 0, max: 100, step: 0.1 })}
+            ${f("safetyHaircut", "Safety haircut on resale (%)", { percent: true, min: 0, max: 10, step: 0.1 })}
+            ${f("allowedHistoricalPremium", "Allowed premium over history (%)", { premium: true, min: 0, max: 10, step: 0.1 })}
+            <label for="me-set-minimumGreenConfidence">Minimum confidence for a STRONG verdict</label><select id="me-set-minimumGreenConfidence" data-setting="minimumGreenConfidence">${["VERY LOW", "LOW", "MEDIUM", "HIGH"].map((value) => `<option ${value === current.minimumGreenConfidence ? "selected" : ""}>${value}</option>`).join("")}</select>
+            ${f("maxVolatility", "Max tolerated price volatility (%)", { percent: true, min: 0, max: 100, step: 0.1 })}
+          </div>
+        `)}
 
-        <div class="me-section-title">Watchlist (API polling while a Torn tab is visible)</div>
-        <div class="me-form-grid">
-          <label>Watchlist alerts enabled</label><input data-setting="watchlistEnabled" type="checkbox" ${current.watchlistEnabled ? "checked" : ""}>
-          <label>Check interval (seconds, min ${WATCHLIST_MIN_INTERVAL_SEC})</label><input data-setting="watchlistIntervalSeconds" type="number" min="${WATCHLIST_MIN_INTERVAL_SEC}" max="3600" step="5" value="${current.watchlistIntervalSeconds}">
-          <label>Undercut alerts for my own listings</label><input data-setting="undercutAlerts" type="checkbox" ${current.undercutAlerts !== false ? "checked" : ""}>
-        </div>
-        <div id="me-watchlist-rows"></div>
-        <div class="me-section-title">Diagnostics</div>
-        <div class="me-actions"><button class="me-btn" id="me-build-diagnostics" type="button">Build page structure report</button><button class="me-btn" id="me-copy-diagnostics" type="button" hidden>Copy</button></div>
-        <textarea id="me-diagnostics" class="me-inline-input" style="width:100%;min-height:90px;display:none;font:10px/1.3 monospace" readonly></textarea>
-        <div class="me-form-help">The report describes the page's structure around item rows and expanded details (tags, classes, short text). It never includes the API key.</div>
-        <div class="me-actions">
-          <input id="me-watch-item" class="me-inline-input" type="number" min="1" placeholder="Item ID">
-          <input id="me-watch-target" class="me-inline-input" type="number" min="1" placeholder="Alert at or below $">
-          <button class="me-btn" id="me-watch-add" type="button">Add to watchlist</button>
-        </div>
-        <div class="me-form-help">The API key stays in userscript storage and is sent only to api.torn.com. Market Edge never includes it in diagnostics or exports. Fees modelled: Item Market 5% sales tax, optional 10% anonymous-listing fee, Auction House 3%. Bazaar and trades have no fee. Own Item Market listings need a Limited access key, the portfolio needs a Minimal access key; everything else works with a Public key.${ENV.isPda ? " Torn PDA detected: the PDA API key is used automatically when no key is entered." : ""}</div>
-        <div class="me-modal-actions"><button class="me-btn" id="me-cancel-settings" type="button">Cancel</button><button class="me-btn" id="me-save-settings" type="button">Save</button></div>
+        ${settingsSectionHtml("Watchlist", "alerts while a Torn tab is open", `
+          <div class="me-form-grid">
+            ${f("watchlistEnabled", "Watchlist alerts enabled", { type: "checkbox" })}
+            ${f("watchlistIntervalSeconds", `Check every (seconds, min ${WATCHLIST_MIN_INTERVAL_SEC})`, { min: WATCHLIST_MIN_INTERVAL_SEC, max: 3600, step: 5 })}
+          </div>
+          <div id="me-watchlist-rows"></div>
+          <div class="me-actions">
+            <label class="me-visually-hidden" for="me-watch-item">Item id</label><input id="me-watch-item" class="me-inline-input" type="number" min="1" placeholder="Item ID">
+            <label class="me-visually-hidden" for="me-watch-target">Alert at or below</label><input id="me-watch-target" class="me-inline-input" type="number" min="1" placeholder="Alert at or below $">
+            <button class="me-btn" id="me-watch-add" type="button">Add to watchlist</button>
+          </div>
+        `)}
+
+        ${settingsSectionHtml("Panels and travel", "portfolio, shops, travel, browse", `
+          <div class="me-form-grid">
+            ${f("travelCapacity", "Travel capacity (0 = per-item figures only)", { min: 0, max: 1000, step: 1 })}
+            ${f("shopRunQuantity", "City shop run quantity (units)", { min: 1, max: 10000, step: 1 })}
+            ${f("portfolioRefineRequests", "Portfolio refine budget (requests per press)", { min: 1, max: 60, step: 1 })}
+            ${f("auctionEvidenceEnabled", "Use ended Auction House sales as evidence", { type: "checkbox" })}
+            ${f("browseOverlayEnabled", "Item Market browse-grid overlay", { type: "checkbox" })}
+          </div>
+        `)}
+
+        ${settingsSectionHtml("Scanning and diagnostics", "advanced", `
+          <div class="me-form-grid">
+            ${f("scanMaxVisibleItems", "Rows priced per scan", { min: 1, max: 50, step: 1, help: "Rows further down the page are priced as they scroll into view." })}
+            ${f("historyRetentionDays", "Keep local price history (days)", { min: 1, max: 90, step: 1 })}
+            ${f("developerMode", "Developer diagnostics in the console", { type: "checkbox" })}
+          </div>
+          <div class="me-actions"><button class="me-btn" id="me-build-diagnostics" type="button">Build page structure report</button><button class="me-btn" id="me-copy-diagnostics" type="button" hidden>Copy</button></div>
+          <textarea id="me-diagnostics" class="me-inline-input" style="width:100%;min-height:90px;display:none;font:10px/1.3 monospace" readonly aria-label="Page structure report"></textarea>
+          <div class="me-form-help">The report describes the page's structure around item rows and how the script behaved here. It never includes the API key. Fees modelled: Item Market 5% sales tax, optional 10% anonymous-listing fee, Auction House 3%; Bazaar and trades have no fee.</div>
+        `)}
+
+        <div class="me-modal-actions"><button class="me-btn" id="me-reset-settings" type="button">Reset to defaults</button><button class="me-btn" id="me-cancel-settings" type="button">Cancel</button><button class="me-btn" id="me-save-settings" type="button">Save</button></div>
       </div>`;
     document.body.appendChild(backdrop);
 
-    const close = () => backdrop.remove();
+    const modal = backdrop.querySelector(".me-modal");
+    const previouslyFocused = document.activeElement;
+    const close = () => {
+      backdrop.remove();
+      document.removeEventListener("keydown", onKey, true);
+      try { previouslyFocused?.focus?.(); } catch { /* ignore */ }
+    };
+    const focusable = () => Array.from(modal.querySelectorAll("input, select, textarea, button, a[href], summary")).filter((node) => !node.hidden && node.offsetParent !== null || node.tagName === "SUMMARY");
+    const onKey = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        close();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const nodes = focusable();
+      if (!nodes.length) return;
+      const first = nodes[0];
+      const last = nodes[nodes.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKey, true);
     backdrop.addEventListener("click", (event) => { if (event.target === backdrop) close(); });
     backdrop.querySelector("#me-cancel-settings").addEventListener("click", close);
+    setTimeout(() => {
+      try {
+        (hasKey ? backdrop.querySelector("#me-set-itemMarketUndercut") : backdrop.querySelector("#me-api-key"))?.focus();
+      } catch { /* ignore */ }
+    }, 0);
 
     const keyInfo = Store.keyInfo();
     if (keyInfo?.info?.access?.type) {
       const status = backdrop.querySelector("#me-api-status");
-      status.textContent = `${keyInfo.info.access.type} key (last verified ${formatAge(Math.floor((Date.now() - asInt(keyInfo.savedAt)) / 1000))} ago)`;
+      status.textContent = `${keyInfo.info.access.type} key, verified ${formatAge(Math.floor((Date.now() - asInt(keyInfo.savedAt)) / 1000))} ago`;
     }
 
     const renderWatchRows = () => {
       const host = backdrop.querySelector("#me-watchlist-rows");
       const entries = Store.watchlist();
       if (!entries.length) {
-        host.innerHTML = `<div class="me-form-help">No watched items. Add one here or use "Watch" on an Item Market page.</div>`;
+        host.innerHTML = `<div class="me-form-help">No watched items. Add one below, or use "Watch" on an Item Market page.</div>`;
         return;
       }
       host.innerHTML = entries.map((entry) => `
         <div class="me-watch-row" data-item-id="${entry.itemId}">
-          <span class="me-watch-name" title="Item ${entry.itemId}">${escapeHtml(entry.name)}</span>
+          <span class="me-watch-name">${escapeHtml(entry.name)}</span>
           <span>at or below ${formatMoney(entry.target)}</span>
           <span>${entry.lastFloor ? `floor ${formatMoney(entry.lastFloor)}` : ""}</span>
-          <span class="me-watch-remove" role="button" title="Remove">X</span>
+          <button class="me-watch-remove" type="button" aria-label="Stop watching ${escapeHtml(entry.name)}">×</button>
         </div>`).join("");
       host.querySelectorAll(".me-watch-remove").forEach((button) => {
         button.addEventListener("click", () => {
@@ -4092,16 +4204,26 @@
       Store.setApiKey(backdrop.querySelector("#me-api-key").value);
       api.memoryCache.clear();
       status.textContent = "Testing...";
+      status.className = "";
       try {
         const result = await api.testKey();
         const player = result.playerId ? `player ${result.playerId}` : "player unknown";
         const limitedOk = result.accessRank >= KEY_ACCESS_RANK["Limited Access"];
-        status.textContent = `OK - ${player} - ${result.accessType}${limitedOk ? "" : " (own listings panel needs Limited access)"}`;
+        status.textContent = `OK: ${player}, ${result.accessType}${limitedOk ? "" : " (the own-listings panel needs Limited access)"}`;
         status.className = limitedOk ? "me-good" : "me-warn";
       } catch (error) {
         status.textContent = describeApiError(error, { feature: "Key test" });
         status.className = "me-bad";
       }
+    });
+    backdrop.querySelector("#me-reset-settings").addEventListener("click", () => {
+      let confirmed = true;
+      try { confirmed = window.confirm("Reset every Market Edge setting to its default? The API key, watchlist and pricing rules are kept."); } catch { confirmed = true; }
+      if (!confirmed) return;
+      Store.saveSettings({});
+      settings = Store.settings();
+      close();
+      showSettings();
     });
     backdrop.querySelector("#me-save-settings").addEventListener("click", () => {
       const next = { ...current };
@@ -4188,7 +4310,30 @@
     return null;
   }
 
-  function renderInlineHtml(visible, html, state = "GREY", extraClass = "") {
+  // "Why this price": a small toggle on the strip opens a plain-language
+  // explanation underneath. Tooltips are not used anywhere on rows because
+  // mobile webviews pop them up over the row on tap.
+  function whyHtml(lines) {
+    const clean = (lines || []).filter(Boolean);
+    if (!clean.length) return "";
+    return `<button class="me-why-toggle" type="button" aria-expanded="false" aria-label="Why this price">?</button><span class="me-why" role="region" aria-label="Explanation">${clean.map((line) => `<span class="me-why-line">${escapeHtml(line)}</span>`).join("")}</span>`;
+  }
+
+  function bindWhy(block) {
+    const toggle = block?.querySelector?.(".me-why-toggle");
+    const panel = block?.querySelector?.(".me-why");
+    if (!toggle || !panel) return;
+    block.classList.add("me-has-why");
+    toggle.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const open = !panel.classList.contains("me-open");
+      panel.classList.toggle("me-open", open);
+      toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+  }
+
+  function renderInlineHtml(visible, html, state = "GREY", extraClass = "", { why = [] } = {}) {
     const hidden = extraClass.includes("me-hidden");
     const host = inlineHostFor(visible, { hidden });
     if (!host) return null;
@@ -4199,10 +4344,33 @@
     block.className = `me-inline-analysis ${state} ${extraClass}${visible?.rowLine && !hidden ? " me-row-line" : ""}`.trim();
     block.dataset.meItemId = String(visible.itemId);
     block.dataset.meComplete = extraClass.includes("me-loading") ? "0" : "1";
-    block.innerHTML = html;
+    block.innerHTML = hidden ? html : `${html}${whyHtml(why)}`;
     host.node.appendChild(block);
+    if (!hidden) bindWhy(block);
     if (visible?.rowLine && !hidden) ensureRowLineVisible(block);
     return block;
+  }
+
+  // No API key yet: the row itself offers the way in.
+  function renderInlineKeyPrompt(visible) {
+    const block = renderInlineHtml(
+      visible,
+      `<span class="me-inline-brand">ME</span><button class="me-key-cta" type="button">Add API key</button><span class="me-inline-secondary">to price this row</span>`,
+      "GREY",
+      "me-has-cta"
+    );
+    block?.querySelector?.(".me-key-cta")?.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      showSettings();
+    });
+    return block;
+  }
+
+  function orderBookAgeLine(result) {
+    const age = result?.renderMeta?.cacheAgeSeconds;
+    if (!Number.isFinite(age)) return "";
+    return `Order book from ${formatAge(age)} ago${result?.renderMeta?.stale ? " (refreshing)" : ""}.`;
   }
 
   // Torn's row markup differs between builds and devices; measure the line
@@ -4233,6 +4401,7 @@
   }
 
   function renderInlineError(visible, message) {
+    if (/api key/i.test(String(message || ""))) return renderInlineKeyPrompt(visible);
     return renderInlineHtml(
       visible,
       `<span class="me-inline-brand">ME</span><span class="me-inline-secondary">${escapeHtml(message)}</span><span class="me-inline-status">ERROR</span>`,
@@ -4241,7 +4410,7 @@
   }
 
   function staleMarker(result) {
-    return result?.renderMeta?.stale ? `<span class="me-inline-stale" title="Showing cached data while Market Edge refreshes">*</span>` : "";
+    return result?.renderMeta?.stale ? `<span class="me-inline-stale" aria-label="Cached figures, refreshing">*</span>` : "";
   }
 
   function setBazaarInputValue(input, value) {
@@ -4362,11 +4531,27 @@
     const controls = filled
       ? `<span class="me-fill-done" aria-label="Filled">\u2713</span><button class="me-bazaar-fill-btn me-fill-clear" type="button" aria-label="Clear the quantity and price fields">\u00d7</button>`
       : `<button class="me-bazaar-fill-btn me-fill-main" type="button" aria-label="Fill ${escapeHtml(perUnit)}; ${escapeHtml(manualNote)} stays manual">Fill</button>`;
+    const warning = source.warning ? `<span class="me-inline-warning">${escapeHtml(source.warning.split(":")[0])}</span>` : "";
+    const snapshot = result.snapshot || {};
+    const rule = source.rule;
+    const ruleLine = rule ? `Your rule for this item: ${rule.mode === "hold" ? "never fill" : rule.mode === "anchor" ? "hold the anchor price" : "undercut the floor"}${rule.minPrice ? `, never below ${formatMoney(rule.minPrice, true)}` : ""}.` : "";
+    const why = [
+      snapshot.lowestPrice
+        ? `Cheapest Item Market listing ${formatMoney(snapshot.lowestPrice, true)}; suggested price is ${source.fill?.mode === "anchor" ? "the conservative market anchor" : `that floor minus your ${formatMoney(Math.max(0, asInt(settings.itemMarketUndercut)), true)} undercut`}.`
+        : "No live Item Market listings; the price comes from Torn's daily value.",
+      result?.sellForm && Number.isFinite(source.net) ? `Net per unit after the ${source.feeBps / 100}% Item Market fee: ${formatMoney(source.net, true)}.` : (result?.ownBazaar ? "Bazaar sales carry no fee." : ""),
+      snapshot.averagePrice ? `Torn's daily value: ${formatMoney(snapshot.averagePrice, true)}.` : "",
+      ruleLine,
+      source.warning || "",
+      orderBookAgeLine(result),
+      `${result?.sellForm ? "Listing" : "Adding to the Bazaar"} stays manual: Market Edge only fills the fields.`
+    ];
     const block = renderInlineHtml(
       visible,
-      `<span class="me-inline-brand">ME</span>${controls}<span class="me-inline-primary me-fill-figures">${escapeHtml(perUnit)}</span>${totalHtml}${netHtml}${stale}`,
-      filled ? "GREEN" : "GREY",
-      "me-bazaar-add"
+      `<span class="me-inline-brand">ME</span>${controls}<span class="me-inline-primary me-fill-figures">${escapeHtml(perUnit)}</span>${totalHtml}${netHtml}${warning}${stale}`,
+      filled ? "GREEN" : (source.warning ? "YELLOW" : "GREY"),
+      "me-bazaar-add",
+      { why }
     );
     if (!block || !visible.priceInput) return block;
 
@@ -4410,11 +4595,11 @@
     const stale = staleMarker(result);
     if (result.error) return renderInlineError(visible, result.error);
     if (result.untradable) {
-      return renderInlineHtml(visible, `<span class="me-inline-brand">ME</span><span class="me-inline-secondary" title="Torn marks this item as not tradable">untradable</span>`, "GREY");
+      return renderInlineHtml(visible, `<span class="me-inline-brand">ME</span><span class="me-inline-secondary">untradable</span>`, "GREY", "", { why: ["Torn marks this item as not tradable, so it cannot be sold or listed."] });
     }
     if (result.noListings) {
-      const mv = result.snapshot?.averagePrice ? `MV ${formatMoney(result.snapshot.averagePrice)}` : "no market value";
-      return renderInlineHtml(visible, `<span class="me-inline-brand">ME</span><span class="me-inline-secondary" title="No Item Market listings right now; Torn's market value is shown">${mv}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">no listings</span>${stale}`, "GREY");
+      const mv = result.snapshot?.averagePrice ? `Torn value ${formatMoney(result.snapshot.averagePrice)}` : "no Torn value";
+      return renderInlineHtml(visible, `<span class="me-inline-brand">ME</span><span class="me-inline-secondary">${mv}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">no listings</span>${stale}`, "GREY", "", { why: ["No Item Market listings right now; Torn's daily value is shown instead.", orderBookAgeLine(result)] });
     }
     if (result.unsupported) {
       // Weapons and armor are not priced: an invisible completed marker keeps
@@ -4441,25 +4626,34 @@
       ].filter(Boolean);
       const best = routeOptions.find((option) => option.key === routes.bestRoute) || routeOptions[0];
       const total = best.unit * qty;
-      const title = [
-        `${best.name}: ${formatMoney(best.unit, true)} per unit, ${formatMoney(total, true)} for ${qty}`,
-        ...routeOptions.filter((option) => option !== best).map((option) => `${option.name}: ${formatMoney(option.unit, true)} per unit (net ${formatMoney(Math.floor(option.net / qty), true)} after fees)`),
-        snapshot.lowestPrice ? `Item Market floor ${formatMoney(snapshot.lowestPrice, true)}` : "",
-        snapshot.averagePrice ? `Torn value ${formatMoney(snapshot.averagePrice, true)}` : ""
-      ].filter(Boolean).join("\n");
+      const why = [
+        `${best.name} pays the most: ${formatMoney(best.unit, true)} per unit, ${formatMoney(total, true)} for the ${qty} you own.`,
+        ...routeOptions.filter((option) => option !== best).map((option) => `${option.name}: ${formatMoney(option.unit, true)} per unit, ${formatMoney(Math.floor(option.net / qty), true)} net after fees.`),
+        snapshot.lowestPrice ? `Cheapest Item Market listing: ${formatMoney(snapshot.lowestPrice, true)}.` : "",
+        snapshot.averagePrice ? `Torn's daily value: ${formatMoney(snapshot.averagePrice, true)}.` : "",
+        orderBookAgeLine(result)
+      ];
       return renderInlineHtml(visible,
-        `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="${escapeHtml(title)}">${best.label} ${formatMoney(best.unit)}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Owned quantity">x${qty}</span><span class="me-inline-sep">|</span><span class="me-inline-primary" title="Total for the ${qty} you own at ${formatMoney(best.unit, true)}">${formatMoney(total)}</span>${stale}`,
-        "GREY"
+        `<span class="me-inline-brand">ME</span><span class="me-inline-primary">${escapeHtml(best.name)} ${formatMoney(best.unit)}</span><span class="me-inline-secondary">each</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${qty.toLocaleString("en-US")} owned</span><span class="me-inline-sep">|</span><span class="me-inline-primary">${formatMoney(total)}</span><span class="me-inline-secondary">total</span>${stale}`,
+        "GREY",
+        "",
+        { why }
       );
     }
 
     if (result.browse) {
       const data = result.browse;
       const discount = `${data.discount >= 0 ? "-" : "+"}${Math.abs(data.discount * 100).toFixed(1)}%`;
-      const title = `Displayed price versus Torn's official market value ${formatMoney(data.marketPrice, true)}.${Number.isFinite(data.profitPerUnit) ? ` Estimated net per unit after fees via ${data.bestRoute}: ${formatMoney(data.profitPerUnit, true)}.` : ""} Open the item for order-book analysis.`;
+      const why = [
+        `Displayed price against Torn's daily value of ${formatMoney(data.marketPrice, true)}.`,
+        Number.isFinite(data.profitPerUnit) ? `Estimated net per unit after fees via ${data.bestRoute}: ${formatMoney(data.profitPerUnit, true)}.` : "",
+        "Open the item for order-book analysis."
+      ];
       return renderInlineHtml(visible,
-        `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="${escapeHtml(title)}">${discount} vs MV</span><span class="me-inline-status">${data.label}</span>${stale}`,
-        data.state
+        `<span class="me-inline-brand">ME</span><span class="me-inline-primary">${discount} vs value</span><span class="me-inline-status">${data.label}</span>${stale}`,
+        data.state,
+        "",
+        { why }
       );
     }
 
@@ -4468,10 +4662,18 @@
       const state = data?.headroom > 0 ? "YELLOW" : "GREY";
       const headroomText = data?.headroom > 0 ? `+${formatMoney(data.headroom)}` : "-";
       const sales = data?.salesSummary;
-      const salesHtml = sales?.count ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Median of ${sales.count} ended Auction House sales in 30 days (range ${formatMoney(sales.low, true)} - ${formatMoney(sales.high, true)})">sold ${formatMoney(sales.median)}</span>` : "";
+      const salesHtml = sales?.count ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary">sold ${formatMoney(sales.median)}</span>` : "";
+      const why = [
+        `Highest rational bid ${formatMoney(data?.maxBid, true)}: resale after the 3% fee, haircut and your minimum profit.`,
+        data?.headroom > 0 ? `Current bid leaves ${formatMoney(data.headroom, true)} of headroom.` : "The current bid is already at or above that ceiling.",
+        sales?.count ? `Median of ${sales.count} ended Auction House sales in 30 days: ${formatMoney(sales.median, true)} (range ${formatMoney(sales.low, true)} to ${formatMoney(sales.high, true)}).` : "",
+        orderBookAgeLine(result)
+      ];
       return renderInlineHtml(visible,
-        `<span class="me-inline-brand">ME</span><span class="me-inline-primary">Max ${formatMoney(data?.maxBid)}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${headroomText}</span>${salesHtml}<span class="me-inline-status">${data?.headroom > 0 ? "CONSIDER" : "PASS"}</span>${stale}`,
-        state
+        `<span class="me-inline-brand">ME</span><span class="me-inline-primary">Max bid ${formatMoney(data?.maxBid)}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${headroomText}</span>${salesHtml}<span class="me-inline-status">${data?.headroom > 0 ? "CONSIDER" : "PASS"}</span>${stale}`,
+        state,
+        "",
+        { why }
       );
     }
 
@@ -4484,11 +4686,21 @@
       const ruleLabel = data?.rule ? ` (rule: ${data.rule.mode}${data.rule.minPrice ? `, min ${formatMoney(data.rule.minPrice)}` : ""})` : "";
       const fillHtml = visible.priceInput && fillPrice
         ? `<button class="me-bazaar-fill-btn me-manage-fill" type="button" aria-label="Fill the price field with ${escapeHtml(formatMoney(fillPrice, true))}${escapeHtml(ruleLabel)}; saving stays manual">Fill ${escapeHtml(formatMoney(fillPrice, true))}</button>`
-        : (fill?.reason === "held by rule" ? `<span class="me-inline-secondary">hold</span>` : "");
-      const floorHtml = data?.floor ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Cheapest Item Market listing">floor ${formatMoney(data.floor)}</span>` : "";
+        : (fill?.reason === "held by rule" ? `<span class="me-inline-secondary">held by rule</span>` : "");
+      const floorHtml = data?.floor ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary">floor ${formatMoney(data.floor)}</span>` : "";
+      const warningHtml = data?.warning ? `<span class="me-inline-warning">${escapeHtml(data.warning.split(":")[0])}</span>` : "";
+      const why = [
+        `Target ${formatMoney(data?.target, true)} is the conservative Bazaar exit; your price is ${Number.isFinite(data?.delta) ? (data.delta > 0 ? `${formatMoney(data.delta, true)} below it` : `${formatMoney(-data.delta, true)} above it`) : "unknown"}.`,
+        data?.floor ? `Cheapest Item Market listing: ${formatMoney(data.floor, true)}.` : "",
+        fillPrice ? `Fill writes ${formatMoney(fillPrice, true)} (${fill.mode === "anchor" ? "anchor price" : "floor minus undercut"}${fill.clamped ? ", raised to your minimum" : ""}); saving stays manual.` : "",
+        data?.warning || "",
+        orderBookAgeLine(result)
+      ];
       const block = renderInlineHtml(visible,
-        `<span class="me-inline-brand">ME</span><span class="me-inline-primary">Target ${formatMoney(data?.target)}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${deltaText}</span>${floorHtml}${fillHtml}<span class="me-inline-status">${data?.delta > 0 ? "LOW" : "OK"}</span>${stale}`,
-        state
+        `<span class="me-inline-brand">ME</span><span class="me-inline-primary">Target ${formatMoney(data?.target)}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${deltaText}</span>${floorHtml}${fillHtml}${warningHtml}<span class="me-inline-status">${data?.delta > 0 ? "BELOW TARGET" : "ON TARGET"}</span>${stale}`,
+        data?.warning ? "YELLOW" : state,
+        "",
+        { why }
       );
       const manageButton = block?.querySelector?.(".me-manage-fill");
       if (manageButton) {
@@ -4534,32 +4746,52 @@
       const perUnit = Math.trunc(direct.expectedProfit / qty);
       const route = direct.routes?.bestRoute || "";
       return renderInlineHtml(visible,
-        `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="Expected net profit per unit after fees via ${escapeHtml(route)}">${perUnit >= 0 ? "+" : ""}${formatMoney(perUnit)} ea</span><span class="me-inline-sep">|</span><span class="me-inline-secondary" title="For ${qty} units">${profit} / ${qty}</span><span class="me-inline-status">${CLASS_META[state].label}</span>${stale}`,
-        state
+        `<span class="me-inline-brand">ME</span><span class="me-inline-primary">${perUnit >= 0 ? "+" : ""}${formatMoney(perUnit)} each</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${profit} for ${qty}</span><span class="me-inline-status">${CLASS_META[state].label}</span>${stale}`,
+        state,
+        "",
+        { why: [
+          `Expected net profit per unit after fees via ${route}: ${formatMoney(perUnit, true)}.`,
+          `For a run of ${qty} units: ${formatMoney(direct.expectedProfit, true)} (ROI ${roi}).`,
+          ...classificationWhy(direct),
+          orderBookAgeLine(result)
+        ] }
       );
     }
 
     if (surface === "travel") {
       const qty = Math.max(1, asInt(result.quantityUsed || visible.quantity, 1));
       const perUnit = Math.trunc(direct.expectedProfit / qty);
-      const trip = result.perItemOnly ? `ROI ${roi}` : `${profit} trip`;
+      const trip = result.perItemOnly ? `ROI ${roi}` : `${profit} per trip`;
       return renderInlineHtml(visible,
-        `<span class="me-inline-brand">ME</span><span class="me-inline-primary">${perUnit >= 0 ? "+" : ""}${formatMoney(perUnit)} ea</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${trip}</span>${stale}`,
-        state
+        `<span class="me-inline-brand">ME</span><span class="me-inline-primary">${perUnit >= 0 ? "+" : ""}${formatMoney(perUnit)} each</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${trip}</span><span class="me-inline-status">${CLASS_META[state].label}</span>${stale}`,
+        state,
+        "",
+        { why: [
+          `Expected net profit per unit after fees when sold back in Torn: ${formatMoney(perUnit, true)}.`,
+          result.perItemOnly ? "Set your travel capacity in settings to see profit per trip." : `${qty} items per trip: ${formatMoney(direct.expectedProfit, true)}.`,
+          ...classificationWhy(direct),
+          orderBookAgeLine(result)
+        ] }
       );
     }
 
-    if (surface === "bazaar") {
-      return renderInlineHtml(visible,
-        `<span class="me-inline-brand">ME</span><span class="me-inline-primary">${roi}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${profit}</span><span class="me-inline-status">${CLASS_META[state].label}</span>${stale}`,
-        state
-      );
-    }
-
+    const why = [
+      `Buying ${result.quantityUsed || visible.quantity || 1} at ${formatMoney(visible.price, true)} and reselling via ${direct.routes?.bestRoute || "the best route"} after fees: ${formatMoney(direct.expectedProfit, true)} expected (ROI ${roi}).`,
+      ...classificationWhy(direct),
+      orderBookAgeLine(result)
+    ];
     return renderInlineHtml(visible,
-      `<span class="me-inline-brand">ME</span><span class="me-inline-primary">${roi}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${profit}</span><span class="me-inline-status">${CLASS_META[state].label}</span>${stale}`,
-      state
+      `<span class="me-inline-brand">ME</span><span class="me-inline-primary">${roi} ROI</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${profit} profit</span><span class="me-inline-status">${CLASS_META[state].label}</span>${stale}`,
+      state,
+      "",
+      { why }
     );
+  }
+
+  // The classification's own pass/fail reasons, in words.
+  function classificationWhy(direct) {
+    const reasons = direct?.classification?.reasons || [];
+    return reasons.slice(0, 4).map((reason) => `${reason.pass ? "OK" : "Not met"}: ${reason.text}`);
   }
 
   // ---------------------------------------------------------------------------
@@ -4572,7 +4804,7 @@
   }
 
   function panelToolbarHtml() {
-    return `<div class="me-actions">
+    return `<div class="me-actions me-panel-toolbar">
       <button class="me-btn me-open-listings" type="button" title="Compare your Item Market listings with the live floor (Limited key)">My listings</button>
       <button class="me-btn me-open-watchlist" type="button" title="Watched items and alert targets">Watchlist</button>
       <button class="me-btn me-open-portfolio" type="button" title="Value your whole inventory through the official API (Minimal key)">Portfolio</button>
@@ -4788,6 +5020,19 @@
     return 200 - index;
   }
 
+  // Guard against a suggested sell price that is clearly too low: below what
+  // an NPC shop pays, or under half of Torn's daily value (a thin or
+  // manipulated order book). The fill stays available; the strip says why.
+  function underpriceWarning(price, snapshot, shopSell) {
+    const target = asInt(price, 0);
+    if (!target) return null;
+    const shopPrice = asInt(shopSell?.price, 0);
+    if (shopPrice && target < shopPrice) return `Below the ${shopSell.label || "shop"} price of ${formatMoney(shopPrice, true)}: sell to the shop instead.`;
+    const value = asInt(snapshot?.averagePrice, 0);
+    if (value && target < value * 0.5) return `Under half of Torn's value (${formatMoney(value, true)}): the order book looks thin or skewed.`;
+    return null;
+  }
+
   function resultForSurface(surface, visible, snapshot, historyStats, ownBazaar, renderMeta = {}, museum = null, extras = {}) {
     const shopSell = extras?.shopSell || null;
     const salesSummary = extras?.salesSummary || null;
@@ -4810,7 +5055,8 @@
       const fill = applyPricingRule({ rule, floorSuggestion, anchorSuggestion: estimate.routes.itemMarket.suggestedPrice });
       const target = fill.price || estimate.routes.itemMarket.suggestedPrice;
       const feeBps = itemMarketFeeBps(settings);
-      return { visible, snapshot, historyStats, sellForm: { target, net: grossToNet(target, feeBps), feeBps, floor: snapshot.lowestPrice, rule, estimate }, renderMeta };
+      const warning = underpriceWarning(target, snapshot, shopSell);
+      return { visible, snapshot, historyStats, sellForm: { target, net: grossToNet(target, feeBps), feeBps, floor: snapshot.lowestPrice, rule, fill, estimate, warning }, renderMeta };
     }
 
     if (surface === "auction") {
@@ -4833,7 +5079,8 @@
       const floorSuggestion = snapshot.lowestPrice ? Math.max(1, snapshot.lowestPrice - Math.max(0, asInt(settings.itemMarketUndercut))) : null;
       const rule = Store.pricingRules()[visible.itemId] || null;
       const fill = applyPricingRule({ rule, floorSuggestion, anchorSuggestion: target });
-      return { visible, snapshot, historyStats, ownBazaar: { target, delta, estimate, fill, rule, floor: snapshot.lowestPrice }, renderMeta };
+      const warning = underpriceWarning(fill.price || target, snapshot, shopSell);
+      return { visible, snapshot, historyStats, ownBazaar: { target, delta, estimate, fill, rule, floor: snapshot.lowestPrice, warning }, renderMeta };
     }
 
     let quantity = visible.quantity;
@@ -5017,7 +5264,7 @@
     if (!items.length) return;
 
     if (!Store.apiKey()) {
-      items.forEach((visible) => renderInlineError(visible, "Add API key in Market Edge settings"));
+      items.forEach((visible) => renderInlineKeyPrompt(visible));
       return;
     }
 
@@ -5807,7 +6054,7 @@
       <td><span class="me-pill ${stateClass}">${evaluation.status}</span></td>
       <td class="me-workbench-cell">
         <span class="me-inline-secondary" title="${escapeHtml(fillTitle)}">${fillText}</span>
-        ${fill.price && !alreadyThere ? `<button class="me-btn me-listing-fill" type="button" data-price="${fill.price}" title="${escapeHtml(fillTitle)}">^</button>` : ""}
+        ${fill.price && !alreadyThere ? `<button class="me-btn me-listing-fill" type="button" data-price="${fill.price}" title="${escapeHtml(fillTitle)}">Fill</button>` : ""}
         <select class="me-inline-input me-rule-mode" title="Pricing rule for this item">
           <option value="undercut" ${(rule?.mode || "undercut") === "undercut" ? "selected" : ""}>undercut floor</option>
           <option value="anchor" ${rule?.mode === "anchor" ? "selected" : ""}>hold anchor</option>
@@ -5979,7 +6226,7 @@
     }
     const toast = document.createElement("div");
     toast.className = "me-toast";
-    toast.innerHTML = `<span class="me-toast-close" role="button" aria-label="Dismiss">X</span>${html}`;
+    toast.innerHTML = `<button class="me-toast-close" type="button" aria-label="Dismiss">×</button>${html}`;
     toast.querySelector(".me-toast-close").addEventListener("click", () => toast.remove());
     toastHost.appendChild(toast);
     if (timeoutMs > 0) setTimeout(() => toast.remove(), timeoutMs);
@@ -6073,7 +6320,7 @@
         <span title="Alert target">&le; ${formatMoney(entry.target)}</span>
         <span class="${hit ? "me-good" : "me-inline-secondary"}" title="Last observed floor">${entry.lastFloor ? formatMoney(entry.lastFloor) : "-"}</span>
         <span class="me-inline-secondary" title="Last checked">${entry.lastCheckedAt ? formatAge(Math.floor(Date.now() / 1000 - entry.lastCheckedAt)) : "never"}</span>
-        <span class="me-watch-remove" role="button" title="Remove">X</span>
+        <button class="me-watch-remove" type="button" aria-label="Stop watching ${escapeHtml(entry.name)}">×</button>
       </div>`;
     }).join("");
     const sellEntries = Store.sellWatch();
@@ -6084,7 +6331,7 @@
         <span title="Your listed price">${formatMoney(entry.price)}</span>
         <span class="${undercut ? "me-bad" : "me-inline-secondary"}" title="Last observed Item Market floor">${entry.lastFloor ? formatMoney(entry.lastFloor) : "-"}</span>
         <span class="me-inline-secondary" title="Last checked">${entry.lastCheckedAt ? formatAge(Math.floor(Date.now() / 1000 - entry.lastCheckedAt)) : "never"}</span>
-        <span class="me-watch-remove me-sell-remove" role="button" title="Stop watching">X</span>
+        <button class="me-watch-remove me-sell-remove" type="button" aria-label="Stop watching ${escapeHtml(entry.name)}">×</button>
       </div>`;
     }).join("");
     setPanel(`

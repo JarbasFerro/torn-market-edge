@@ -773,7 +773,7 @@
       <td><span class="me-pill ${stateClass}">${evaluation.status}</span></td>
       <td class="me-workbench-cell">
         <span class="me-inline-secondary" title="${escapeHtml(fillTitle)}">${fillText}</span>
-        ${fill.price && !alreadyThere ? `<button class="me-btn me-listing-fill" type="button" data-price="${fill.price}" title="${escapeHtml(fillTitle)}">^</button>` : ""}
+        ${fill.price && !alreadyThere ? `<button class="me-btn me-listing-fill" type="button" data-price="${fill.price}" title="${escapeHtml(fillTitle)}">Fill</button>` : ""}
         <select class="me-inline-input me-rule-mode" title="Pricing rule for this item">
           <option value="undercut" ${(rule?.mode || "undercut") === "undercut" ? "selected" : ""}>undercut floor</option>
           <option value="anchor" ${rule?.mode === "anchor" ? "selected" : ""}>hold anchor</option>
@@ -945,7 +945,7 @@
     }
     const toast = document.createElement("div");
     toast.className = "me-toast";
-    toast.innerHTML = `<span class="me-toast-close" role="button" aria-label="Dismiss">X</span>${html}`;
+    toast.innerHTML = `<button class="me-toast-close" type="button" aria-label="Dismiss">×</button>${html}`;
     toast.querySelector(".me-toast-close").addEventListener("click", () => toast.remove());
     toastHost.appendChild(toast);
     if (timeoutMs > 0) setTimeout(() => toast.remove(), timeoutMs);
@@ -1039,7 +1039,7 @@
         <span title="Alert target">&le; ${formatMoney(entry.target)}</span>
         <span class="${hit ? "me-good" : "me-inline-secondary"}" title="Last observed floor">${entry.lastFloor ? formatMoney(entry.lastFloor) : "-"}</span>
         <span class="me-inline-secondary" title="Last checked">${entry.lastCheckedAt ? formatAge(Math.floor(Date.now() / 1000 - entry.lastCheckedAt)) : "never"}</span>
-        <span class="me-watch-remove" role="button" title="Remove">X</span>
+        <button class="me-watch-remove" type="button" aria-label="Stop watching ${escapeHtml(entry.name)}">×</button>
       </div>`;
     }).join("");
     const sellEntries = Store.sellWatch();
@@ -1050,7 +1050,7 @@
         <span title="Your listed price">${formatMoney(entry.price)}</span>
         <span class="${undercut ? "me-bad" : "me-inline-secondary"}" title="Last observed Item Market floor">${entry.lastFloor ? formatMoney(entry.lastFloor) : "-"}</span>
         <span class="me-inline-secondary" title="Last checked">${entry.lastCheckedAt ? formatAge(Math.floor(Date.now() / 1000 - entry.lastCheckedAt)) : "never"}</span>
-        <span class="me-watch-remove me-sell-remove" role="button" title="Stop watching">X</span>
+        <button class="me-watch-remove me-sell-remove" type="button" aria-label="Stop watching ${escapeHtml(entry.name)}">×</button>
       </div>`;
     }).join("");
     setPanel(`

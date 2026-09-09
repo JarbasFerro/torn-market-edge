@@ -31,7 +31,7 @@ Inside Torn PDA the requests go through PDA's own HTTP bridge to the same host. 
 
 ## Data stored locally
 
-Market Edge may persist the following in userscript-manager storage (or, inside Torn PDA without userscript storage, in the page's local storage):
+Market Edge may persist the following in userscript-manager storage (inside Torn PDA 3.15 or newer, in the app's per-script SQLite storage; in older PDA builds, in the page's local storage). Per-item records are capped at 400 and the oldest are deleted first:
 
 - API key;
 - Market Edge settings;

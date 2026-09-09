@@ -440,9 +440,11 @@
     const routes = exit ? routeEconomics(exit, 1, settings) : null;
     const netPerUnit = routes ? routes.bestNetPerUnit : null;
     const profit = Number.isFinite(netPerUnit) ? netPerUnit - unit : null;
+    // One vocabulary everywhere: STRONG / CONSIDER / PASS. A card above
+    // Torn's value is simply a pass; the percentage says by how much.
     let state = "GREY";
-    let label = "FAIR";
-    if (discount < 0) label = "ABOVE MV";
+    let label = "PASS";
+    if (discount < 0) label = "PASS";
     else if (profit > 0 && discount >= Math.max(0.10, settings.minimumDiscount * 2)) { state = "GREEN"; label = "STRONG"; }
     else if (profit > 0 && discount >= settings.minimumDiscount) { state = "YELLOW"; label = "CONSIDER"; }
     return { discount, profitPerUnit: profit, bestRoute: routes?.bestRoute || null, state, label, marketPrice: value };
@@ -1182,7 +1184,7 @@
   // Transport abstraction: Torn PDA exposes PDA_httpGet, userscript managers
   // expose GM_xmlhttpRequest, and plain fetch is the last resort (the Torn API
   // sends permissive CORS headers). All three only ever talk to api.torn.com.
-  const PDA_DEDUPE_WINDOW_MS = 2100;
+  const PDA_DEDUPE_WINDOW_MS = asInt(global.__MARKET_EDGE_PDA_WAIT_MS__, 0) || 2100;
 
   function normalizeTransportResponse(response) {
     if (typeof response?.text === "function" && response.responseText === undefined) {
