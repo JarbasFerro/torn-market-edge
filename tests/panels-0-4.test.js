@@ -145,7 +145,7 @@ function panelText(env) {
 
 const tick = (ms = 30) => new Promise((resolve) => setTimeout(resolve, ms));
 
-run("Portfolio panel values the official inventory, then refines commodities and equipment copies by uid", async (t) => {
+run("Portfolio panel values the official inventory and refines stackable rows from order books; weapons are not priced", async (t) => {
   const env = boot("<div id='mainContainer'></div>", "https://www.torn.com/item.php");
   t.after(env.close);
   await env.ME.api.keyInfo({ cacheMs: 0 });
@@ -159,12 +159,12 @@ run("Portfolio panel values the official inventory, then refines commodities and
   assert.ok(env.requests.some((url) => url.includes("/user/inventory?limit=250&offset=0")));
   assert.ok(!env.requests.some((url) => url.includes("/market/206/itemmarket")), "quick pass fetches no order books");
   env.document.querySelector(".me-portfolio-refine").click();
-  for (let i = 0; i < 40 && !/comps/.test(panelText(env)); i += 1) await tick();
+  for (let i = 0; i < 40 && !/book/.test(panelText(env)); i += 1) await tick();
   text = panelText(env);
   assert.match(text, /book/, "commodity rows are refined from the order book");
-  assert.match(text, /Q 51\.0% plain/, "the rifle copy is priced from its uid details");
-  assert.ok(env.requests.some((url) => url.includes("/torn/555/itemdetails")));
-  assert.ok(env.requests.some((url) => url.includes("/market/1/itemmarket?limit=100")));
+  assert.match(text, /not priced/, "weapon rows are listed but never priced");
+  assert.ok(!env.requests.some((url) => url.includes("/itemdetails")), "no per-copy details request");
+  assert.ok(!env.requests.some((url) => url.includes("/market/1/itemmarket")), "no order book for a weapon");
 });
 
 run("Portfolio panel refuses without a Minimal key and spends no request", async (t) => {
@@ -219,24 +219,6 @@ run("Item Market browse grid is annotated against the official market value with
   assert.ok(byItem["1"].classList.contains("me-hidden"), "equipment cards are left alone");
   assert.ok(!env.requests.some((url) => url.includes("/itemmarket?")), "no per-item order book on the grid");
   assert.equal(env.requests.filter((url) => /\/torn\/[\d,]+\/items/.test(url)).length, 1, "one metadata batch");
-});
-
-run("Auction House rows show sold evidence for commodities and a max bid for the exact equipment copy", async (t) => {
-  const env = boot(fixture("auction-equipment.html"), "https://www.torn.com/amarket.php");
-  t.after(env.close);
-  await env.ME.scanVisibleSurface("auction", { force: true });
-  for (let i = 0; i < 40 && !/Q 50\.5%/.test(env.document.body.textContent); i += 1) await tick();
-  const blocks = Array.from(env.document.querySelectorAll(".me-inline-analysis"));
-  const rifle = blocks.find((block) => block.dataset.meItemId === "1");
-  const xanax = blocks.find((block) => block.dataset.meItemId === "206");
-  assert.match(xanax.textContent, /sold \$710k/, "ended auction median is shown for stackable items");
-  const maxBid = Number((xanax.textContent.match(/Max \$([\d.]+)k/) || [])[1]) * 1000;
-  assert.ok(maxBid > 0 && maxBid <= 710000, `max bid ${maxBid} never exceeds the recent sold median`);
-  assert.match(rifle.textContent, /Max \$/);
-  assert.match(rifle.textContent, /Q 50\.5% plain/);
-  assert.match(rifle.textContent, /CONSIDER/);
-  assert.ok(env.requests.some((url) => url.includes("/market/777/auctionhouselisting")));
-  assert.ok(env.requests.some((url) => url.includes("/market/206/auctionhouse")));
 });
 
 run("Own listings workbench fills Torn's price field on the manage page and persists pricing rules", async (t) => {
@@ -318,8 +300,8 @@ run("Item Market sell form (add listing) rows get an Item Market price with net 
   const priceInput = env.document.querySelector(".sellRow___t7 input.price___m5");
   assert.equal(priceInput.value, "789999");
   assert.equal(env.document.querySelector(".sellRow___t7 input.quantity___q1").value, "12", "quantity filled with everything owned");
-  assert.match(rifle.textContent, /floor \$800k/);
-  assert.match(rifle.textContent, /open details to price/);
+  assert.ok(rifle.classList.contains("me-hidden"), "weapon rows get an invisible completed marker");
+  assert.ok(!env.requests.some((url) => url.includes("/market/1/")), "no request for a weapon row");
 });
 
 run("Item Market sell form is recognised from the page even without a known route", async (t) => {
@@ -340,20 +322,6 @@ run("Bazaar add form falls back to generic sell-form rows when Torn's structure 
   const inputs = Array.from(env.document.querySelectorAll(".fields___f1 input"));
   assert.match(inputs[1].value, /^8[0-3]\d{4}$/, "price field (rightmost) is filled with the Bazaar target");
   assert.equal(inputs[0].value, "25", "quantity field is filled with the owned amount");
-});
-
-run("Inventory weapon rows carrying a uid are priced as the exact copy without opening details", async (t) => {
-  const env = boot(fixture("inventory-weapon-uid.html"), "https://www.torn.com/item.php");
-  t.after(env.close);
-  await env.ME.scanVisibleSurface("inventory", { force: true });
-  const rows = Array.from(env.document.querySelectorAll("li.item-row"));
-  const first = rows[0].querySelector(".me-inline-analysis");
-  const second = rows[1].querySelector(".me-inline-analysis");
-  assert.match(first.textContent, /BZ \$792k/, "copy 555 priced from its uid");
-  assert.match(first.textContent, /Q 51\.0% plain/);
-  assert.match(second.textContent, /Q 90\.0% plain/, "copy 556 priced from its own stats");
-  assert.equal(env.requests.filter((url) => url.includes("/itemdetails")).length, 1, "one details batch for both uids");
-  assert.equal(env.requests.filter((url) => url.includes("/market/1/itemmarket?limit=100")).length, 1, "one deep book shared by both copies");
 });
 
 run("Overlapping scans are coalesced: two concurrent scans leave one overlay per row", async (t) => {
@@ -402,11 +370,11 @@ run("Real Item Market add-listing rows: ids from aria-controls, hidden money twi
   const qtyGroup = env.document.querySelector(".amountInputWrapper___l2 .input-money-group");
   assert.equal(qtyGroup.querySelector("input:not([type='hidden'])").value, "12");
   const rifle = env.document.querySelector(".me-inline-analysis[data-me-item-id='1']");
-  assert.match(rifle.textContent, /floor \$800k/);
+  assert.ok(rifle.classList.contains("me-hidden"), "weapon rows are not priced");
   assert.equal(env.document.querySelector("#selectAll").checked, false, "page-level checkboxes are never touched");
 });
 
-run("Real inventory rows: equipped wrap excluded, hidden tab ignored, data-qty used, copy priced from the equip button's armoury id", async (t) => {
+run("Real inventory rows: equipped wrap excluded, hidden tab ignored, data-qty used, weapons skipped", async (t) => {
   const env = boot(fixture("inventory-real.html"), "https://www.torn.com/item.php");
   t.after(env.close);
   env.document.querySelectorAll(".hidden-tab, .hidden-tab *").forEach((node) => { node.getBoundingClientRect = () => ({ width: 0, height: 0, top: 0, bottom: 0, left: 0, right: 0, x: 0, y: 0 }); });
@@ -415,15 +383,15 @@ run("Real inventory rows: equipped wrap excluded, hidden tab ignored, data-qty u
   assert.equal(rows.find((row) => row.itemId === 206).quantity, 10, "quantity from data-qty");
   assert.equal(rows.find((row) => row.itemId === 206).name, "Xanax", "name from data-sort");
   const rifleRow = env.document.querySelector("#category-wrap li[data-item='1']");
-  assert.equal(env.ME.rowUid(rifleRow), 555, "armoury id from the equip button's data-id");
   assert.equal(env.ME.itemIdFromElement(rifleRow.querySelector("button[data-action='equip']")), 1, "an equip button's data-id (armoury id) is not read as an item id; the row's data-item wins");
   await env.ME.scanVisibleSurface("inventory", { force: true });
   const xanax = env.document.querySelector("#category-wrap li[data-item='206'] .me-inline-analysis");
   assert.match(xanax.textContent, /BZ \$/);
+  assert.match(xanax.textContent, /x10/, "owned quantity on the line");
   const rifle = env.document.querySelector("#category-wrap li[data-item='1'] .me-inline-analysis");
-  assert.match(rifle.textContent, /Q 51\.0% plain/, "copy priced through /itemdetails from the armoury id");
+  assert.ok(rifle.classList.contains("me-hidden"), "weapon row carries only the invisible marker");
   assert.equal(env.document.querySelector(".equipped-items-wrap .me-inline-analysis"), null, "equipped copy untouched");
-  assert.ok(env.requests.some((url) => url.includes("/torn/555/itemdetails")));
+  assert.ok(!env.requests.some((url) => url.includes("/market/1/")), "no request for the weapon");
 });
 
 run("Real React Bazaar manage rows are found and filled (visible input and hidden twin)", async (t) => {

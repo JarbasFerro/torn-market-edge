@@ -153,20 +153,6 @@ run("Watch button adds the item and the watchlist tick alerts when the floor is 
   assert.match(panelText(env), /Xanax/);
 });
 
-run("Equipment Item Market page renders comparable groups and AH evidence", async (t) => {
-  const env = boot("<div id='mainContainer'></div>", "https://www.torn.com/page.php?sid=ItemMarket#/market/view=sell&itemID=1&itemName=Fixture%20Rifle");
-  t.after(env.close);
-  await env.ME.renderItemMarket();
-  const text = panelText(env);
-  assert.match(text, /equipment comparables/);
-  assert.match(text, /Plain floor\$800k/);
-  assert.match(text, /Bonus\/rarity floor\$9m/);
-  assert.match(text, /AH sales \(30d\)1/);
-  assert.match(text, /ORANGE bleed/);
-  assert.ok(env.document.querySelector(".me-table"));
-  assert.ok(env.requests.some((url) => url.includes("/market/1/auctionhouse")));
-});
-
 run("Own listings panel compares each listing with the live floor", async (t) => {
   const env = boot("<div id='mainContainer'></div>", "https://www.torn.com/page.php?sid=ItemMarket#/market/view=manage");
   t.after(env.close);
@@ -222,277 +208,23 @@ run("Inventory scan annotates commodity, plushie and unsupported rows end to end
   const blocks = Array.from(env.document.querySelectorAll(".me-inline-analysis"));
   assert.equal(blocks.length, 2);
   const byItem = Object.fromEntries(blocks.map((block) => [block.dataset.meItemId, block.textContent]));
-  assert.match(byItem["206"], /BZ \$/);
-  assert.match(byItem["206"], /IM \$/);
+  assert.match(byItem["206"], /BZ \$820k/);
+  assert.match(byItem["206"], /x10/);
+  assert.match(byItem["206"], /\$8\.20m/, "total for the owned quantity");
   assert.equal(byItem["258"].includes("SET"), false, "set route is hidden when the implied value is negative");
   assert.ok(env.requests.some((url) => url.includes("/market/258/itemmarket")));
   assert.equal(env.requests.filter((url) => url.includes("pointsmarket")).length, 1);
 });
 
-run("Bazaar add form weapon rows show the plain floor and a hint, with no fill until the copy is known", async (t) => {
-  const env = boot(fixture("bazaar-add-weapons.html"), "https://www.torn.com/bazaar.php#/add");
-  t.after(env.close);
-  await env.ME.scanVisibleSurface("bazaar", { force: true });
-  const blocks = Array.from(env.document.querySelectorAll(".me-inline-analysis"));
-  const rifle = blocks.find((block) => block.dataset.meItemId === "1");
-  const xanax = blocks.find((block) => block.dataset.meItemId === "206");
-  assert.ok(rifle && xanax, "both rows are annotated");
-  assert.match(rifle.textContent, /floor \$800k/);
-  assert.match(rifle.textContent, /bonus \$9m\+/);
-  assert.match(rifle.textContent, /open details to price/);
-  assert.equal(rifle.querySelector(".me-bazaar-fill-btn"), null, "no fill on the row: the copy is unknown there");
-  assert.ok(xanax.querySelector(".me-bazaar-fill-btn"), "commodity rows keep their fill control");
-  assert.equal(env.document.querySelector(".me-equip-card"), null, "no details panel open, no card");
-  assert.ok(env.requests.some((url) => url.includes("/market/1/itemmarket?limit=20")), "one compact order book per equipment type");
-  assert.ok(!env.requests.some((url) => url.includes("/market/1/auctionhouse")), "no auction request without a known copy");
-});
-
-run("Inventory weapon rows show the plain floor from one compact book and rescans stay silent", async (t) => {
-  const env = boot(fixture("inventory-weapon.html"), "https://www.torn.com/item.php");
-  t.after(env.close);
-  await env.ME.scanVisibleSurface("inventory", { force: true });
-  const rifle = Array.from(env.document.querySelectorAll(".me-inline-analysis")).find((block) => block.dataset.meItemId === "1");
-  assert.ok(rifle, "weapon row is annotated");
-  assert.match(rifle.textContent, /floor \$800k/);
-  assert.match(rifle.textContent, /open details to price/);
-  assert.equal(env.requests.filter((url) => url.includes("/market/1/itemmarket?limit=20")).length, 1);
-  assert.ok(!env.requests.some((url) => url.includes("/market/1/auctionhouse")));
-  assert.ok(env.requests.some((url) => url.includes("/market/206/itemmarket")), "commodity rows are still priced");
-  await env.ME.scanVisibleSurface("inventory", { force: false });
-  assert.equal(env.requests.filter((url) => url.includes("/market/1/itemmarket?limit=20")).length, 1, "rescans do not refetch completed rows");
-});
-
-run("Expanded weapon details panel prices the exact copy and fills the correct row", async (t) => {
-  const env = boot(fixture("bazaar-add-weapon-details.html"), "https://www.torn.com/bazaar.php#/add");
-  t.after(env.close);
-  // The expanded row is far taller than a normal row, like on the real page.
-  const expandedRow = env.document.querySelector("li.expanded");
-  expandedRow.getBoundingClientRect = () => ({ width: 320, height: 1200, top: 60, bottom: 1260, left: 0, right: 320, x: 0, y: 60 });
-
-  const details = env.ME.collectExpandedEquipmentDetails("bazaar");
-  assert.equal(details.length, 1);
-  assert.equal(details[0].itemId, 1);
-  assert.equal(details[0].copy.quality, 51);
-  assert.equal(details[0].copy.damage, 65.55);
-  assert.equal(details[0].copy.bonuses.length, 0);
-  assert.equal(details[0].row, expandedRow, "panel is matched to the row that contains it, not the row above");
-
-  await env.ME.scanVisibleSurface("bazaar", { force: true });
-  const card = env.document.querySelector(".me-equip-card");
-  assert.ok(card, "details panel receives a pricing card");
-  assert.equal(card.parentElement.className, "item-info-wrap", "card is appended to the block wrapper right after Torn's stats");
-  assert.equal(card.previousElementSibling.className, "details");
-  assert.equal(card.dataset.meComplete, "1");
-  assert.match(card.textContent, /Q 51\.0%/);
-  assert.match(card.textContent, /plain \(no bonus\)/);
-  assert.match(card.textContent, /\$792k/);
-  assert.match(card.textContent, /5 listings within Q ±10/);
-  assert.match(card.textContent, /median \$950k over 1/);
-  const button = card.querySelector(".me-bazaar-fill-btn");
-  assert.ok(button, "details card carries the ^ fill control");
-  button.click();
-  const rows = Array.from(env.document.querySelectorAll("li.clearfix"));
-  assert.equal(rows[1].querySelector("input.input-money").value, "792000", "the expanded row is filled");
-  assert.equal(rows[1].querySelector("input[type='checkbox']").checked, true);
-  assert.equal(rows[0].querySelector("input.input-money").value, "", "the row above is untouched");
-  assert.equal(rows[2].querySelector("input.input-money").value, "", "the identical item below is untouched");
-  assert.ok(env.requests.some((url) => url.includes("/market/1/itemmarket?limit=100")), "deep order book is used for comparables");
-  assert.ok(env.requests.some((url) => url.includes("/market/1/auctionhouse")));
-
-  // A second scan does not duplicate the card.
-  await env.ME.scanVisibleSurface("bazaar", { force: false });
-  assert.equal(env.document.querySelectorAll(".me-equip-card").length, 1);
-
-  // The priced copy is promoted onto its own row with its own fill control.
-  const rowBlock = rows[1].querySelector(".me-inline-analysis");
-  assert.ok(rowBlock, "expanded row is annotated after pricing");
-  assert.match(rowBlock.textContent, /\$792k/);
-  assert.match(rowBlock.textContent, /Q 51\.0% plain/);
-  assert.match(rows[0].querySelector(".me-inline-analysis").textContent, /no listings/, "row above (no book in the stub) reports no listings");
-  assert.match(rows[2].querySelector(".me-inline-analysis").textContent, /open details to price/, "identical item below keeps its floor hint");
-  const rowButton = rowBlock.querySelector(".me-bazaar-fill-btn");
-  assert.ok(rowButton, "row carries the ^ fill once the copy is priced");
-  rows[1].querySelector("input.input-money").value = "";
-  rowButton.click();
-  assert.equal(rows[1].querySelector("input.input-money").value, "792000");
-
-  // Collapsing the details (Torn removes the stats block but keeps the wrapper)
-  // removes the card and leaves only the row summary.
-  rows[1].querySelector("ul.details").remove();
-  rows[1].querySelector(".stats-bar").remove();
-  delete expandedRow.getBoundingClientRect; // the row shrinks back to normal height
-  await env.ME.scanVisibleSurface("bazaar", { force: true });
-  assert.equal(env.document.querySelectorAll(".me-equip-card").length, 0, "no card outlives the collapsed panel");
-  const again = rows[1].querySelector(".me-inline-analysis");
-  assert.match(again.textContent, /\$792k/);
-  assert.ok(again.querySelector(".me-bazaar-fill-btn"));
-});
-
-run("Opening details after the rows were already annotated still prices the copy", async (t) => {
-  const env = boot(fixture("bazaar-add-weapons.html"), "https://www.torn.com/bazaar.php#/add");
-  t.after(env.close);
-  await env.ME.scanVisibleSurface("bazaar", { force: true });
-  assert.equal(env.document.querySelector(".me-equip-card"), null);
-  // The player expands the rifle: Torn injects the details inside the row.
-  const rifleRow = env.document.querySelector("li.clearfix");
-  rifleRow.insertAdjacentHTML("beforeend", `<div class="item-info-wrap"><ul class="details">
-    <li><span class="label">Damage</span>: <span class="value">65.55</span></li>
-    <li><span class="label">Accuracy</span>: <span class="value">44.21</span></li>
-    <li><span class="label">Bonus</span>: <span class="value">24% Proficience</span></li>
-    <li><span class="label">Quality</span>: <span class="value">124.26% <span class="yellow">Yellow</span></span></li>
-  </ul></div>`);
-  await env.ME.scanVisibleSurface("bazaar", { force: false });
-  const card = env.document.querySelector(".me-equip-card");
-  assert.ok(card, "details are priced even though every row was already complete");
-  assert.match(card.textContent, /Q 124\.3%/);
-  assert.match(card.textContent, /Proficience 24%/);
-  assert.match(card.textContent, /YELLOW/);
-  assert.match(card.textContent, /No comparable YELLOW proficience/, "no bonus comparables in the stub book");
-  assert.equal(card.previousElementSibling.className, "details");
-});
-
-run("Inventory details block placed after the row prices the copy and promotes it to that row", async (t) => {
-  const env = boot(fixture("inventory-weapon-details.html"), "https://www.torn.com/item.php");
-  t.after(env.close);
-  await env.ME.scanVisibleSurface("inventory", { force: true });
-  const details = env.ME.collectExpandedEquipmentDetails("inventory");
-  assert.equal(details.length, 1);
-  assert.equal(details[0].itemId, 1);
-  assert.ok(details[0].row, "row resolved");
-  assert.ok(details[0].row.querySelector(".name").textContent.startsWith("x1 Fixture Rifle"), "the item row before the info block, not the info block itself");
-  const card = env.document.querySelector(".me-equip-card");
-  assert.ok(card, "inventory details get a pricing card");
-  assert.match(card.textContent, /\$792k/);
-  assert.equal(card.querySelector(".me-bazaar-fill-btn"), null, "no fill control on inventory");
-  const rowBlock = details[0].row.querySelector(".me-inline-analysis");
-  assert.ok(rowBlock);
-  assert.match(rowBlock.textContent, /BZ \$792k/);
-  assert.match(rowBlock.textContent, /Q 51\.0% plain/);
-  assert.ok(env.requests.some((url) => url.includes("/market/1/itemmarket?limit=100")));
-});
-
-run("Inventory details nested inside a tall row resolve to that row's inner card", async (t) => {
-  const env = boot(fixture("inventory-weapon-details-nested.html"), "https://www.torn.com/item.php");
-  t.after(env.close);
-  const tallRow = env.document.querySelector("li.expanded");
-  tallRow.getBoundingClientRect = () => ({ width: 320, height: 1200, top: 60, bottom: 1260, left: 0, right: 320, x: 0, y: 60 });
-  await env.ME.scanVisibleSurface("inventory", { force: true });
-  const details = env.ME.collectExpandedEquipmentDetails("inventory");
-  assert.equal(details.length, 1);
-  assert.equal(details[0].itemId, 1, "the rifle, not the uzi above");
-  assert.ok(tallRow.contains(details[0].row), "row card lives inside the expanded list item");
-  assert.ok(!details[0].row.contains(details[0].panel), "row card is the inner wrapper, not the whole item");
-  const card = env.document.querySelector(".me-equip-card");
-  assert.ok(card, "pricing card rendered");
-  assert.match(card.textContent, /\$792k/);
-  const rowBlock = tallRow.querySelector(".me-inline-analysis");
-  assert.ok(rowBlock);
-  assert.match(rowBlock.textContent, /BZ \$792k/);
-  const uziRow = env.document.querySelector("li.item-row");
-  assert.doesNotMatch(uziRow.textContent, /\$792k/, "the row above is untouched");
-});
-
 run("Settings modal builds a page structure report without the API key", (t) => {
-  const env = boot(fixture("inventory-weapon-details.html"), "https://www.torn.com/item.php");
+  const env = boot(fixture("inventory.html"), "https://www.torn.com/item.php");
   t.after(env.close);
   env.ME.showSettings();
   env.document.querySelector("#me-build-diagnostics").click();
   const report = env.document.querySelector("#me-diagnostics").value;
   assert.match(report, /surface: inventory/);
-  assert.match(report, /stats panels found: 1/);
-  assert.match(report, /resolved details: 1/);
-  assert.match(report, /ul\.details/);
+  assert.match(report, /rows collected: 2/);
+  assert.match(report, /item 206 "/);
   assert.doesNotMatch(report, /ABCDEFGHIJKLMNOP/);
 });
 
-run("Details pricing survives a list rescan and a re-rendered panel while its request is pending", async (t) => {
-  const env = boot(fixture("inventory-weapon-details.html"), "https://www.torn.com/item.php", { delayMs: 30 });
-  t.after(env.close);
-  const scheduled = [];
-  const originalSchedule = env.ME.api.scheduler.schedule.bind(env.ME.api.scheduler);
-  env.ME.api.scheduler.schedule = (task, priority, meta) => { scheduled.push(meta); return originalSchedule(task, priority, meta); };
-
-  const first = env.ME.scanVisibleSurface("inventory", { force: true });
-  await new Promise((resolve) => setTimeout(resolve, 5));
-  // Torn re-renders the stats list while the request is pending.
-  const oldPanel = env.document.querySelector("ul.details");
-  const fresh = oldPanel.cloneNode(true);
-  oldPanel.replaceWith(fresh);
-  // ...and the list mutates, triggering another scan that cancels stale list requests.
-  const second = env.ME.scanVisibleSurface("inventory", { force: false, cancelObsolete: true });
-  await Promise.all([first, second]);
-  await new Promise((resolve) => setTimeout(resolve, 120));
-
-  const detailRequests = scheduled.filter((meta) => String(meta?.path || "").includes("/market/1/itemmarket?limit=100"));
-  assert.ok(detailRequests.length >= 1);
-  assert.ok(detailRequests.every((meta) => meta.queueGroup === "details"), "details requests never share the cancellable list queue group");
-  const cards = env.document.querySelectorAll(".me-equip-card");
-  assert.equal(cards.length, 1, "exactly one card after the panel was replaced");
-  assert.equal(cards[0].parentElement.className, "info-wrap", "card lives outside the grid wrapper");
-  assert.ok(cards[0].compareDocumentPosition(fresh) & 2, "card comes after the new panel");
-  assert.match(cards[0].textContent, /\$792k/);
-});
-
-run("Details pricing shows the error instead of vanishing when the API fails", async (t) => {
-  const env = boot(fixture("inventory-weapon-details.html"), "https://www.torn.com/item.php", { fail: (url) => url.includes("/market/1/itemmarket") });
-  t.after(env.close);
-  await env.ME.scanVisibleSurface("inventory", { force: true });
-  const card = env.document.querySelector(".me-equip-card");
-  assert.ok(card, "an error card stays visible");
-  assert.equal(card.dataset.meComplete, "1");
-  assert.match(card.textContent, /rate limit/i);
-  assert.match(card.textContent, /Collapse and reopen/);
-  env.ME.showSettings();
-  env.document.querySelector("#me-build-diagnostics").click();
-  assert.match(env.document.querySelector("#me-diagnostics").value, /last details outcome: pricing failed for item 1/);
-});
-
-run("Details pricing retries when the panel is swapped with slightly different text mid-request", async (t) => {
-  const env = boot(fixture("inventory-weapon-details.html"), "https://www.torn.com/item.php", { delayMs: 30 });
-  t.after(env.close);
-  const first = env.ME.scanVisibleSurface("inventory", { force: true });
-  await new Promise((resolve) => setTimeout(resolve, 5));
-  // React swaps the stats block and, for a moment, the quality reads differently.
-  const oldPanel = env.document.querySelector("ul.details");
-  const fresh = oldPanel.cloneNode(true);
-  fresh.querySelector("li:last-child .value").textContent = " 51.00% Yellow";
-  oldPanel.replaceWith(fresh);
-  await first;
-  await new Promise((resolve) => setTimeout(resolve, 150));
-  const card = env.document.querySelector(".me-equip-card");
-  assert.ok(card, "the swapped panel still receives a card");
-  assert.equal(card.parentElement.className, "info-wrap");
-  assert.match(card.textContent, /\$792k/);
-});
-
-run("Pricing card is placed outside a grid stats wrapper so the layout cannot hide it", async (t) => {
-  const env = boot(fixture("inventory-weapon-details.html"), "https://www.torn.com/item.php");
-  t.after(env.close);
-  await env.ME.scanVisibleSurface("inventory", { force: true });
-  const card = env.document.querySelector(".me-equip-card");
-  assert.ok(card);
-  assert.equal(env.window.getComputedStyle(env.document.querySelector(".previewAndPropertiesWrapper")).display, "grid");
-  assert.ok(!card.closest(".previewAndPropertiesWrapper"), "card is not inside the grid wrapper");
-  assert.equal(card.parentElement.className, "info-wrap");
-  // Collapsing (Torn removes the info block) removes the card.
-  env.document.querySelector("li.item-info-wrap").remove();
-  await env.ME.scanVisibleSurface("inventory", { force: true });
-  assert.equal(env.document.querySelectorAll(".me-equip-card").length, 0);
-});
-
-run("Equipment copies sharing an item id each keep their own row, and the priced copy's row shows the summary", async (t) => {
-  const env = boot(fixture("inventory-weapon-duplicates.html"), "https://www.torn.com/item.php");
-  t.after(env.close);
-  const rows = env.ME.collectVisibleItems({ requireMoney: false });
-  assert.equal(rows.filter((row) => row.itemId === 1).length, 3, "three rifle rows are collected despite the shared item id");
-  await env.ME.scanVisibleSurface("inventory", { force: true });
-  const rifleRows = Array.from(env.document.querySelectorAll("li.item-row[data-item='1']"));
-  assert.equal(rifleRows.length, 3);
-  assert.ok(env.document.querySelector(".me-equip-card"), "card rendered");
-  const summaries = rifleRows.map((row) => row.querySelector(".me-inline-analysis")?.textContent || "");
-  assert.match(summaries[1], /BZ \$/, "the copy whose details are open (second row) gets the summary");
-  assert.match(summaries[1], /Q 38\.6% plain/);
-  assert.match(summaries[0], /open details to price/, "first copy shows the floor hint");
-  assert.match(summaries[2], /open details to price/, "third copy shows the floor hint");
-  assert.ok(env.requests.filter((url) => url.includes("/market/1/itemmarket?limit=20")).length <= 1, "at most one compact book for the three copies");
-});

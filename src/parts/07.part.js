@@ -17,25 +17,7 @@
       recordSellWatch(items.filter((visible) => visible.price > 0 && !visible.bazaarAdd).map((visible) => ({ itemId: visible.itemId, name: visible.name, price: visible.price, amount: visible.quantity, venue: "Bazaar" })), "Bazaar", { prune: items.length < clamp(settings.scanMaxVisibleItems, 1, 50) });
     }
 
-    // Sell-side weapon/armor rows: when Torn exposes the copy's uid on the
-    // row, its stats come from one details batch and the exact copy is
-    // priced; otherwise the row shows the plain/bonus floors.
     const sellSideSurface = surface === "inventory" || surface === "imsell" || (surface === "bazaar" && ownBazaar);
-    let uidDetails = new Map();
-    if (sellSideSurface && settings.equipmentEnabled !== false) {
-      const uids = items
-        .filter((visible) => { const meta = metadata.get(visible.itemId); return meta && !metadataSupportsCommodity(meta); })
-        .map((visible) => { visible.uid = rowUid(visible.card); return visible.uid; })
-        .filter(Boolean);
-      if (uids.length) {
-        try {
-          uidDetails = await loadItemDetails(uids, { priority: 130 });
-        } catch (error) {
-          log("Row uid details unavailable", error.message);
-        }
-        if (detectSurface() !== surface || document.visibilityState !== "visible") return;
-      }
-    }
 
     const tasks = items.map(async (visible, index) => {
       const priority = viewportPriority(visible, index);
@@ -47,13 +29,9 @@
           renderInlineResult(surface, { visible, untradable: true, renderMeta: { stale: false } }, ownBazaar);
           return;
         }
-        if (meta && !metadataSupportsCommodity(meta) && settings.equipmentEnabled === false) {
+        if (meta && !metadataSupportsCommodity(meta)) {
+          // Weapons and armor are never priced: no request, hidden marker.
           renderInlineResult(surface, { visible, unsupported: true, renderMeta: { stale: false } }, ownBazaar);
-          return;
-        }
-        const sellSide = sellSideSurface;
-        if (meta && !metadataSupportsCommodity(meta) && sellSide) {
-          await annotateSellSideEquipment(surface, ownBazaar, visible, uidDetails.get(visible.uid) || null, queueGroup, priority);
           return;
         }
         const museum = museumContext.get(visible.itemId) || null;
@@ -88,10 +66,10 @@
         });
 
         if (!visible.card?.isConnected || detectSurface() !== surface) return;
-        // Metadata was unavailable and the order book revealed equipment on a
-        // sell-side surface: show the floors, no further requests.
-        if (bundle.snapshot?.equipment && sellSide) {
-          renderInlineResult(surface, { visible, snapshot: bundle.snapshot, equipmentRow: { summary: bundle.snapshot.equipmentSummary || {} }, renderMeta: { stale: false } }, ownBazaar);
+        // Metadata was unavailable and the order book revealed equipment:
+        // not priced, no further requests.
+        if (bundle.snapshot?.equipment) {
+          renderInlineResult(surface, { visible, snapshot: bundle.snapshot, unsupported: true, renderMeta: { stale: false } }, ownBazaar);
           return;
         }
         const result = resultForSurface(surface, visible, bundle.snapshot, bundle.historyStats, ownBazaar, {
@@ -99,11 +77,6 @@
           cacheAgeSeconds: bundle.cacheState?.ageSeconds
         }, museum, extras);
         renderInlineResult(surface, result, ownBazaar);
-        // Auction House equipment: price the exact copy (row stats or the
-        // listing endpoint) and derive a maximum rational bid.
-        if (surface === "auction" && bundle.snapshot?.equipment && settings.equipmentEnabled !== false) {
-          await annotateAuctionEquipment(visible, queueGroup, priority);
-        }
       } catch (error) {
         if (error?.marketEdgeCanceled) return;
         recordRuntime("row-error", `item ${visible.itemId} on ${surface}: ${error.message}`);
@@ -118,7 +91,6 @@
     });
 
     await Promise.allSettled(tasks);
-    await scanExpandedEquipment(surface, ownBazaar);
     const annotated = items.filter((visible) => visible.card?.querySelector?.(`.me-inline-analysis[data-me-item-id="${visible.itemId}"]`)?.dataset?.meComplete === "1").length;
     recordRuntime("scan", `${surface}: ${annotated}/${items.length} rows`, { surface, rows: items.length, annotated, ms: Date.now() - scanStartedAt });
   }
@@ -127,72 +99,6 @@
   // v0.4.0: Auction House equipment bids, browse-grid overlay, portfolio,
   // shop runs, travel plan, repricing workbench and sell-side watch
   // ---------------------------------------------------------------------------
-
-  async function annotateSellSideEquipment(surface, ownBazaar, visible, copy, queueGroup, priority = 0) {
-    if (!visible.card?.isConnected) return;
-    if (copy) {
-      try {
-        const [bundle, auctionSales] = await Promise.all([
-          loadSnapshot(visible.itemId, { limit: API_DEEP_LIMIT, priority, queueGroup }),
-          loadAuctionSales(visible.itemId, { priority })
-        ]);
-        if (!visible.card?.isConnected || detectSurface() !== surface) return;
-        if (bundle.snapshot?.equipment) {
-          const pricing = priceOwnedEquipment({ snapshot: bundle.snapshot, copy, auctionSales, settings });
-          if (pricing) {
-            renderInlineResult(surface, { visible, snapshot: bundle.snapshot, equipmentRow: { pricing, copy, summary: bundle.snapshot.equipmentSummary }, renderMeta: { stale: false } }, ownBazaar);
-            return;
-          }
-        }
-      } catch (error) {
-        if (error?.marketEdgeCanceled) return;
-        log("Uid pricing failed; falling back to floors", visible.itemId, error.message);
-      }
-    }
-    const bundle = await loadSnapshot(visible.itemId, {
-      limit: API_LIST_LIMIT,
-      priority,
-      queueGroup,
-      onCached: (cached) => {
-        if (!visible.card?.isConnected || detectSurface() !== surface) return;
-        renderInlineResult(surface, { visible, snapshot: cached.snapshot, equipmentRow: { summary: cached.snapshot.equipmentSummary || {} }, renderMeta: { stale: Boolean(cached.refreshing) } }, ownBazaar);
-      }
-    });
-    if (!visible.card?.isConnected || detectSurface() !== surface) return;
-    if (!(bundle.snapshot?.listings || []).length) {
-      renderInlineResult(surface, { visible, snapshot: bundle.snapshot, noListings: true, renderMeta: { stale: false } }, ownBazaar);
-      return;
-    }
-    renderInlineResult(surface, { visible, snapshot: bundle.snapshot, equipmentRow: { summary: bundle.snapshot.equipmentSummary || {} }, renderMeta: { stale: false } }, ownBazaar);
-  }
-
-  async function annotateAuctionEquipment(visible, queueGroup, priority = 0) {
-    if (!visible?.card?.isConnected) return;
-    let copy = visible.copyHint || null;
-    let listing = null;
-    if (!copy && visible.listingId) {
-      try {
-        listing = await loadAuctionListing(visible.listingId, { priority });
-        if (listing?.itemId && listing.itemId !== visible.itemId) listing = null;
-        copy = listing?.copy || null;
-      } catch (error) {
-        log("Auction listing details unavailable", visible.listingId, error.message);
-      }
-    }
-    if (!copy || !visible.card?.isConnected || detectSurface() !== "auction") return;
-    try {
-      const [bundle, auctionSales] = await Promise.all([
-        loadSnapshot(visible.itemId, { limit: API_DEEP_LIMIT, priority, queueGroup }),
-        loadAuctionSales(visible.itemId, { priority })
-      ]);
-      if (!visible.card?.isConnected || detectSurface() !== "auction") return;
-      const guidance = equipmentBidGuidance({ snapshot: bundle.snapshot, copy, auctionSales, settings, currentBid: listing?.price || visible.price });
-      if (!guidance) return;
-      renderInlineResult("auction", { visible, snapshot: bundle.snapshot, auctionEquipment: guidance, renderMeta: { stale: false } }, false);
-    } catch (error) {
-      if (!error?.marketEdgeCanceled) log("Auction equipment guidance failed", visible.itemId, error.message);
-    }
-  }
 
   // Item Market browse grid: every visible card compared with Torn's official
   // market value from one batched metadata request. No order books.
@@ -307,7 +213,7 @@
   // reading the page. Quick pass from market values, then order-book
   // refinement for the most valuable commodities and uid-based pricing for
   // equipment copies.
-  const portfolioState = { rows: [], refining: false, refinedIds: new Set(), pricedUids: new Set(), loadedAt: 0 };
+  const portfolioState = { rows: [], refining: false, refinedIds: new Set(), loadedAt: 0 };
 
   function portfolioRowHtml(row) {
     const unit = Number.isFinite(row.unitNet) && row.unitNet > 0 ? formatMoney(row.unitNet) : "-";
@@ -315,10 +221,10 @@
     const flags = [
       row.untradable ? `<span class="me-pill GREY" title="Not tradable">untradable</span>` : "",
       row.equipped ? `<span class="me-pill GREY" title="Currently equipped">equipped</span>` : "",
-      row.source === "order book" ? `<span class="me-pill GREEN" title="Valued from the live order book">book</span>` : (row.source === "comparables" ? `<span class="me-pill GREEN" title="Priced from comparable listings and ended auctions">comps</span>` : ""),
+      row.source === "order book" ? `<span class="me-pill GREEN" title="Valued from the live order book">book</span>` : "",
       row.museum ? `<span class="me-pill YELLOW" title="${escapeHtml(row.museum)}">museum</span>` : ""
     ].filter(Boolean).join(" ");
-    const name = `<a href="${itemMarketLink(row.itemId, row.name)}" style="color:inherit">${escapeHtml(row.name)}</a>${row.copyLabel ? ` <span class="me-inline-secondary">${escapeHtml(row.copyLabel)}</span>` : ""}`;
+    const name = `<a href="${itemMarketLink(row.itemId, row.name)}" style="color:inherit">${escapeHtml(row.name)}</a>`;
     return `<tr title="${escapeHtml(row.note || "")}"><td>${name} ${flags}</td><td>${row.amount.toLocaleString("en-US")}</td><td>${unit}</td><td>${escapeHtml(row.route || "-")}</td><td>${total}</td></tr>`;
   }
 
@@ -341,11 +247,11 @@
       </table>
       ${sorted.length > 80 ? `<div class="me-note">Showing the 80 most valuable rows of ${sorted.length}.</div>` : ""}
       <div class="me-actions">
-        <button class="me-btn me-portfolio-refine" type="button" title="Fetch order books for the most valuable commodities and price equipment copies by uid">Refine (${Math.max(1, asInt(settings.portfolioRefineRequests, PORTFOLIO_REFINE_DEFAULT))} requests)</button>
+        <button class="me-btn me-portfolio-refine" type="button" title="Fetch order books for the most valuable stackable items">Refine (${Math.max(1, asInt(settings.portfolioRefineRequests, PORTFOLIO_REFINE_DEFAULT))} requests)</button>
         <button class="me-btn me-portfolio-reload" type="button">Reload inventory</button>
       </div>
       ${panelToolbarHtml()}
-      <div class="me-note">Quick values come from Torn's official market value with a ${((clamp(settings.safetyHaircut + 0.02, 0, 0.10)) * 100).toFixed(1)}% haircut and the fee model. Refine replaces them with order-book exits (commodities) and comparable pricing per copy (weapons/armor, via each copy's uid). Torn caches the inventory selection for one hour. Nothing is listed or sold.</div>`;
+      <div class="me-note">Quick values come from Torn's official market value with a ${((clamp(settings.safetyHaircut + 0.02, 0, 0.10)) * 100).toFixed(1)}% haircut and the fee model. Refine replaces them with order-book exits. Weapons and armor are not priced. Torn caches the inventory selection for one hour. Nothing is listed or sold.</div>`;
   }
 
   async function buildPortfolioRows(items) {
@@ -380,10 +286,10 @@
           equipped: item.equipped,
           untradable: meta ? meta.isTradable === false : false,
           equipment: true,
-          unitNet: asInt(meta?.marketPrice, 0) ? officialExit(meta.marketPrice, settings).bazaarSuggestedPrice : null,
-          route: asInt(meta?.marketPrice, 0) ? "Bazaar (plain est.)" : "-",
-          source: "official",
-          note: "Plain-copy estimate until refined by uid."
+          unitNet: null,
+          route: "not priced",
+          source: "none",
+          note: "Weapons and armor are not priced."
         });
         return;
       }
@@ -449,46 +355,6 @@
         }
         render(`Refining... ${used}/${budget} requests used`);
       }
-      // Equipment copies by uid: details in batches of 25, then one deep
-      // order book and one sales request per item type.
-      const copies = portfolioState.rows.filter((row) => row.equipment && row.uid && !portfolioState.pricedUids.has(row.uid) && !row.untradable);
-      if (copies.length && used < budget) {
-        const details = await loadItemDetails(copies.map((row) => row.uid), { priority: 85 });
-        used += Math.ceil(copies.length / ITEM_DETAILS_BATCH);
-        const byItem = new Map();
-        copies.forEach((row) => {
-          if (!byItem.has(row.itemId)) byItem.set(row.itemId, []);
-          byItem.get(row.itemId).push(row);
-        });
-        for (const [itemId, group] of byItem.entries()) {
-          if (used >= budget) break;
-          try {
-            const [bundle, auctionSales] = await Promise.all([
-              loadSnapshot(itemId, { limit: API_DEEP_LIMIT, priority: 80, queueGroup: "portfolio" }),
-              loadAuctionSales(itemId, { priority: 80 })
-            ]);
-            used += 2;
-            group.forEach((row) => {
-              const copy = details.get(row.uid);
-              if (!copy) return;
-              const pricing = priceOwnedEquipment({ snapshot: bundle.snapshot, copy, auctionSales, settings });
-              portfolioState.pricedUids.add(row.uid);
-              if (!pricing) return;
-              const bazaar = asInt(pricing.bazaarSuggested, 0);
-              const im = asInt(pricing.itemMarketNet, 0);
-              row.unitNet = Math.max(bazaar, im);
-              row.route = bazaar >= im ? "Bazaar" : "Item Market";
-              row.source = "comparables";
-              row.copyLabel = copyLabelFor(copy);
-              row.note = `${pricing.comparableCount || 0} comparable listings, ${pricing.salesCount || 0} ended auctions${pricing.thinEvidence ? "; thin evidence" : ""}`;
-            });
-          } catch (error) {
-            if (error?.marketEdgeCanceled) return;
-            log("Portfolio equipment refine failed", itemId, error.message);
-          }
-          render(`Refining equipment... ${Math.min(used, budget)}/${budget} requests used`);
-        }
-      }
     } finally {
       portfolioState.refining = false;
       render(used >= budget ? `Refine budget reached (${budget}). Press Refine again for more.` : "");
@@ -527,7 +393,6 @@
       }
       portfolioState.rows = await buildPortfolioRows(items);
       portfolioState.refinedIds = new Set();
-      portfolioState.pricedUids = new Set();
       portfolioState.loadedAt = Date.now();
       render("Quick values ready. Refine for order-book and per-copy pricing.");
     } catch (error) {
@@ -791,7 +656,7 @@
     Object.entries(surfaces).forEach(([surface, bucket]) => {
       lines.push(`  ${surface}: ${bucket.scans} scans, last pass ${bucket.annotated}/${bucket.rows} rows annotated, avg ${Math.round(bucket.ms / bucket.scans)} ms, worst ${bucket.worstMs} ms`);
     });
-    lines.push(`overlays on page: ${document.querySelectorAll(".me-inline-analysis").length} (${document.querySelectorAll(".me-inline-analysis.RED").length} errors), pricing cards: ${document.querySelectorAll(".me-equip-card").length}`);
+    lines.push(`overlays on page: ${document.querySelectorAll(".me-inline-analysis").length} (${document.querySelectorAll(".me-inline-analysis.RED").length} errors)`);
     lines.push(overlayVisibilityLine());
     lines.push(`queue: ${api.scheduler.queue.length} waiting, ${api.scheduler.active} in flight, ${api.scheduler.requestTimes.length} requests in the last minute`);
     runtimeLog.filter((entry) => entry.kind !== "scan").slice(-12).forEach((entry) => {
@@ -809,29 +674,11 @@
       lines.push(`runtime report failed: ${error.message}`, "");
     }
     try {
-      const panels = findStatsPanels(document.body);
-      lines.push(`stats panels found: ${panels.length}`);
-      panels.slice(0, 3).forEach((panel, index) => {
-        lines.push(`--- panel ${index + 1} ancestors (innermost first)`);
-        lines.push(ancestorChain(panel, 12));
-        lines.push(`panel text: ${(panel.textContent || "").replace(/\s+/g, " ").trim().slice(0, 300)}`);
-        const previous = panel.closest("li,tr,[role='row']")?.previousElementSibling;
-        if (previous) lines.push(`previous sibling of closest row-like ancestor: ${describeNode(previous)}`);
-      });
-      const details = collectExpandedEquipmentDetails(surface);
-      lines.push("", `resolved details: ${details.length}`);
-      lines.push(`pricing cards on page: ${document.querySelectorAll(".me-equip-card").length}`);
-      document.querySelectorAll(".me-equip-card").forEach((card, index) => lines.push(`card ${index + 1} [complete=${card.dataset.meComplete}] parent: ${describeNode(card.parentElement)} text: ${(card.textContent || "").replace(/\s+/g, " ").trim().slice(0, 160)}`));
-      lines.push(`last details outcome: ${lastDetailsOutcome || "none yet"}`);
-      lines.push(`details in flight: ${detailsInFlight.size}, retry counters: ${JSON.stringify(Array.from(detailRetries.entries()))}`);
-      lines.push(`api key present: ${Boolean(Store.apiKey())}, equipment enabled: ${settings.equipmentEnabled !== false}`);
-      details.slice(0, 3).forEach((detail, index) => {
-        lines.push(`detail ${index + 1}: item ${detail.itemId}, copy ${JSON.stringify(detail.copy)}, row: ${detail.row ? describeNode(detail.row) : "none"}`);
-      });
-      const rows = surface === "bazaar" ? collectBazaarAddItems() : collectVisibleItems({ requireMoney: surface !== "inventory" });
+      lines.push(`api key present: ${Boolean(Store.apiKey())}`);
+      const rows = surface === "bazaar" ? collectBazaarAddItems() : (surface === "imsell" ? collectSellFormRows() : collectVisibleItems({ requireMoney: surface !== "inventory" }));
       lines.push("", `rows collected: ${rows.length}`);
       rows.slice(0, 3).forEach((item, index) => {
-        lines.push(`--- row ${index + 1}: item ${item.itemId} "${item.name}" uid: ${rowUid(item.card) || "none"}`);
+        lines.push(`--- row ${index + 1}: item ${item.itemId} "${item.name}" qty ${item.quantity}`);
         lines.push(ancestorChain(item.card, 6));
         lines.push(`row children: ${Array.from(item.card.children || []).slice(0, 8).map((child) => describeNode(child)).join(" | ")}`);
         const overlay = item.card.querySelector(".me-inline-analysis");
@@ -843,160 +690,6 @@
     return lines.join("\n");
   }
 
-  // Once a copy has been priced from its details panel, its value (and the
-  // fill control on the Bazaar add form) moves onto the row so the player can
-  // keep working from the list.
-  function promoteCopyPriceToRow(surface, ownBazaar, detail, pricing, snapshot) {
-    if (!detail?.row?.isConnected || !pricing?.bazaarSuggested) return;
-    const copy = detail.copy;
-    const label = [
-      Number.isFinite(copy.quality) ? `Q ${copy.quality.toFixed(1)}%` : null,
-      copy.bonuses.length ? copy.bonuses.map((bonus) => bonus.title).join("+") : "plain"
-    ].filter(Boolean).join(" ");
-    const items = surface === "bazaar" ? collectBazaarAddItems() : collectVisibleItems({ requireMoney: false });
-    const visible = items.find((item) => item.card === detail.row || item.card.contains(detail.row) || detail.row.contains(item.card));
-    const card = visible?.card || detail.row;
-    card.dataset.meCopyPrice = String(pricing.bazaarSuggested);
-    card.dataset.meCopyIm = String(pricing.itemMarketSuggested || "");
-    card.dataset.meCopyLabel = label;
-    if (!visible) return;
-    renderInlineResult(surface, {
-      visible,
-      snapshot,
-      equipment: snapshot.equipmentSummary || { plainFloor: null, bonusFloor: null },
-      renderMeta: { stale: false }
-    }, ownBazaar);
-  }
-
-  // Expanded item-details panels on sell-side surfaces: price the exact copy
-  // against the deep order book (limit 100) and ended Auction House sales.
-  function removeDetailCards(detailOrKey) {
-    let card = findDetailCard(detailOrKey);
-    while (card) {
-      card.remove();
-      card = findDetailCard(detailOrKey);
-    }
-  }
-
-  // Torn keeps the details container when a panel collapses; the card must
-  // not outlive the stats block it was attached to.
-  function cleanupOrphanedDetailCards(surface) {
-    const cards = document.querySelectorAll(".me-equip-card");
-    if (!cards.length) return;
-    let openKeys = null;
-    try {
-      openKeys = new Set(collectExpandedEquipmentDetails(surface, { resolveRows: false }).map((detail) => detail.key));
-    } catch {
-      openKeys = null;
-    }
-    cards.forEach((card) => {
-      const panel = cardPanels.get(card);
-      const panelAlive = panel?.isConnected && QUALITY_PATTERN.test(panel.textContent || "");
-      const keyOpen = openKeys ? openKeys.has(card.dataset.meDetailKey) : panelAlive;
-      if (!panelAlive && !keyOpen) card.remove();
-    });
-  }
-
-
-  let lastDetailsOutcome = "";
-  const detailsInFlight = new Set();
-
-  // Re-find a panel by key after an await: React may have re-rendered the
-  // details block while the API request was pending.
-  function relocateDetail(surface, detail) {
-    if (detail.panel.isConnected) return detail;
-    const candidates = collectExpandedEquipmentDetails(surface);
-    // Exact key first; otherwise the same item whose panel is still open
-    // (bonus/quality text may be mid-render when React swaps the block).
-    return candidates.find((candidate) => candidate.key === detail.key)
-      || candidates.find((candidate) => candidate.itemId === detail.itemId && candidate.copy.quality === detail.copy.quality)
-      || candidates.find((candidate) => candidate.itemId === detail.itemId)
-      || null;
-  }
-
-  const detailRetries = new Map();
-
-  // Transient failures (panel swapped mid-request, surface briefly undetected)
-  // get a few delayed retries; opening the details again always resets.
-  function scheduleDetailRetry(surface, ownBazaar, key, reason) {
-    const attempts = (detailRetries.get(key) || 0) + 1;
-    detailRetries.set(key, attempts);
-    lastDetailsOutcome = `${reason}; retry ${attempts}/3`;
-    if (attempts > 3) return;
-    setTimeout(() => {
-      if (document.visibilityState !== "visible" || detectSurface() !== surface) return;
-      scanExpandedEquipment(surface, ownBazaar).catch((error) => log("Details retry failed", error.message));
-    }, 1200 * attempts);
-  }
-
-  async function scanExpandedEquipment(surface, ownBazaar) {
-    cleanupOrphanedDetailCards(surface);
-    if (settings.equipmentEnabled === false) return;
-    const sellSide = surface === "inventory" || (surface === "bazaar" && ownBazaar);
-    if (!sellSide || !Store.apiKey()) return;
-    let details = [];
-    try {
-      details = collectExpandedEquipmentDetails(surface);
-    } catch (error) {
-      lastDetailsOutcome = `panel scan failed: ${error.message}`;
-      log("Details panel scan failed", error.message);
-      return;
-    }
-    details = details.filter((detail) => {
-      if (detailsInFlight.has(detail.key)) return false;
-      const card = findDetailCard(detail);
-      return !(card && card.dataset.meComplete === "1");
-    });
-    if (!details.length) return;
-
-    await Promise.allSettled(details.map(async (initial) => {
-      let detail = initial;
-      detailsInFlight.add(detail.key);
-      try {
-        renderEquipmentDetailCard(detail, null, { loading: true });
-        // Details requests use their own queue group so list-scan
-        // cancellations (frequent on the inventory page) cannot kill them.
-        const bundle = await loadSnapshot(detail.itemId, { limit: API_DEEP_LIMIT, priority: 180, queueGroup: "details" });
-        if (detectSurface() !== surface) {
-          scheduleDetailRetry(surface, ownBazaar, initial.key, "surface changed during pricing");
-          return;
-        }
-        detail = relocateDetail(surface, detail);
-        if (!detail) {
-          scheduleDetailRetry(surface, ownBazaar, initial.key, "details panel disappeared before pricing");
-          return;
-        }
-        if (!bundle.snapshot.equipment) {
-          renderEquipmentDetailCard(detail, null, { error: "Torn lists this item without stats; the commodity model applies." });
-          lastDetailsOutcome = `item ${detail.itemId} is not equipment`;
-          return;
-        }
-        const auctionSales = await loadAuctionSales(detail.itemId, { priority: 170 });
-        if (detectSurface() !== surface) {
-          scheduleDetailRetry(surface, ownBazaar, initial.key, "surface changed during pricing");
-          return;
-        }
-        detail = relocateDetail(surface, detail);
-        if (!detail) {
-          scheduleDetailRetry(surface, ownBazaar, initial.key, "details panel disappeared before rendering");
-          return;
-        }
-        const pricing = priceOwnedEquipment({ snapshot: bundle.snapshot, copy: detail.copy, auctionSales, settings });
-        renderEquipmentDetailCard(detail, pricing, { canFill: surface === "bazaar" && Boolean(detail.row) });
-        promoteCopyPriceToRow(surface, ownBazaar, detail, pricing, bundle.snapshot);
-        detailRetries.delete(initial.key);
-        lastDetailsOutcome = `priced item ${detail.itemId}: ${pricing?.bazaarSuggested ? formatMoney(pricing.bazaarSuggested, true) : "no comparables"}`;
-      } catch (error) {
-        const message = describeApiError(error, { feature: "Copy pricing" });
-        lastDetailsOutcome = `pricing failed for item ${detail.itemId}: ${message}`;
-        log("Details pricing failed", detail.itemId, message);
-        const current = relocateDetail(surface, detail);
-        if (current) renderEquipmentDetailCard(current, null, { error: message });
-      } finally {
-        detailsInFlight.delete(initial.key);
-      }
-    }));
-  }
 
   // ---------------------------------------------------------------------------
   // Own Item Market listings panel (Limited access key)
@@ -1417,18 +1110,11 @@
         if (itemId) entries.add(`${itemId}@${listRowIdentity(card)}`);
       });
     }
-    if ((surface === "bazaar" || surface === "inventory" || surface === "imsell") && /Quality/i.test(document.body?.textContent || "")) {
-      try {
-        collectExpandedEquipmentDetails(surface, { resolveRows: false }).forEach((detail) => entries.add(`detail:${detail.key}@${listRowIdentity(detail.panel)}`));
-      } catch {
-        // Details detection is best effort.
-      }
-    }
     // The signature only needs to notice structural change, so it works on
     // the identity nodes themselves; row/card resolution (which reads
     // innerText and forces layout) is left to the scan.
     document.querySelectorAll(itemIdentitySelector()).forEach((node) => {
-      if (node.closest?.("#market-edge-root,.me-inline-analysis,.me-equip-card")) return;
+      if (node.closest?.("#market-edge-root,.me-inline-analysis")) return;
       const itemId = itemIdFromElement(node);
       if (!itemId) return;
       entries.add(`${itemId}@${listRowIdentity(node)}`);
@@ -1653,8 +1339,6 @@
       renderOwnListingsPanel,
       renderWatchlistPanel,
       scanVisibleSurface,
-      scanExpandedEquipment,
-      collectExpandedEquipmentDetails,
       listSurfaceSignature,
       inventoryListMarker,
       watchTick,
@@ -1667,16 +1351,13 @@
       renderShopRunsPanel,
       renderTravelPlanPanel,
       scanBrowseGrid,
-      annotateAuctionEquipment,
       recordSellWatch,
       sellWatchTick,
       fillAllVisiblePrices,
       collectOwnListingRows,
       collectSellFormRows,
-      rowUid,
       fillOwnListingOnPage,
       loadInventory,
-      loadItemDetails,
       loadCityShops,
       loadForeignCatalog,
       currentCityShopName,

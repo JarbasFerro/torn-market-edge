@@ -17,17 +17,15 @@ Market Edge does not load or execute remote JavaScript.
 All requests go to `https://api.torn.com/v2` with the `comment=market-edge` parameter so they are identifiable in your Torn API log:
 
 - `/market/{id}/itemmarket` (order books);
-- `/market/{id}/auctionhouse` (ended auction sales, equipment comparables only);
 - `/market/pointsmarket` (museum set valuation);
 - `/torn/{ids}/items` (item metadata and official market prices);
 - `/key/info` (access level, when you test the key);
 - `/user/basic` (fallback player identification);
 - `/user/itemmarket` (your own listings, only when you open that panel and only with a Limited key);
 - `/user/inventory` (your inventory, only when you open the Portfolio panel and only with a Minimal or higher key);
-- `/torn/{uids}/itemdetails` (stats of your own weapon/armor copies, Portfolio refine only);
 - `/torn/cityshops` (city shop stock and prices, Shops panel and city shop pages);
 - `/torn/items` (item catalog for foreign shop prices, Travel plan, at most once per six hours);
-- `/market/{id}/auctionhouselisting` (one live Auction House listing, equipment rows on the Auction House only).
+- `/market/{id}/auctionhouse` (ended auctions, evidence for stackable items on the Item Market and Auction House pages).
 
 Inside Torn PDA the requests go through PDA's own HTTP bridge to the same host. When neither the userscript bridge nor PDA is available, the browser's `fetch` is used, still only to `api.torn.com`.
 
@@ -49,7 +47,6 @@ Market Edge may persist the following in userscript-manager storage (or, inside 
 - per-item pricing rules for the repricing workbench;
 - your own listed prices (item, venue, price, quantity) recorded for undercut alerts;
 - a compact copy of your inventory (item ids, amounts, uids) for the Portfolio panel;
-- stats of your own weapon/armor copies by uid;
 - city shop stock and the compact shop catalog (item ids, names, market and shop prices).
 
 This data is used only to provide the script's market-analysis functionality, reduce unnecessary Torn API requests, and improve loading performance. Your own Item Market listings are fetched on demand and are not persisted.

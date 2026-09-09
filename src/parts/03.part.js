@@ -65,12 +65,6 @@
       return this.request(`/user/inventory?limit=${INVENTORY_PAGE_LIMIT}&offset=${Math.max(0, asInt(offset))}${category}`, { cacheMs: INVENTORY_TTL_MS, priority });
     }
 
-    async itemDetails(uids, { priority = 110 } = {}) {
-      const ids = Array.from(new Set(uids.map((uid) => asInt(uid)).filter(Boolean))).slice(0, ITEM_DETAILS_BATCH);
-      if (!ids.length) return { itemdetails: [] };
-      return this.request(`/torn/${ids.join(",")}/itemdetails`, { cacheMs: ONE_DAY_MS, priority });
-    }
-
     async cityShops({ priority = 100 } = {}) {
       return this.request("/torn/cityshops", { cacheMs: CITY_SHOPS_TTL_MS, priority });
     }
@@ -80,9 +74,6 @@
       return this.request(`/torn/items${category}`, { cacheMs: FOREIGN_CATALOG_TTL_MS, priority });
     }
 
-    async auctionListing(listingId, { priority = 80 } = {}) {
-      return this.request(`/market/${asInt(listingId)}/auctionhouselisting`, { cacheMs: AUCTION_LISTING_TTL_MS, priority });
-    }
   }
 
   const api = new TornApi();
@@ -236,32 +227,6 @@
     return items;
   }
 
-  // Stats, bonuses and rarity for owned copies, by uid, 25 per request.
-  async function loadItemDetails(uids, { priority = 110 } = {}) {
-    const wanted = Array.from(new Set(uids.map((uid) => asInt(uid)).filter(Boolean)));
-    const cache = Store.itemDetailsCache();
-    const result = new Map();
-    const missing = [];
-    wanted.forEach((uid) => {
-      const row = cache[uid];
-      if (row && Date.now() - asInt(row.savedAt) < ITEM_META_TTL_MS) result.set(uid, row);
-      else missing.push(uid);
-    });
-    for (let index = 0; index < missing.length; index += ITEM_DETAILS_BATCH) {
-      const batch = missing.slice(index, index + ITEM_DETAILS_BATCH);
-      try {
-        const payload = await api.itemDetails(batch, { priority });
-        const rows = normalizeItemDetails(payload);
-        Store.saveItemDetails(rows);
-        rows.forEach((row) => result.set(row.uid, row));
-      } catch (error) {
-        log("Item details batch failed", batch.length, error.message);
-        if (error?.tornCode === 2 || error?.tornCode === 16) throw error;
-      }
-    }
-    return result;
-  }
-
   async function loadCityShops({ force = false, priority = 100 } = {}) {
     const cached = Store.cityShops();
     if (!force && cached && Date.now() - asInt(cached.savedAt) < CITY_SHOPS_TTL_MS) return cached.shops;
@@ -301,11 +266,6 @@
     }
     if (items.length) Store.saveForeignCatalog(items);
     return items.length ? items : (cached?.items || []);
-  }
-
-  async function loadAuctionListing(listingId, { priority = 80 } = {}) {
-    const payload = await api.auctionListing(listingId, { priority });
-    return normalizeAuctionListing(payload);
   }
 
   function snapshotCacheState(snapshot, nowMs = Date.now()) {

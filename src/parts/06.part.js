@@ -42,20 +42,17 @@
     }
 
     const targetText = formatMoney(target);
-    const pricing = source.equipmentPricing || null;
-    const copyLabel = source.copyLabel || "";
+    const qty = Math.max(1, asInt(visible.maxAvailable || visible.quantity, 1));
+    const totalHtml = qty > 1
+      ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Total at this price for the ${qty} you own">x${qty} ${formatMoney(target * qty)}</span>`
+      : "";
     const netHtml = result?.sellForm && Number.isFinite(source.net)
       ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Net per unit after the ${source.feeBps / 100}% Item Market fee">net ${formatMoney(source.net)}</span>`
       : "";
-    const equipmentHtml = pricing
-      ? equipmentContextHtml(pricing)
-      : (copyLabel ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Priced from this copy's details">${escapeHtml(copyLabel)}</span>` : "");
-    const priceTitle = pricing
-      ? `Suggested ${venue} price for a plain (no bonus) copy: ${formatMoney(target, true)}. ${equipmentContextTitle(pricing)}`
-      : (copyLabel ? `Suggested ${venue} price for this copy (${copyLabel}): ${formatMoney(target, true)}` : `Suggested ${venue} selling price${source.floor ? ` (Item Market floor ${formatMoney(source.floor, true)})` : ""}`);
+    const priceTitle = `Suggested ${venue} selling price${source.floor ? ` (Item Market floor ${formatMoney(source.floor, true)})` : ""}`;
     const block = renderInlineHtml(
       visible,
-      `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="${escapeHtml(priceTitle)}">${targetText}</span><button class="me-bazaar-fill-btn" type="button" aria-label="Fill price and maximum quantity" title="Fill price with ${escapeHtml(targetText)} and quantity with max available; ${escapeHtml(venue === "Bazaar" ? "ADD TO BAZAAR" : "listing")} stays manual">^</button>${netHtml}${equipmentHtml}${stale}`,
+      `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="${escapeHtml(priceTitle)}">${targetText}</span><button class="me-bazaar-fill-btn" type="button" aria-label="Fill price and maximum quantity" title="Fill price with ${escapeHtml(targetText)} and quantity with max available; ${escapeHtml(venue === "Bazaar" ? "ADD TO BAZAAR" : "listing")} stays manual">^</button>${totalHtml}${netHtml}${stale}`,
       "GREY",
       "me-bazaar-add"
     );
@@ -95,140 +92,6 @@
     return block;
   }
 
-  function equipmentContextTitle(pricing) {
-    const parts = [
-      pricing.plainFloor ? `Cheapest plain Item Market listing: ${formatMoney(pricing.plainFloor, true)}` : "No plain Item Market listing found",
-      pricing.plainMedian ? `Plain listing median: ${formatMoney(pricing.plainMedian, true)}` : "",
-      pricing.averagePrice ? `Torn daily average: ${formatMoney(pricing.averagePrice, true)}` : "",
-      pricing.salesMedian ? `Ended Auction House sales (30d, plain): median ${formatMoney(pricing.salesMedian, true)} over ${pricing.salesCount}` : "No plain Auction House sales in 30 days",
-      pricing.bonusFloor ? `Bonus/rarity copies list from ${formatMoney(pricing.bonusFloor, true)}; if yours has a bonus, price it on the Item Market page instead` : "",
-      `Item Market alternative: ${formatMoney(pricing.itemMarketSuggested, true)} (net ${formatMoney(pricing.itemMarketNet, true)} after ${pricing.feeBps / 100}%)`
-    ].filter(Boolean);
-    return parts.join("\n");
-  }
-
-  function equipmentContextHtml(pricing) {
-    const bits = [];
-    if (pricing.plainFloor) bits.push(`<span class="me-inline-secondary" title="Cheapest plain Item Market listing">floor ${formatMoney(pricing.plainFloor)}</span>`);
-    if (pricing.salesMedian) bits.push(`<span class="me-inline-secondary" title="Median of ${pricing.salesCount} ended Auction House sales of plain copies in 30 days">AH ${formatMoney(pricing.salesMedian)}</span>`);
-    else if (pricing.averagePrice) bits.push(`<span class="me-inline-secondary" title="Torn daily average">avg ${formatMoney(pricing.averagePrice)}</span>`);
-    if (pricing.bonusFloor) bits.push(`<span class="me-inline-secondary" title="Cheapest listing with a bonus or rarity">bonus ${formatMoney(pricing.bonusFloor)}+</span>`);
-    return bits.map((bit) => `<span class="me-inline-sep">|</span>${bit}`).join("");
-  }
-
-  function fillBazaarRowFromDetails(row, price) {
-    if (!row || !Number.isFinite(price) || price <= 0) return { priceFilled: false, quantityFilled: false };
-    const priceInput = findBazaarAddPriceInput(row);
-    if (!priceInput) return { priceFilled: false, quantityFilled: false };
-    const priceFilled = setBazaarInputValue(priceInput, price);
-    let quantityFilled = false;
-    const checkbox = findBazaarAddQuantityCheckbox(row);
-    if (checkbox?.isConnected) {
-      if (!checkbox.checked) checkbox.click();
-      quantityFilled = Boolean(checkbox.checked);
-    } else {
-      const quantityInput = findBazaarAddQuantityInput(row, priceInput);
-      if (quantityInput?.isConnected) {
-        quantityFilled = setBazaarInputValue(quantityInput, 1);
-        quantityInput.dispatchEvent(new Event("keyup", { bubbles: true, composed: true }));
-      }
-    }
-    return { priceFilled, quantityFilled };
-  }
-
-  const cardPanels = new WeakMap();
-
-  function renderEquipmentDetailCard(detail, pricing, { canFill = false, loading = false, error = "" } = {}) {
-    const panel = detail?.panel;
-    if (!panel?.isConnected) return null;
-    removeDetailCards(detail);
-    const card = document.createElement("div");
-    card.className = "me-equip-card";
-    card.dataset.meDetailKey = detail.key;
-    card.dataset.meComplete = loading ? "0" : "1";
-    // Torn's details wrapper may be a grid or flex container; make the card a
-    // full-width block regardless of the parent's layout.
-    card.style.cssText = "display:block;width:100%;box-sizing:border-box;grid-column:1 / -1;flex:0 0 100%;order:999;";
-
-    const copy = detail.copy;
-    const copyLabel = [
-      Number.isFinite(copy.quality) ? `Q ${copy.quality.toFixed(1)}%` : null,
-      copy.bonuses.length ? copy.bonuses.map((bonus) => `${bonus.title}${bonus.value ? ` ${bonus.value}%` : ""}`).join(" + ") : "plain (no bonus)",
-      copy.rarity ? copy.rarity.toUpperCase() : null
-    ].filter(Boolean).join(" · ");
-
-    if (loading) {
-      card.innerHTML = `<div class="me-equip-head"><span class="me-equip-brand">ME</span><span class="me-equip-alt">${escapeHtml(copyLabel)}</span><span class="me-equip-alt">pricing this copy...</span></div>`;
-      detailCardHost(panel).appendChild(card);
-      cardPanels.set(card, panel);
-      return card;
-    }
-
-    if (error) {
-      card.innerHTML = `<div class="me-equip-head"><span class="me-equip-brand">ME</span><span class="me-equip-alt">${escapeHtml(copyLabel)}</span></div><div class="me-equip-note me-equip-warn">${escapeHtml(error)} Collapse and reopen the details to retry.</div>`;
-      detailCardHost(panel).appendChild(card);
-      return card;
-    }
-
-    if (!pricing || !pricing.bazaarSuggested) {
-      const groupCount = pricing?.group?.count || 0;
-      card.innerHTML = `<div class="me-equip-head"><span class="me-equip-brand">ME</span><span class="me-equip-alt">${escapeHtml(copyLabel)}</span></div>
-        <div class="me-equip-note">No comparable ${escapeHtml(pricing?.groupLabel || "listings")} ${groupCount ? "" : "are on the Item Market and no recent Auction House sales were found"}. Price this copy manually or check the Item Market page for the closest rolls.</div>`;
-      detailCardHost(panel).appendChild(card);
-      cardPanels.set(card, panel);
-      return card;
-    }
-
-    const bandText = pricing.comparables.band
-      ? `${pricing.comparables.count} listings within Q ±${pricing.comparables.band}`
-      : `${pricing.comparables.count} listings in group (no quality match)`;
-    const facts = [
-      ["Comparables", `${pricing.comparables.floor ? `from ${formatMoney(pricing.comparables.floor)}, median ${formatMoney(pricing.comparables.median)}` : "-"} (${bandText})`],
-      ["AH sold (30d)", pricing.sales.count ? `median ${formatMoney(pricing.sales.median)} over ${pricing.sales.count}` : "none for this group"],
-      pricing.plain && pricing.averagePrice ? ["Torn average", formatMoney(pricing.averagePrice)] : null,
-      ["Item Market", `${formatMoney(pricing.itemMarketSuggested)} (net ${formatMoney(pricing.itemMarketNet)} after ${pricing.feeBps / 100}%)`],
-      pricing.plain && pricing.bonusFloor ? ["Bonus copies", `from ${formatMoney(pricing.bonusFloor)}`] : null
-    ].filter(Boolean);
-
-    const thin = pricing.comparables.count === 0 && pricing.sales.count < 3
-      ? `<div class="me-equip-note me-equip-warn">Thin evidence: no ${escapeHtml(pricing.groupLabel)} listings and only ${pricing.sales.count} Auction House sale(s) in 30 days. Treat this as a rough guide.</div>`
-      : "";
-    const warn = thin + (pricing.cheaperAtSuggested > 0
-      ? `<div class="me-equip-note me-equip-warn">${pricing.cheaperAtSuggested} ${escapeHtml(pricing.groupLabel)} listing(s) are cheaper than this price; they sell first.</div>`
-      : "");
-    const fill = canFill
-      ? `<button class="me-bazaar-fill-btn" type="button" aria-label="Fill Bazaar price and select this item" title="Fill price with ${escapeHtml(formatMoney(pricing.bazaarSuggested, true))} and select this item">^</button>`
-      : "";
-
-    card.innerHTML = `
-      <div class="me-equip-head">
-        <span class="me-equip-brand">ME</span>
-        <span class="me-equip-alt">${escapeHtml(copyLabel)}</span>
-        <span class="me-equip-price" title="Suggested Bazaar price for this copy: ${escapeHtml(formatMoney(pricing.bazaarSuggested, true))}">${formatMoney(pricing.bazaarSuggested)}</span>
-        ${fill}
-        <span class="me-equip-alt">${escapeHtml(pricing.bestRoute)} is the better exit</span>
-      </div>
-      <div class="me-equip-facts">${facts.map(([label, value]) => `<span class="label">${escapeHtml(label)}</span><span class="value">${escapeHtml(value)}</span>`).join("")}</div>
-      ${warn}
-      <div class="me-equip-note">Reference ${formatMoney(pricing.reference)} from ${escapeHtml(pricing.referenceSource)}, minus safety haircut, never above the cheapest comparable. Estimates, not guarantees; ADD TO BAZAAR stays manual.</div>`;
-    detailCardHost(panel).appendChild(card);
-    cardPanels.set(card, panel);
-
-    const button = card.querySelector(".me-bazaar-fill-btn");
-    if (button && detail.row) {
-      button.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        const outcome = fillBazaarRowFromDetails(detail.row, pricing.bazaarSuggested);
-        if (!outcome.priceFilled) return;
-        card.classList.add("me-applied");
-        button.title = outcome.quantityFilled ? `Filled ${formatMoney(pricing.bazaarSuggested, true)} and selected this item` : `Price filled with ${formatMoney(pricing.bazaarSuggested, true)}; select the item manually`;
-        setTimeout(() => card.classList.remove("me-applied"), 700);
-      });
-    }
-    return card;
-  }
-
   function renderInlineResult(surface, result, ownBazaar) {
     const visible = result.visible;
     if (!visible || !visible.card?.isConnected) return null;
@@ -241,108 +104,10 @@
       const mv = result.snapshot?.averagePrice ? `MV ${formatMoney(result.snapshot.averagePrice)}` : "no market value";
       return renderInlineHtml(visible, `<span class="me-inline-brand">ME</span><span class="me-inline-secondary" title="No Item Market listings right now; Torn's market value is shown">${mv}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">no listings</span>${stale}`, "GREY");
     }
-    if (result.equipmentRow) {
-      // Sell-side weapon/armor row: exact copy when its uid was priced,
-      // otherwise the plain/bonus floors with a hint to open the details.
-      const row = result.equipmentRow;
-      if (!row.pricing && asInt(visible.card?.dataset?.meCopyPrice, 0) > 0) {
-        // This copy was already priced from its expanded details panel;
-        // keep that price on the row instead of the generic floors.
-        return renderInlineResult(surface, { ...result, equipmentRow: null, equipment: row.summary || { plainFloor: null, bonusFloor: null } }, ownBazaar);
-      }
-      if (row.pricing && row.copy) {
-        const label = copyLabelFor(row.copy);
-        const card = visible.card;
-        if (card?.dataset) {
-          card.dataset.meCopyPrice = String(row.pricing.bazaarSuggested || "");
-          card.dataset.meCopyIm = String(row.pricing.itemMarketSuggested || "");
-          card.dataset.meCopyLabel = label;
-        }
-        if (visible.bazaarAdd) {
-          return renderBazaarAddSuggestion({
-            ...result,
-            sellForm: surface === "imsell" ? { target: row.pricing.itemMarketSuggested, net: row.pricing.itemMarketNet, feeBps: row.pricing.feeBps, copyLabel: label } : null,
-            ownBazaar: surface === "imsell" ? null : { target: row.pricing.bazaarSuggested, copyLabel: label }
-          });
-        }
-        const bz = row.pricing.bazaarSuggested ? formatMoney(row.pricing.bazaarSuggested) : "-";
-        const im = row.pricing.itemMarketSuggested ? formatMoney(row.pricing.itemMarketSuggested) : "-";
-        return renderInlineHtml(visible,
-          `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="Suggested Bazaar price for this copy (priced by uid)">BZ ${bz}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">IM ${im}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${escapeHtml(label)}</span>${stale}`,
-          "GREY"
-        );
-      }
-      const summary = row.summary || {};
-      const plain = summary.plainFloor ? formatMoney(summary.plainFloor) : (result.snapshot?.averagePrice ? `MV ${formatMoney(result.snapshot.averagePrice)}` : "-");
-      const bonusHtml = summary.bonusFloor ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Cheapest listing with a bonus or rarity">bonus ${formatMoney(summary.bonusFloor)}+</span>` : "";
-      return renderInlineHtml(visible,
-        `<span class="me-inline-brand">ME</span><span class="me-inline-secondary" title="Cheapest plain (no bonus) listing on the Item Market; this copy's own quality and bonuses are unknown until its details are opened">floor ${plain}</span>${bonusHtml}<span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Open this item's details to price this exact copy">open details to price</span>${stale}`,
-        "GREY",
-        visible.bazaarAdd ? "me-bazaar-add" : ""
-      );
-    }
-    if (result.equipment) {
-      // Weapons/armor on list pages. Sell-side surfaces (own Bazaar,
-      // inventory) get a plain-copy sell price with context; buy-side
-      // surfaces get the plain and bonus floors to compare against.
-      const summary = result.equipment;
-      const pricing = result.equipmentPricing || null;
-      const copyPrice = asInt(visible.card?.dataset?.meCopyPrice, 0);
-      const copyLabel = String(visible.card?.dataset?.meCopyLabel || "");
-      if (surface === "bazaar" && ownBazaar && visible.bazaarAdd) {
-        // Weapon rows carry no price until the copy has been priced from its
-        // expanded details panel; then that copy's value and the fill control
-        // move onto the row.
-        if (copyPrice > 0) {
-          return renderBazaarAddSuggestion({
-            ...result,
-            ownBazaar: { target: copyPrice, copyLabel }
-          });
-        }
-        return renderInlineHtml(visible,
-          `<span class="me-inline-brand">ME</span><span class="me-inline-secondary" title="Open this item's details to price this exact copy (quality and bonuses)">open details to price</span>${stale}`,
-          "GREY",
-          "me-bazaar-add"
-        );
-      }
-      if (surface === "inventory" && copyPrice > 0) {
-        const copyIm = asInt(visible.card?.dataset?.meCopyIm, 0);
-        return renderInlineHtml(visible,
-          `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="Suggested Bazaar price for this copy (${escapeHtml(copyLabel)})">BZ ${formatMoney(copyPrice)}</span>${copyIm ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary">IM ${formatMoney(copyIm)}</span>` : ""}<span class="me-inline-sep">|</span><span class="me-inline-secondary">${escapeHtml(copyLabel)}</span>${stale}`,
-          "GREY"
-        );
-      }
-      if (surface === "inventory" || (surface === "bazaar" && ownBazaar)) {
-        // Sell-side equipment without a priced copy: nothing to show. An
-        // invisible completed marker stops rescans from re-processing the row.
-        return renderInlineHtml(visible, "", "GREY", "me-hidden");
-      }
-      if (surface === "bazaar" && ownBazaar && pricing) {
-        const delta = pricing.bazaarSuggested - visible.price;
-        const state = delta > 0 ? "YELLOW" : "GREY";
-        return renderInlineHtml(visible,
-          `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="${escapeHtml(equipmentContextTitle(pricing))}">Target ${formatMoney(pricing.bazaarSuggested)}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${delta >= 0 ? "+" : ""}${formatMoney(delta)}</span>${equipmentContextHtml(pricing)}<span class="me-inline-status">${delta > 0 ? "LOW" : "OK"}</span>${stale}`,
-          state
-        );
-      }
-      if (surface === "inventory" && pricing) {
-        const bzClass = pricing.bestRoute === "Bazaar" ? "me-inline-primary" : "me-inline-secondary";
-        const imClass = pricing.bestRoute === "Item Market" ? "me-inline-primary" : "me-inline-secondary";
-        return renderInlineHtml(visible,
-          `<span class="me-inline-brand">ME</span><span class="${bzClass}" title="${escapeHtml(equipmentContextTitle(pricing))}">BZ ${formatMoney(pricing.bazaarSuggested)}</span><span class="me-inline-sep">|</span><span class="${imClass}">IM ${formatMoney(pricing.itemMarketSuggested)}</span>${equipmentContextHtml(pricing)}${stale}`,
-          "GREY"
-        );
-      }
-      const plain = summary.plainFloor ? formatMoney(summary.plainFloor) : "-";
-      const bonus = summary.bonusFloor ? formatMoney(summary.bonusFloor) : null;
-      const bonusHtml = bonus ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Cheapest listing with a bonus or rarity">bonus ${bonus}</span>` : "";
-      return renderInlineHtml(visible,
-        `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="Cheapest plain listing on the Item Market">floor ${plain}</span>${bonusHtml}${stale}`,
-        "GREY"
-      );
-    }
     if (result.unsupported) {
-      return renderInlineHtml(visible, `<span class="me-inline-brand">ME</span><span class="me-inline-secondary">unsupported equipment</span>`, "GREY");
+      // Weapons and armor are not priced: an invisible completed marker keeps
+      // rescans from touching the row again.
+      return renderInlineHtml(visible, "", "GREY", "me-hidden");
     }
 
     if ((surface === "bazaar" && ownBazaar && visible.bazaarAdd) || (surface === "imsell" && result.sellForm)) {
@@ -350,19 +115,28 @@
     }
 
     if (result.inventory) {
+      // Compact commodity line: best exit price per unit, owned quantity and
+      // the total at that price. Everything else lives in the tooltip.
       const estimate = result.inventory;
-      const bzValue = estimate?.routes?.bazaar ? formatMoney(estimate.routes.bazaar.suggestedPrice) : "off";
-      const imValue = formatMoney(estimate?.routes?.itemMarket?.suggestedPrice);
-      const best = estimate?.routes?.bestRoute;
-      const bzClass = best === "Bazaar" ? "me-inline-primary" : "me-inline-secondary";
-      const imClass = best === "Item Market" ? "me-inline-primary" : "me-inline-secondary";
-      const museum = estimate?.routes?.museum;
-      const setClass = best === "Museum set" ? "me-inline-primary" : "me-inline-secondary";
-      const setHtml = museum
-        ? `<span class="me-inline-sep">|</span><span class="${setClass}" title="Value implied by completing the ${escapeHtml(museum.label)} and exchanging it for points">SET ${formatMoney(museum.suggestedPrice)}</span>`
-        : "";
+      const routes = estimate.routes;
+      const snapshot = result.snapshot || {};
+      const qty = Math.max(1, asInt(estimate.quantity, 1));
+      const routeOptions = [
+        routes.bazaar ? { key: "Bazaar", label: "BZ", name: "Bazaar", unit: routes.bazaar.suggestedPrice, net: routes.bazaar.net } : null,
+        { key: "Item Market", label: "IM", name: "Item Market", unit: routes.itemMarket.suggestedPrice, net: routes.itemMarket.net },
+        routes.museum ? { key: "Museum set", label: "SET", name: routes.museum.label, unit: routes.museum.suggestedPrice, net: routes.museum.net } : null,
+        routes.shop ? { key: "Sell to shop", label: "SHOP", name: routes.shop.label, unit: routes.shop.suggestedPrice, net: routes.shop.net } : null
+      ].filter(Boolean);
+      const best = routeOptions.find((option) => option.key === routes.bestRoute) || routeOptions[0];
+      const total = best.unit * qty;
+      const title = [
+        `${best.name}: ${formatMoney(best.unit, true)} per unit, ${formatMoney(total, true)} for ${qty}`,
+        ...routeOptions.filter((option) => option !== best).map((option) => `${option.name}: ${formatMoney(option.unit, true)} per unit (net ${formatMoney(Math.floor(option.net / qty), true)} after fees)`),
+        snapshot.lowestPrice ? `Item Market floor ${formatMoney(snapshot.lowestPrice, true)}` : "",
+        snapshot.averagePrice ? `Torn value ${formatMoney(snapshot.averagePrice, true)}` : ""
+      ].filter(Boolean).join("\n");
       return renderInlineHtml(visible,
-        `<span class="me-inline-brand">ME</span><span class="${bzClass}">BZ ${bzValue}</span><span class="me-inline-sep">|</span><span class="${imClass}">IM ${imValue}</span>${setHtml}${stale}`,
+        `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="${escapeHtml(title)}">${best.label} ${formatMoney(best.unit)}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Owned quantity">x${qty}</span><span class="me-inline-sep">|</span><span class="me-inline-primary" title="Total for the ${qty} you own at ${formatMoney(best.unit, true)}">${formatMoney(total)}</span>${stale}`,
         "GREY"
       );
     }
@@ -373,22 +147,6 @@
       const title = `Displayed price versus Torn's official market value ${formatMoney(data.marketPrice, true)}.${Number.isFinite(data.profitPerUnit) ? ` Estimated net per unit after fees via ${data.bestRoute}: ${formatMoney(data.profitPerUnit, true)}.` : ""} Open the item for order-book analysis.`;
       return renderInlineHtml(visible,
         `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="${escapeHtml(title)}">${discount} vs MV</span><span class="me-inline-status">${data.label}</span>${stale}`,
-        data.state
-      );
-    }
-
-    if (result.auctionEquipment) {
-      const data = result.auctionEquipment;
-      const headroomText = data.headroom > 0 ? `+${formatMoney(data.headroom)}` : (Number.isFinite(data.headroom) ? formatMoney(data.headroom) : "-");
-      const title = [
-        `Max rational bid for this copy (${data.label}): ${formatMoney(data.maxBid, true)}`,
-        `Resale net used: ${formatMoney(data.bestNet, true)} (Bazaar ${formatMoney(data.pricing.bazaarSuggested, true)}, Item Market net ${formatMoney(data.pricing.itemMarketNet, true)})`,
-        data.pricing.comparableCount ? `${data.pricing.comparableCount} comparable listings` : "No comparable listings",
-        data.pricing.salesCount ? `${data.pricing.salesCount} ended Auction House sales of this group` : "No ended sales of this group in 30 days",
-        data.pricing.thinEvidence ? "Thin evidence: treat as a floor check" : ""
-      ].filter(Boolean).join("\n");
-      return renderInlineHtml(visible,
-        `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="${escapeHtml(title)}">Max ${formatMoney(data.maxBid)}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${headroomText}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${escapeHtml(data.label)}</span><span class="me-inline-status">${data.headroom > 0 ? "CONSIDER" : "PASS"}</span>${stale}`,
         data.state
       );
     }
@@ -563,70 +321,6 @@
     });
   }
 
-  function equipmentRowsHtml(analysis) {
-    const rows = analysis.rows.slice(0, 25);
-    if (!rows.length) return "";
-    return `<table class="me-table">
-      <thead><tr><th>Group</th><th>Q</th><th>Price</th><th>Comps</th><th>AH sold</th><th>Disc.</th><th></th></tr></thead>
-      <tbody>${rows.map((row) => `<tr class="${row.state}">
-        <td title="${escapeHtml(row.groupLabel)}">${escapeHtml(row.groupLabel)}</td>
-        <td>${Number.isFinite(row.quality) ? row.quality.toFixed(0) : "-"}</td>
-        <td title="${formatMoney(row.price, true)}">${formatMoney(row.price)}</td>
-        <td title="${row.comparableCount} comparable listings${row.qualityMatched ? " (quality matched)" : ""}">${row.comparableMedian ? `${formatMoney(row.comparableMedian)} x${row.comparableCount}` : "-"}</td>
-        <td title="${row.salesCount} ended auctions in 30 days">${row.salesMedian ? `${formatMoney(row.salesMedian)} x${row.salesCount}` : "-"}</td>
-        <td>${Number.isFinite(row.discount) ? `${(row.discount * 100).toFixed(1)}%` : "-"}</td>
-        <td><span class="me-pill ${row.state}">${CLASS_META[row.state]?.label || row.state}</span></td>
-      </tr>`).join("")}</tbody>
-    </table>`;
-  }
-
-  async function renderEquipmentItemMarket(snapshot, historyStats) {
-    const fresh = freshness(snapshot.cacheTimestamp);
-    setPanel(`<div class="me-kicker">Item Market - equipment</div><div class="me-item-name">${escapeHtml(snapshot.itemName)}</div><div class="me-note">Loading ended Auction House sales for comparables...</div>`, fresh.label);
-    const auctionSales = await loadAuctionSales(snapshot.itemId, { priority: 180 });
-    if (detectSurface() !== "itemmarket" || getItemIdFromLocation() !== snapshot.itemId) return;
-    const analysis = analyzeEquipmentListings(snapshot, { auctionSales, settings });
-    const best = analysis.best;
-    const summary = analysis.summary || {};
-    const feeBps = itemMarketFeeBps(settings);
-    const groupsHtml = analysis.groups.slice(0, 8).map((group) => `<div class="me-diag-row">${escapeHtml(group.label)}: ${group.count} listed from ${formatMoney(group.floor)} (median ${formatMoney(group.median)})${group.salesCount ? `; ${group.salesCount} AH sales, median ${formatMoney(group.salesMedian)}` : ""}</div>`).join("");
-
-    setPanel(`
-      <div class="me-kicker">Item Market - equipment comparables</div>
-      <div class="me-item-name">${escapeHtml(snapshot.itemName)}</div>
-      ${metricRows([
-        ["Listings analyzed", `${analysis.rows.length}${snapshot.depthMetrics?.totalListings > analysis.rows.length ? ` of ${snapshot.depthMetrics.totalListings}` : ""}`],
-        ["Plain floor", summary.plainFloor ? formatMoney(summary.plainFloor) : "-"],
-        ["Plain median", summary.plainMedian ? formatMoney(summary.plainMedian) : "-"],
-        ["Bonus/rarity floor", summary.bonusFloor ? formatMoney(summary.bonusFloor) : "-"],
-        ["Torn daily average", snapshot.averagePrice ? formatMoney(snapshot.averagePrice) : "-"],
-        ["AH sales (30d)", String(auctionSales.filter((sale) => sale.details).length)],
-        ["API age", `${formatAge(fresh.ageSeconds)} - ${fresh.label}`]
-      ])}
-      <div class="me-rule"></div>
-      <div class="me-kicker">Best value listing</div>
-      ${best ? `<div class="me-callout ${best.state}">
-        <div class="me-decision ${best.state}">${CLASS_META[best.state].icon} ${CLASS_META[best.state].label}</div>
-        ${metricRows([
-          ["Group", escapeHtml(best.groupLabel)],
-          ["Quality", Number.isFinite(best.quality) ? best.quality.toFixed(1) : "-"],
-          ["Price", formatMoney(best.price)],
-          ["Reference", `${formatMoney(best.reference)} (${escapeHtml(best.referenceSource)})`],
-          ["Discount", `${(best.discount * 100).toFixed(1)}%`],
-          [`Net if resold (IM ${feeBps / 100}%)`, formatMoney(best.expectedNet), best.expectedNet >= 0 ? "me-good" : "me-bad"]
-        ])}
-      </div>` : `<div class="me-note">No listing is priced meaningfully below its comparable group.</div>`}
-      ${equipmentRowsHtml(analysis)}
-      ${groupsHtml ? `<details class="me-diag"><summary>Comparable groups</summary>${groupsHtml}</details>` : ""}
-      ${auctionTimingHtml(auctionSales)}
-      ${watchControlsHtml(snapshot, null)}
-      ${panelToolbarHtml()}
-      <div class="me-note">Equipment is grouped by rarity and bonus set, quality matched within 10 points when enough listings exist. Ended Auction House sales are the only official transaction evidence. Rare rolls trade on intangibles; treat this as a floor check, not a valuation.</div>
-    `, fresh.label);
-    bindWatchControls(snapshot);
-    bindPanelToolbar();
-  }
-
   async function renderItemMarket() {
     if (ownListingsRouteActive()) {
       await renderOwnListingsPanel();
@@ -648,11 +342,8 @@
     try {
       const { snapshot, historyStats } = await loadSnapshot(itemId, { limit: API_DEEP_LIMIT, priority: 200 });
       if (!snapshot.supportedCommodity) {
-        if (settings.equipmentEnabled !== false && snapshot.equipment) {
-          await renderEquipmentItemMarket(snapshot, historyStats);
-          return;
-        }
-        setPanel(`<div class="me-kicker">Item Market</div><div class="me-item-name">${escapeHtml(snapshot.itemName)}</div><div class="me-callout GREY"><div class="me-decision GREY">- NOT SUPPORTED</div><div class="me-note">Enable weapon/armor comparables in settings to analyze equipment listings.</div></div>`);
+        setPanel(`<div class="me-kicker">Item Market</div><div class="me-item-name">${escapeHtml(snapshot.itemName)}</div><div class="me-callout GREY"><div class="me-decision GREY">- NOT PRICED</div><div class="me-note">Weapons and armor are not priced by Market Edge; only stackable items are.</div></div>${panelToolbarHtml()}`);
+        bindPanelToolbar();
         return;
       }
 
@@ -788,14 +479,7 @@
   function resultForSurface(surface, visible, snapshot, historyStats, ownBazaar, renderMeta = {}, museum = null, extras = {}) {
     const shopSell = extras?.shopSell || null;
     const salesSummary = extras?.salesSummary || null;
-    if (!snapshot?.supportedCommodity) {
-      if (settings.equipmentEnabled !== false && snapshot?.equipment && snapshot.equipmentSummary) {
-        // Buy-side surfaces get plain/bonus floors. Sell-side rows are priced
-        // only from an expanded details panel (see promoteCopyPriceToRow).
-        return { visible, snapshot, equipment: snapshot.equipmentSummary, renderMeta };
-      }
-      return { visible, snapshot, unsupported: true, renderMeta };
-    }
+    if (!snapshot?.supportedCommodity) return { visible, snapshot, unsupported: true, renderMeta };
 
     if (surface === "inventory") {
       const estimate = estimateInventoryExit({ quantity: visible.quantity, snapshot, historyStats, settings, museum, shopSell });
@@ -944,7 +628,6 @@
           }
         }, 650);
       }
-      await scanExpandedEquipment(surface, ownBazaar);
       return;
     }
 
@@ -961,12 +644,7 @@
       if (force && existing) existing.remove();
       return force || (!scanning && existing?.dataset?.meComplete !== "1");
     });
-    if (!items.length) {
-      // Every row is already annotated; an expanded details panel may still
-      // be new (opening one does not change the rows).
-      await scanExpandedEquipment(surface, ownBazaar);
-      return;
-    }
+    if (!items.length) return;
 
     if (!Store.apiKey()) {
       items.forEach((visible) => renderInlineError(visible, "Add API key in Market Edge settings"));

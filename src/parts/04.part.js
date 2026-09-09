@@ -154,11 +154,6 @@
       // details block) is not a row: it would hijack the item entry and
       // swallow the annotation.
       if (!card || card === node || card.tagName === "IMG" || !(card.textContent || "").trim()) continue;
-      if (node.closest?.(".me-equip-card")) continue;
-      // A "row" that contains an item stats block is the expanded details
-      // container reached through its large picture, not an inventory row.
-      const cardText = card.textContent || "";
-      if (QUALITY_PATTERN.test(cardText) && STATS_PATTERN.test(cardText)) continue;
       if (!isInventoryListCandidate(card, inventoryMarker)) continue;
       const rect = card?.getBoundingClientRect?.();
       if (rect && (rect.width <= 0 || rect.height <= 0)) continue;
@@ -354,9 +349,7 @@
       if (String(row.className || "").includes("item___UN3Mg")) return false;
       const rect = row.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return false;
-      // Expanded rows carry Torn's item-details panel and grow well past the
-      // normal row height; they must stay recognisable.
-      if (rect.height > 300 && !QUALITY_PATTERN.test(row.textContent || "")) return false;
+      if (rect.height > 300) return false;
       const image = row.querySelector("div.image-wrap img, img[src*='/items/'], img[srcset*='/items/']");
       const amount = row.querySelector("div[class*='amount___'], div.amount-main-wrap") || row;
       const input = Array.from(amount.querySelectorAll("input")).find((candidate) => {
@@ -563,7 +556,7 @@
   function collectSellFormRows({ root = document, limit = clamp(settings.scanMaxVisibleItems, 1, 50) } = {}) {
     const byCard = new Map();
     const images = Array.from(root.querySelectorAll("img[src*='/items/'], img[srcset*='/items/'], [style*='/items/']"))
-      .filter((node) => !node.closest("#market-edge-root,.me-inline-analysis,.me-equip-card"));
+      .filter((node) => !node.closest("#market-edge-root,.me-inline-analysis"));
     const nearest = images
       .map((node) => ({ node, priority: viewportPriority({ card: node }) }))
       .sort((a, b) => b.priority - a.priority)
@@ -653,49 +646,13 @@
     const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
     let node = walker.nextNode();
     while (node) {
-      if (!node.parentElement?.closest?.(".me-inline-analysis,.me-equip-card")) {
+      if (!node.parentElement?.closest?.(".me-inline-analysis")) {
         const value = String(node.textContent || "").trim();
         if (value) parts.push(value);
       }
       node = walker.nextNode();
     }
     return parts.join(" ");
-  }
-
-  // Torn exposes the copy's uid on some inventory rows; when present the
-  // exact copy can be priced through /torn/{uids}/itemdetails without
-  // opening its details panel.
-  function rowUid(card) {
-    if (!card?.getAttribute) return null;
-    // Torn's inventory rows expose the per-copy armoury id (the API's item
-    // uid) as data-armoryid on the row or on the equip/unequip button (whose
-    // data-id is the same value), legacy rows as .actions[xid].
-    const read = (element, names) => {
-      for (const name of names) {
-        const raw = element.getAttribute?.(name);
-        const digits = String(raw || "").match(/\d{3,}/);
-        if (digits) return asInt(digits[0], 0) || null;
-      }
-      return null;
-    };
-    const own = read(card, ["data-armoryid", "data-armouryid", "data-armoury-id", "data-uid", "data-item-uid", "uid"]);
-    if (own) return own;
-    const action = card.querySelector("[data-action='equip'],[data-action='unequip'],button[name='equip'],button[name='unequip'],[data-armoryid],[data-armouryid],[data-uid],.actions[xid],[xid]");
-    if (action) {
-      const value = read(action, ["data-armoryid", "data-armouryid", "data-uid", "data-id", "xid"]);
-      if (value) return value;
-    }
-    // Last resort: any attribute on the row's nodes whose name mentions an
-    // armoury id or uid (Torn renames these between builds).
-    const nodes = Array.from(card.querySelectorAll("*")).slice(0, 60);
-    for (const node of [card, ...nodes]) {
-      for (const attr of Array.from(node.attributes || [])) {
-        if (!/armou?r(?:y|ies)?[-_]?id|(?:^|[-_])uid$/i.test(attr.name)) continue;
-        const digits = String(attr.value || "").match(/\d{3,}/);
-        if (digits) return asInt(digits[0], 0) || null;
-      }
-    }
-    return null;
   }
 
   function collectManagedBazaarItems() {
@@ -706,7 +663,7 @@
     const candidates = new Set();
     const selector = itemIdentitySelector();
     document.querySelectorAll(selector).forEach((node) => {
-      if (!node.closest("#market-edge-root") && !node.closest(".me-inline-analysis,.me-equip-card")) candidates.add(node);
+      if (!node.closest("#market-edge-root") && !node.closest(".me-inline-analysis")) candidates.add(node);
     });
 
     const byId = new Map();
@@ -742,157 +699,7 @@
     return Array.from(byId.values()).sort((a, b) => viewportPriority(b) - viewportPriority(a)).slice(0, clamp(settings.scanMaxVisibleItems, 1, 50));
   }
 
-  // Expanded item-details panels (Bazaar add form, inventory) show the exact
-  // copy's quality, damage/accuracy and bonus icons. Each panel is matched to
-  // its item id through the panel's own large image or the preceding row.
-  function detailsPanelHints(container) {
-    const hints = [];
-    container.querySelectorAll("[title],[aria-label],img[alt],[class*='bonus'],[class*='rarity'],[class*='yellow'],[class*='orange'],[class*='red']").forEach((node) => {
-      if (node.closest(".me-equip-card,#market-edge-root")) return;
-      ["title", "aria-label", "alt", "class", "data-bonus", "data-title"].forEach((attr) => {
-        const value = node.getAttribute?.(attr);
-        if (value) hints.push(String(value));
-      });
-    });
-    return hints;
-  }
-
   const BAZAAR_ADD_ROW_SELECTOR = "ul.items-cont li.clearfix, div[class*='itemsContainner___'] div[class*='item___'], div[class*='rowItems___'] div[class*='item___']";
-
-  // Pricing cards are tracked by the copy key rather than by DOM position:
-  // Torn's React stats wrapper may re-render, and the card lives outside it.
-  function findDetailCard(detailOrKey) {
-    const key = typeof detailOrKey === "string" ? detailOrKey : detailOrKey?.key;
-    if (!key) return null;
-    return Array.from(document.querySelectorAll(".me-equip-card")).find((card) => card.dataset.meDetailKey === key) || null;
-  }
-
-  // Where to put the card: the nearest ancestor of the stats block that is a
-  // plain block container (not grid/flex/inline), so the wrapper's layout
-  // cannot hide it. Falls back to the panel's parent.
-  function detailCardHost(panel) {
-    let fallback = panel?.parentElement || null;
-    for (let node = panel?.parentElement, depth = 0; node && node !== document.body && depth < 5; depth += 1, node = node.parentElement) {
-      let display = "";
-      try {
-        display = String(window.getComputedStyle(node).display || "");
-      } catch {
-        display = "";
-      }
-      if (/^(block|list-item|flow-root|table-cell|table)$/.test(display)) return node;
-      if (!display) fallback = node;
-    }
-    return fallback;
-  }
-
-  // Find Torn's item-stats blocks by walking text nodes for "Quality:" and
-  // climbing to the innermost element that also holds Damage/Accuracy/Armor.
-  // Linear in the number of text nodes, no layout reads except for the few
-  // panels found; safe to call from the mutation signature on long lists.
-  function findStatsPanels(root) {
-    const panels = new Set();
-    if (!root || typeof document.createTreeWalker !== "function") return [];
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-      acceptNode: (node) => (/Quality/i.test(node.textContent || "") ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP)
-    });
-    let textNode = walker.nextNode();
-    while (textNode) {
-      let element = textNode.parentElement;
-      for (let depth = 0; element && element !== root && depth < 8; depth += 1, element = element.parentElement) {
-        if (element.closest("#market-edge-root,.me-equip-card")) break;
-        const text = element.textContent || "";
-        if (text.length > 2500) break;
-        if (QUALITY_PATTERN.test(text) && STATS_PATTERN.test(text)) {
-          panels.add(element);
-          break;
-        }
-      }
-      textNode = walker.nextNode();
-    }
-    return Array.from(panels).filter((element) => {
-      const rect = element.getBoundingClientRect();
-      return rect.width > 0 && rect.height > 0;
-    });
-  }
-
-  function collectExpandedEquipmentDetails(surface, { resolveRows = true } = {}) {
-    const results = [];
-    // The walker is linear and cheap, so the whole page is scanned; the row
-    // association below keeps panels tied to their own item.
-    const panels = findStatsPanels(document.body);
-    if (!panels.length) return results;
-
-    // Known rows: the add-form rows on the Bazaar, the inventory row cards
-    // elsewhere. Torn nests the panel inside the row on the Bazaar add form
-    // and places it after the row on the inventory page; both are handled by
-    // checking ancestors first, then the previous siblings of the panel's
-    // top-level wrapper.
-    let knownRows = [];
-    if (resolveRows) {
-      if (surface === "bazaar") {
-        const section = bazaarAddSection();
-        knownRows = section ? knownBazaarAddRows(section) : [];
-      } else if (surface === "inventory") {
-        knownRows = collectVisibleItems({ requireMoney: false }).map((item) => item.card);
-      }
-    }
-    const rowsWithin = (element) => knownRows.filter((known) => element === known || element.contains(known) || known.contains(element));
-
-    panels.forEach((panel) => {
-      let row = null;
-      if (resolveRows && knownRows.length) {
-        // 1) Nested layout: climb until an ancestor holds exactly one known
-        //    row card (the expanded row). Stop as soon as several are inside.
-        for (let ancestor = panel.parentElement, depth = 0; ancestor && ancestor !== document.body && depth < 12; depth += 1, ancestor = ancestor.parentElement) {
-          const contained = rowsWithin(ancestor);
-          if (contained.length === 1) {
-            row = contained[0];
-            break;
-          }
-          if (contained.length > 1) break;
-        }
-        // 2) Sibling layout: from the panel's top-level wrapper (the child of
-        //    the list holding several rows), look at the rows just before it.
-        if (!row) {
-          let top = panel;
-          while (top.parentElement && top.parentElement !== document.body && rowsWithin(top.parentElement).length <= 1) top = top.parentElement;
-          let sibling = top.previousElementSibling;
-          for (let depth = 0; sibling && depth < 4 && !row; depth += 1, sibling = sibling.previousElementSibling) {
-            const contained = rowsWithin(sibling);
-            if (contained.length === 1) row = contained[0];
-            else if (contained.length > 1) break;
-          }
-        }
-      }
-      if (!row && resolveRows && surface === "inventory") {
-        // No known cards nearby (row failed collection): fall back to the
-        // nearest preceding element holding a single item id.
-        let sibling = panel.closest("li,tr,[role='row']")?.previousElementSibling || null;
-        for (let depth = 0; sibling && depth < 4 && !row; depth += 1, sibling = sibling.previousElementSibling) {
-          if (directItemIdsWithin(sibling).size === 1) row = sibling;
-        }
-      }
-      // Item id: prefer the row image (unambiguous), then the closest image
-      // around the panel (Torn shows a large item image in the details).
-      let itemId = null;
-      if (row) {
-        const rowImage = row.querySelector("div.image-wrap img, img[src*='/items/'], img[srcset*='/items/']");
-        itemId = itemIdFromElement(rowImage || row);
-      }
-      for (let scope = panel.parentElement, depth = 0; !itemId && scope && scope !== document.body && depth < 8; depth += 1, scope = scope.parentElement) {
-        const images = Array.from(scope.querySelectorAll("img[src*='/items/'], img[srcset*='/items/'], [style*='/items/']")).filter((node) => !node.closest(".me-equip-card,#market-edge-root"));
-        const ids = new Set(images.map((image) => itemIdFromElement(image)).filter(Boolean));
-        if (ids.size === 1) itemId = Array.from(ids)[0];
-        else if (ids.size > 1) break;
-      }
-      if (!itemId) return;
-      const hintScope = row && row.contains(panel) ? row : (panel.parentElement || panel);
-      const copy = parseEquipmentDetailsText(panel.innerText || panel.textContent || "", detailsPanelHints(hintScope));
-      if (!copy) return;
-      results.push({ itemId, panel, row, copy, key: `${itemId}|${copy.quality}|${copy.damage}|${copy.armor}|${copy.bonuses.map((bonus) => bonus.title).join("+")}|${copy.rarity || ""}` });
-    });
-    return results;
-  }
 
   function collectOwnBazaarItems() {
     // Add-form rows take precedence: once a price has been filled into an
@@ -915,34 +722,6 @@
       .slice(0, clamp(settings.scanMaxVisibleItems, 1, 50));
   }
 
-  // Auction listing id from a row, when Torn exposes it (attributes, ids or
-  // links). It must differ from the item id; without it equipment rows fall
-  // back to the row's own text for the copy's stats.
-  function auctionListingIdFrom(li, itemId) {
-    if (!li) return null;
-    const candidates = [];
-    ["data-listing-id", "data-listingid", "data-auction-id", "data-auctionid", "data-aid", "data-id", "id"].forEach((attr) => {
-      const raw = li.getAttribute?.(attr);
-      if (raw) candidates.push(raw);
-    });
-    li.querySelectorAll("a[href*='ID='],a[href*='id='],input[type='hidden'][name*='id' i],[data-listing-id],[data-auction-id],[data-aid]").forEach((node) => {
-      const href = node.getAttribute("href") || "";
-      const match = href.match(/(?:auctionID|auctionId|aID|listingID|listingId|ID)=(\d+)/i);
-      if (match) candidates.push(match[1]);
-      ["data-listing-id", "data-auction-id", "data-aid", "value"].forEach((attr) => {
-        const raw = node.getAttribute(attr);
-        if (raw) candidates.push(raw);
-      });
-    });
-    for (const raw of candidates) {
-      const digits = String(raw).match(/\d{3,}/);
-      if (!digits) continue;
-      const value = asInt(digits[0], 0);
-      if (value && value !== itemId) return value;
-    }
-    return null;
-  }
-
   function collectAuctionItems() {
     const rows = [];
     document.querySelectorAll("div.items-list-wrap > ul.items-list > li").forEach((li) => {
@@ -954,11 +733,7 @@
       const bidText = (li.querySelector("div.c-bid-wrap")?.textContent || li.querySelector("div.mob-wrap .top-bid-mob-wrap")?.textContent || "").trim();
       const price = /^none$|bid:\s*none/i.test(bidText) ? 0 : asInt(String(bidText).replace(/[^0-9]/g, ""), 0);
       const text = li.innerText || "";
-      // Torn prints the copy's quality and bonuses inside the row on the
-      // Auction House; when present they price the exact copy without a
-      // listing request.
-      const copyHint = QUALITY_PATTERN.test(text) ? parseEquipmentDetailsText(text, detailsPanelHints(li)) : null;
-      rows.push({ itemId, name, price, quantity: 1, card: li, listingId: auctionListingIdFrom(li, itemId), copyHint, domTextLength: text.length });
+      rows.push({ itemId, name, price, quantity: 1, card: li, domTextLength: text.length });
     });
     return rows.sort((a, b) => viewportPriority(b) - viewportPriority(a)).slice(0, clamp(settings.scanMaxVisibleItems, 1, 50));
   }

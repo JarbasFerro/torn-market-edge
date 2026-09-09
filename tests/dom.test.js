@@ -181,13 +181,13 @@ run("Torn PDA transport and injected key are used when present", async (t) => {
   assert.ok(env.document.querySelector(".me-launcher"), "launcher is available without a userscript menu");
 });
 
-run("Settings modal exposes the fee, museum, equipment and watchlist controls", (t) => {
+run("Settings modal exposes the fee, museum and watchlist controls", (t) => {
   const env = boot("<div id='mainContainer'></div>", "https://www.torn.com/index.php");
   t.after(env.close);
   env.ME.showSettings();
   const modal = env.document.querySelector(".me-modal");
   assert.ok(modal);
-  ["anonymousListing", "anonymousFeeWaived", "museumSetsEnabled", "equipmentEnabled", "watchlistEnabled", "watchlistIntervalSeconds"].forEach((key) => {
+  ["anonymousListing", "anonymousFeeWaived", "museumSetsEnabled", "watchlistEnabled", "watchlistIntervalSeconds"].forEach((key) => {
     assert.ok(modal.querySelector(`[data-setting="${key}"]`), `setting ${key} must be editable`);
   });
   assert.ok(modal.querySelector("#me-watch-add"));
@@ -209,23 +209,9 @@ run("Inline inventory result shows the museum set route", (t) => {
   const result = env.ME.resultForSurface("inventory", plushie, snapshot, history, false, {}, { impliedValue: 150000, label: "Plushie set", complete: true });
   assert.equal(result.inventory.routes.bestRoute, "Museum set");
   const block = env.ME.renderInlineResult("inventory", result, false);
-  assert.match(block.textContent, /SET \$149k/);
-  assert.match(block.textContent, /BZ/);
+  assert.match(block.textContent, /SET \$149k/, "museum set is the best route and leads the line");
+  assert.match(block.textContent, /x3/, "owned quantity");
+  assert.match(block.textContent, /\$446k/, "total for the owned quantity");
+  assert.match(block.querySelector(".me-inline-primary").title, /Bazaar: \$98,000 per unit/, "other routes stay in the tooltip");
 });
 
-run("Equipment snapshots render floors on buy-side pages and nothing on sell-side rows", (t) => {
-  const env = boot(fixture("inventory.html"), "https://www.torn.com/item.php");
-  t.after(env.close);
-  const items = env.ME.collectVisibleItems({ requireMoney: false });
-  const visible = items[0];
-  const snapshot = { itemId: 1, supportedCommodity: false, equipment: true, equipmentSummary: { plainFloor: 900000, bonusFloor: 5000000, groups: [] } };
-  const buySide = env.ME.resultForSurface("auction", visible, snapshot, null, false, {});
-  assert.ok(buySide.equipment);
-  const block = env.ME.renderInlineResult("auction", buySide, false);
-  assert.match(block.textContent, /floor \$900k/);
-  assert.match(block.textContent, /bonus \$5m/);
-  const sellSide = env.ME.resultForSurface("inventory", visible, snapshot, null, false, {});
-  const hidden = env.ME.renderInlineResult("inventory", sellSide, false);
-  assert.ok(hidden.classList.contains("me-hidden"));
-  assert.equal(hidden.textContent.trim(), "");
-});

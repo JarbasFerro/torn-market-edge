@@ -38,20 +38,6 @@ test("normalizeInventory keeps uids, equipped flags and drops empty rows", () =>
   assert.equal(rows[1].equipped, true);
 });
 
-test("normalizeItemDetails accepts the array shape and the deprecated single-object shape", () => {
-  const array = ME.normalizeItemDetails({ itemdetails: [
-    { id: 1, uid: 555, name: "Rifle", type: "Weapon", sub_type: "Rifle", stats: { damage: 60, accuracy: 55, armor: null, quality: 51.2 }, bonuses: [{ id: 1, title: "Bleed", description: "", value: 15 }], rarity: "orange" },
-  ] });
-  assert.equal(array.length, 1);
-  assert.equal(array[0].quality, 51.2);
-  assert.equal(array[0].bonuses[0].title, "Bleed");
-  assert.equal(array[0].rarity, "orange");
-  assert.equal(ME.copyLabelFor(array[0]), "Q 51.2% ORANGE Bleed");
-  const single = ME.normalizeItemDetails({ itemdetails: { id: 1, uid: 556, name: "Rifle", type: "Weapon", stats: { quality: 40 }, bonuses: [], rarity: null } });
-  assert.equal(single.length, 1);
-  assert.equal(ME.copyLabelFor(single[0]), "Q 40.0% plain");
-});
-
 test("officialExit is more conservative than the order-book exit and feeds routeEconomics", () => {
   const exit = ME.officialExit(100_000, settings({ safetyHaircut: 0.01 }));
   assert.equal(exit.haircut, 0.03);
@@ -147,21 +133,6 @@ test("stackable sales summary and sales-capped max bid", () => {
   assert.equal(capped, 710_000);
 });
 
-test("equipment bid guidance derives a max bid from the copy's comparables", () => {
-  const plain = (price, quality, uid) => ({ price, amount: 1, item_details: { uid, stats: { damage: 60, accuracy: 55, armor: null, quality }, bonuses: [], rarity: null } });
-  const book = ME.normalizeMarketResponse(1, { itemmarket: { item: { id: 1, name: "Rifle", type: "Weapon", average_price: 1_000_000 }, listings: [
-    plain(900_000, 50, 1), plain(1_000_000, 52, 2), plain(1_020_000, 49, 3), plain(1_050_000, 51, 4), plain(1_100_000, 53, 5),
-  ], cache_timestamp: NOW, cache_delay: 30 } });
-  const listing = ME.normalizeAuctionListing({ auctionhouselisting: { id: 777, seller: { id: 1 }, buyer: { id: 0 }, timestamp: NOW + 3600, price: 500_000, bids: 1, item: { id: 1, uid: 9, name: "Rifle", type: "Weapon", sub_type: "Rifle", stats: { damage: 61, accuracy: 55, armor: null, quality: 50.5 }, bonuses: [], rarity: null } } });
-  assert.equal(listing.listingId, 777);
-  assert.equal(listing.copy.quality, 50.5);
-  const guidance = ME.equipmentBidGuidance({ snapshot: book, copy: listing.copy, auctionSales: [], settings: settings(), currentBid: listing.price });
-  assert.ok(guidance.maxBid > 500_000 && guidance.maxBid < 900_000, `max bid ${guidance.maxBid} sits between the current bid and the plain floor`);
-  assert.equal(guidance.headroom, guidance.maxBid - 500_000);
-  assert.match(guidance.label, /Q 50\.5% plain/);
-  assert.equal(ME.equipmentBidGuidance({ snapshot: book, copy: null, settings: settings() }), null);
-});
-
 test("browse-grid overlay classifies the displayed price against the official market value", () => {
   const strong = ME.evaluateBrowseCard({ price: 80_000, marketPrice: 100_000, settings: settings() });
   assert.equal(strong.state, "GREEN");
@@ -224,9 +195,7 @@ test("portfolio summary totals valued rows per route and counts untradable/equip
 test("source guards for v0.4.0 endpoints and safeguards", () => {
   const source = require("node:fs").readFileSync(path.join(__dirname, "..", "torn-market-edge.user.js"), "utf8");
   assert.match(source, /\/user\/inventory\?limit=/);
-  assert.match(source, /\/itemdetails`/);
   assert.match(source, /\/torn\/cityshops/);
-  assert.match(source, /auctionhouselisting`/);
   assert.match(source, /@connect\s+api\.torn\.com/);
   assert.equal((source.match(/@connect/g) || []).length, 1, "only api.torn.com is contacted");
   assert.doesNotMatch(source, /\.submit\(\)/);

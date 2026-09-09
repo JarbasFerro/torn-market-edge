@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.4.4
+// @version      0.5.0
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.4.4",
+    version: "0.5.0",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -63,15 +63,12 @@
   const WATCHLIST_MAX_ITEMS = 25;
   const WATCHLIST_ALERT_COOLDOWN_MS = 10 * ONE_MINUTE_MS;
   const OWN_LISTINGS_MAX = 25;
-  // v0.4.4 surfaces: portfolio, shop runs, travel planner, auction guidance.
+  // v0.5.0 surfaces: portfolio, shop runs, travel planner, auction guidance.
   const INVENTORY_TTL_MS = 60 * ONE_MINUTE_MS;
   const INVENTORY_PAGE_LIMIT = 250;
   const INVENTORY_MAX_PAGES = 8;
-  const ITEM_DETAILS_BATCH = 25;
-  const ITEM_DETAILS_MAX_CACHED = 400;
   const CITY_SHOPS_TTL_MS = 5 * ONE_MINUTE_MS;
   const FOREIGN_CATALOG_TTL_MS = 6 * 60 * ONE_MINUTE_MS;
-  const AUCTION_LISTING_TTL_MS = 5 * ONE_MINUTE_MS;
   const SELL_WATCH_MAX_ITEMS = 40;
   const SELL_WATCH_ALERT_COOLDOWN_MS = 30 * ONE_MINUTE_MS;
   const PORTFOLIO_REFINE_DEFAULT = 30;
@@ -101,7 +98,6 @@
     pricingRules: "marketEdge.pricingRules.v1",
     sellWatch: "marketEdge.sellWatch.v1",
     inventory: "marketEdge.inventory.v1",
-    itemDetails: "marketEdge.itemDetails.v1",
     cityShops: "marketEdge.cityShops.v1",
     foreignCatalog: "marketEdge.foreignCatalog.v1",
     itemMetaPrefix: "marketEdge.itemMeta.v2."
@@ -122,7 +118,6 @@
     anonymousListing: false,
     anonymousFeeWaived: false,
     museumSetsEnabled: true,
-    equipmentEnabled: true,
     watchlistEnabled: true,
     watchlistIntervalSeconds: 60,
     minimumGreenConfidence: "MEDIUM",
@@ -165,25 +160,6 @@
   const MUSEUM_NAME_SETS = Object.freeze([
     Object.freeze({ key: "arrowhead", label: "Arrowhead set", pattern: /arrowhead/i, size: 6, points: 25 })
   ]);
-
-  // Weapon/armor bonus names as Torn labels them. Used to recognise bonus
-  // icons in an expanded item-details panel; unknown names are ignored.
-  const KNOWN_BONUSES = Object.freeze([
-    "Achilles", "Assassinate", "Backstab", "Berserk", "Bleed", "Blindfire", "Bloodlust", "Burn", "Comeback",
-    "Conserve", "Cripple", "Crusher", "Cupid", "Deadeye", "Deadly", "Demoralize", "Disarm", "Double-edged",
-    "Double Tap", "Empower", "Eviscerate", "Execute", "Expose", "Finale", "Focus", "Freeze", "Frenzy", "Fury",
-    "Grace", "Hazardous", "Home Run", "Impenetrable", "Impregnable", "Insurmountable", "Invulnerable", "Irradiate",
-    "Lacerate", "Motivation", "Paralyze", "Parry", "Penetrate", "Plunder", "Poison", "Powerful", "Proficience",
-    "Puncture", "Quicken", "Rage", "Revitalize", "Roshambo", "Shock", "Sleep", "Slow", "Smash", "Smurf",
-    "Specialist", "Spray", "Stricken", "Storm", "Stun", "Suppress", "Sure Shot", "Throttle", "Toxin", "Warlord",
-    "Weaken", "Wind-up", "Wither"
-  ]);
-
-  // Torn renders stat labels and values in separate nodes, sometimes with the
-  // colon supplied by CSS, so the patterns tolerate a missing colon and a
-  // short run of icon/whitespace characters before the number.
-  const QUALITY_PATTERN = /Quality\s*:?\s*[^\d%]{0,24}([\d.]+)\s*%/i;
-  const STATS_PATTERN = /Damage|Accuracy|Armou?r/i;
 
   const KEY_ACCESS_RANK = Object.freeze({
     "Public Only": 1,
@@ -284,46 +260,6 @@
     return /weapon|armor|armour/i.test(String(type || ""));
   }
 
-  function bonusSignature(details) {
-    const bonuses = Array.isArray(details?.bonuses) ? details.bonuses : [];
-    return bonuses
-      .map((bonus) => String(bonus?.title || bonus?.name || "").trim().toLowerCase())
-      .filter(Boolean)
-      .sort()
-      .join("+");
-  }
-
-  function equipmentGroupKey(details) {
-    const rarity = String(details?.rarity || "plain").toLowerCase();
-    const signature = bonusSignature(details);
-    return `${rarity}|${signature || "none"}`;
-  }
-
-  function summarizeEquipmentListings(listings) {
-    const detailed = listings.filter((row) => row.itemDetails && typeof row.itemDetails === "object");
-    if (!detailed.length) return null;
-    const plain = detailed.filter((row) => !bonusSignature(row.itemDetails) && !row.itemDetails.rarity);
-    const bonus = detailed.filter((row) => bonusSignature(row.itemDetails) || row.itemDetails.rarity);
-    const groups = new Map();
-    detailed.forEach((row) => {
-      const key = equipmentGroupKey(row.itemDetails);
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(row.price);
-    });
-    return {
-      listingCount: detailed.length,
-      plainFloor: plain.length ? Math.min(...plain.map((row) => row.price)) : null,
-      plainMedian: median(plain.map((row) => row.price)),
-      bonusFloor: bonus.length ? Math.min(...bonus.map((row) => row.price)) : null,
-      groups: Array.from(groups.entries()).map(([key, prices]) => ({
-        key,
-        count: prices.length,
-        floor: Math.min(...prices),
-        median: median(prices)
-      }))
-    };
-  }
-
   function robustMarketAnchor(listings) {
     const sorted = listings
       .filter((row) => Number.isFinite(row.price) && row.price > 0 && Number.isFinite(row.quantity) && row.quantity > 0)
@@ -395,10 +331,9 @@
       medianListingPrice: median(prices),
       calculatedMarketAnchor: robustMarketAnchor(listings),
       // The commodity model only applies to fungible stackable items.
-      // Equipment is valued separately through comparable-group analysis.
+      // Weapons and armor are never priced.
       supportedCommodity: !equipment,
-      equipment,
-      equipmentSummary: equipment ? summarizeEquipmentListings(listings) : null
+      equipment
     };
   }
 
@@ -945,370 +880,6 @@
       .sort((a, b) => b.timestamp - a.timestamp);
   }
 
-  function equipmentQuality(details) {
-    const quality = Number(details?.stats?.quality);
-    return Number.isFinite(quality) ? quality : null;
-  }
-
-  function describeEquipmentGroup(key) {
-    const [rarity, signature] = String(key || "plain|none").split("|");
-    const bonuses = signature && signature !== "none" ? signature.split("+") : [];
-    const rarityLabel = rarity && rarity !== "plain" ? rarity.toUpperCase() : "Plain";
-    return bonuses.length ? `${rarityLabel} ${bonuses.join(" + ")}` : rarityLabel;
-  }
-
-  // Comparable-group valuation for weapons and armor. Listings are grouped by
-  // rarity + bonus signature; quality is matched softly (+/-10) when the group
-  // is deep enough. Ended Auction House sales of the same group are the only
-  // official transaction evidence and are used as a cap on the comparable
-  // median. Nothing here is a guarantee: rare bonus rolls trade on intangibles.
-  function analyzeEquipmentListings(snapshot, { auctionSales = [], settings = {} } = {}) {
-    const listings = (snapshot?.listings || []).filter((row) => row.itemDetails && typeof row.itemDetails === "object");
-    if (!listings.length) return { rows: [], groups: [], best: null, summary: null };
-
-    const minimumDiscount = Number.isFinite(settings.minimumDiscount) ? settings.minimumDiscount : DEFAULTS.minimumDiscount;
-    const haircut = clamp(Number.isFinite(settings.safetyHaircut) ? settings.safetyHaircut : DEFAULTS.safetyHaircut, 0, 0.10);
-    const feeBps = itemMarketFeeBps(settings);
-
-    const groupMap = new Map();
-    listings.forEach((row) => {
-      const key = equipmentGroupKey(row.itemDetails);
-      if (!groupMap.has(key)) groupMap.set(key, []);
-      groupMap.get(key).push(row);
-    });
-
-    const salesMap = new Map();
-    (auctionSales || []).forEach((sale) => {
-      if (!sale?.details || sale.price <= 0) return;
-      if (snapshot?.itemId && sale.itemId && sale.itemId !== snapshot.itemId) return;
-      const key = equipmentGroupKey(sale.details);
-      if (!salesMap.has(key)) salesMap.set(key, []);
-      salesMap.get(key).push(sale.price);
-    });
-
-    const rows = listings.map((row) => {
-      const key = equipmentGroupKey(row.itemDetails);
-      const quality = equipmentQuality(row.itemDetails);
-      const group = groupMap.get(key) || [];
-      const othersAll = group.filter((other) => other !== row);
-      const qualityMatched = Number.isFinite(quality)
-        ? othersAll.filter((other) => {
-          const otherQuality = equipmentQuality(other.itemDetails);
-          return Number.isFinite(otherQuality) && Math.abs(otherQuality - quality) <= 10;
-        })
-        : [];
-      const comparables = qualityMatched.length >= 3 ? qualityMatched : othersAll;
-      const compMedian = median(comparables.map((other) => other.price));
-      const sales = salesMap.get(key) || [];
-      const salesMedian = median(sales);
-
-      let reference = null;
-      let referenceSource = "none";
-      if (Number.isFinite(compMedian) && Number.isFinite(salesMedian)) {
-        reference = Math.min(compMedian, Math.round(salesMedian * 1.05));
-        referenceSource = "listings + AH sales";
-      } else if (Number.isFinite(compMedian)) {
-        reference = compMedian;
-        referenceSource = "comparable listings";
-      } else if (Number.isFinite(salesMedian)) {
-        reference = salesMedian;
-        referenceSource = "AH sales";
-      }
-
-      const discount = reference ? 1 - row.price / reference : null;
-      const resalePrice = reference ? Math.max(1, Math.floor(reference * (1 - haircut))) : null;
-      const expectedNet = resalePrice ? grossToNet(resalePrice, feeBps) - row.price : null;
-      const evidence = comparables.length + sales.length;
-
-      let state = "GREY";
-      if (Number.isFinite(discount) && Number.isFinite(expectedNet) && expectedNet > 0 && discount >= minimumDiscount) {
-        const strong = comparables.length >= 4 && (sales.length === 0 || salesMedian >= row.price * (1 + minimumDiscount));
-        state = strong ? "GREEN" : evidence >= 2 ? "YELLOW" : "GREY";
-      } else if (Number.isFinite(expectedNet) && expectedNet < 0 && Number.isFinite(discount) && discount < 0) {
-        state = "RED";
-      }
-
-      return {
-        price: row.price,
-        quantity: row.quantity,
-        uid: row.itemDetails.uid ?? null,
-        groupKey: key,
-        groupLabel: describeEquipmentGroup(key),
-        rarity: row.itemDetails.rarity ?? null,
-        bonuses: Array.isArray(row.itemDetails.bonuses) ? row.itemDetails.bonuses.map((bonus) => ({
-          title: String(bonus?.title || ""),
-          value: asInt(bonus?.value, 0)
-        })) : [],
-        quality,
-        qualityMatched: qualityMatched.length >= 3,
-        comparableCount: comparables.length,
-        comparableMedian: Number.isFinite(compMedian) ? Math.round(compMedian) : null,
-        salesCount: sales.length,
-        salesMedian: Number.isFinite(salesMedian) ? Math.round(salesMedian) : null,
-        reference,
-        referenceSource,
-        discount,
-        resalePrice,
-        expectedNet,
-        state
-      };
-    });
-
-    const groups = Array.from(groupMap.entries()).map(([key, members]) => {
-      const prices = members.map((member) => member.price);
-      const sales = salesMap.get(key) || [];
-      return {
-        key,
-        label: describeEquipmentGroup(key),
-        count: members.length,
-        floor: Math.min(...prices),
-        median: Math.round(median(prices)),
-        salesCount: sales.length,
-        salesMedian: sales.length ? Math.round(median(sales)) : null
-      };
-    }).sort((a, b) => b.count - a.count || a.floor - b.floor);
-
-    const stateRank = { GREEN: 4, YELLOW: 3, GREY: 2, RED: 1 };
-    const best = rows
-      .filter((row) => row.state === "GREEN" || row.state === "YELLOW")
-      .sort((a, b) => (stateRank[b.state] - stateRank[a.state]) || (b.discount - a.discount))[0] || null;
-
-    return { rows, groups, best, summary: snapshot?.equipmentSummary || summarizeEquipmentListings(listings) };
-  }
-
-  // Sell-side pricing for a weapon/armor the player owns when its individual
-  // stats are unknown (Bazaar add form, inventory). Assumes a plain roll: the
-  // reference is the lowest of the plain listing median, Torn's daily average
-  // and ended Auction House sales of plain copies, and the sell price never
-  // exceeds the current plain Item Market floor because buyers compare there.
-  function equipmentSellPricing(snapshot, settings = {}, auctionSales = []) {
-    const summary = snapshot?.equipmentSummary;
-    if (!summary) return null;
-    const plainSales = (auctionSales || [])
-      .filter((sale) => sale?.details && !bonusSignature(sale.details) && !sale.details.rarity)
-      .filter((sale) => !snapshot?.itemId || !sale.itemId || sale.itemId === snapshot.itemId)
-      .map((sale) => sale.price)
-      .filter((price) => price > 0);
-    const salesMedian = median(plainSales);
-    const averagePrice = asInt(snapshot?.averagePrice, 0) || null;
-    const candidates = [
-      summary.plainMedian,
-      averagePrice ? Math.round(averagePrice * 1.05) : null,
-      Number.isFinite(salesMedian) ? Math.round(salesMedian * 1.05) : null
-    ].filter((value) => Number.isFinite(value) && value > 0);
-    const reference = candidates.length ? Math.min(...candidates) : (summary.plainFloor || null);
-    if (!reference) return null;
-
-    const haircut = clamp(Number.isFinite(settings.safetyHaircut) ? settings.safetyHaircut : DEFAULTS.safetyHaircut, 0, 0.10);
-    const bazaarDiscount = clamp(Number.isFinite(settings.bazaarDiscount) ? settings.bazaarDiscount : DEFAULTS.bazaarDiscount, 0, 0.5);
-    const undercut = Math.max(0, asInt(settings.itemMarketUndercut ?? DEFAULTS.itemMarketUndercut));
-    const conservative = Math.max(1, Math.floor(reference * (1 - haircut)));
-    const floorCapped = summary.plainFloor ? Math.min(conservative, summary.plainFloor) : conservative;
-    const bazaarSuggested = Math.max(1, Math.floor(floorCapped * (1 - bazaarDiscount)));
-    const itemMarketSuggested = Math.max(1, floorCapped - undercut);
-    const feeBps = itemMarketFeeBps(settings);
-    const itemMarketNet = grossToNet(itemMarketSuggested, feeBps);
-    const bazaarNet = settings.bazaarEnabled === false ? Number.NEGATIVE_INFINITY : bazaarSuggested;
-
-    return {
-      assumesPlain: true,
-      plainFloor: summary.plainFloor || null,
-      plainMedian: summary.plainMedian ? Math.round(summary.plainMedian) : null,
-      plainListings: summary.listingCount || 0,
-      bonusFloor: summary.bonusFloor || null,
-      averagePrice,
-      salesMedian: Number.isFinite(salesMedian) ? Math.round(salesMedian) : null,
-      salesCount: plainSales.length,
-      reference,
-      conservative,
-      bazaarSuggested,
-      itemMarketSuggested,
-      itemMarketNet,
-      feeBps,
-      bestRoute: bazaarNet >= itemMarketNet ? "Bazaar" : "Item Market"
-    };
-  }
-
-  function normalizeBonusName(value) {
-    return String(value || "").toLowerCase().replace(/[^a-z]/g, "");
-  }
-
-  // Parse the stats of one owned copy from Torn's expanded item-details
-  // panel. `text` is the panel text; `hints` are attribute values (title,
-  // alt, aria-label, class names) collected from the panel's icons, which is
-  // where bonus names and rarity colours live.
-  function parseEquipmentDetailsText(text, hints = []) {
-    const source = String(text || "").replace(/\s+/g, " ");
-    const number = (pattern) => {
-      const match = source.match(pattern);
-      return match ? Number(match[1]) : null;
-    };
-    const quality = number(QUALITY_PATTERN);
-    const damage = number(/Damage\s*:?\s*[^\d%]{0,24}([\d.]+)/i);
-    const accuracy = number(/Accuracy\s*:?\s*[^\d%]{0,24}([\d.]+)/i);
-    const armor = number(/Armou?r\s*:?\s*[^\d%]{0,24}([\d.]+)/i);
-    if (!Number.isFinite(quality) && !Number.isFinite(damage) && !Number.isFinite(armor)) return null;
-
-    const known = new Map(KNOWN_BONUSES.map((name) => [normalizeBonusName(name), name]));
-    const bonuses = [];
-    const seen = new Set();
-    let rarity = null;
-    const addBonus = (name, value) => {
-      const existing = bonuses.find((bonus) => bonus.title === name);
-      if (existing) {
-        if (value && !existing.value) existing.value = value;
-        return;
-      }
-      bonuses.push({ title: name, value: value || 0 });
-      seen.add(name);
-    };
-    const matchKnown = (raw) => {
-      const normalized = normalizeBonusName(raw);
-      for (const [key, name] of known.entries()) {
-        if (normalized === key || (normalized.includes(key) && key.length >= 5)) return name;
-      }
-      return null;
-    };
-
-    // Text form, as Torn's item panel shows it: "Bonus: 24% Proficience" and
-    // "Quality: 124.26% Yellow". Several bonuses appear as repeated rows or a
-    // comma-separated list.
-    const bonusText = /Bonus(?:es)?\s*:?\s*([^]*?)(?=\s*(?:Bonus(?:es)?\s*:|Quality|Damage|Accuracy|Armou?r|Rate of Fire|Stealth|Caliber|Ammo|Buy|Sell|Value|Circ|$))/gi;
-    let bonusMatch = bonusText.exec(source);
-    while (bonusMatch) {
-      bonusMatch[1].split(/,|\band\b/i).forEach((chunk) => {
-        const valueMatch = chunk.match(/(\d+)\s*%/);
-        const name = matchKnown(chunk.replace(/\d+\s*%/g, ""));
-        if (name) addBonus(name, valueMatch ? Number(valueMatch[1]) : 0);
-      });
-      bonusMatch = bonusText.exec(source);
-    }
-    const rarityText = source.match(/Quality\s*:?\s*[^%]{0,30}%\s*(Yellow|Orange|Red)\b/i);
-    if (rarityText) rarity = rarityText[1].toLowerCase();
-
-    // Icon form: titles, alt text and class names of bonus icons.
-    hints.forEach((hint) => {
-      const raw = String(hint || "");
-      const lowered = raw.toLowerCase();
-      if (!rarity || rarity === "yellow") {
-        if (/\bred\b/.test(lowered)) rarity = "red";
-        else if (/\borange\b/.test(lowered)) rarity = "orange";
-        else if (/\byellow\b/.test(lowered) && !rarity) rarity = "yellow";
-      }
-      const name = matchKnown(raw);
-      if (name) {
-        const valueMatch = raw.match(/(\d+)\s*%/);
-        addBonus(name, valueMatch ? Number(valueMatch[1]) : 0);
-      }
-    });
-    return {
-      quality: Number.isFinite(quality) ? quality : null,
-      damage: Number.isFinite(damage) ? damage : null,
-      accuracy: Number.isFinite(accuracy) ? accuracy : null,
-      armor: Number.isFinite(armor) ? armor : null,
-      bonuses,
-      rarity: bonuses.length ? rarity : null
-    };
-  }
-
-  // Price one owned weapon/armor whose stats are known (expanded details
-  // panel). Comparables come from the same rarity + bonus group of the deep
-  // order book, quality matched within +/-10 (then +/-20, then the whole
-  // group). Ended Auction House sales of the same group are transaction
-  // evidence. The sell price never exceeds the cheapest comparable listing.
-  function priceOwnedEquipment({ snapshot, copy, auctionSales = [], settings = {} }) {
-    if (!snapshot || !copy) return null;
-    const details = { bonuses: copy.bonuses || [], rarity: copy.rarity || null };
-    const groupKey = equipmentGroupKey(details);
-    const plain = !bonusSignature(details) && !details.rarity;
-    const listings = (snapshot.listings || []).filter((row) => row.itemDetails && equipmentGroupKey(row.itemDetails) === groupKey);
-    const quality = Number.isFinite(copy.quality) ? copy.quality : null;
-
-    let comparables = listings;
-    let band = null;
-    if (quality !== null) {
-      for (const width of [10, 20]) {
-        const matched = listings.filter((row) => {
-          const rowQuality = equipmentQuality(row.itemDetails);
-          return Number.isFinite(rowQuality) && Math.abs(rowQuality - quality) <= width;
-        });
-        if (matched.length >= 3) {
-          comparables = matched;
-          band = width;
-          break;
-        }
-      }
-    }
-
-    const compPrices = comparables.map((row) => row.price);
-    const compFloor = compPrices.length ? Math.min(...compPrices) : null;
-    const compMedian = median(compPrices);
-    const groupPrices = listings.map((row) => row.price);
-    const groupFloor = groupPrices.length ? Math.min(...groupPrices) : null;
-    const groupMedian = median(groupPrices);
-    const sales = (auctionSales || [])
-      .filter((sale) => sale?.details && sale.price > 0 && (!sale.itemId || !snapshot.itemId || sale.itemId === snapshot.itemId))
-      .filter((sale) => equipmentGroupKey(sale.details) === groupKey)
-      .map((sale) => sale.price);
-    const salesMedian = median(sales);
-    const averagePrice = asInt(snapshot.averagePrice, 0) || null;
-
-    const candidates = [
-      compMedian,
-      Number.isFinite(salesMedian) ? Math.round(salesMedian * 1.05) : null,
-      plain && averagePrice ? Math.round(averagePrice * 1.05) : null
-    ].filter((value) => Number.isFinite(value) && value > 0);
-    const reference = candidates.length ? Math.min(...candidates) : (compFloor || groupFloor || null);
-    const referenceSource = !candidates.length
-      ? (reference ? "cheapest listing only" : "none")
-      : [Number.isFinite(compMedian) ? "listings" : null, Number.isFinite(salesMedian) ? "AH sales" : null, plain && averagePrice ? "Torn average" : null].filter(Boolean).join(" + ");
-
-    const summary = snapshot.equipmentSummary || summarizeEquipmentListings(snapshot.listings || []);
-    if (!reference) {
-      return {
-        groupKey, groupLabel: describeEquipmentGroup(groupKey), plain, quality, bonuses: details.bonuses, rarity: details.rarity,
-        comparables: { count: 0, floor: null, median: null, band: null }, group: { count: listings.length, floor: groupFloor, median: groupMedian ? Math.round(groupMedian) : null },
-        sales: { count: sales.length, median: null }, averagePrice, reference: null, referenceSource: "none",
-        bazaarSuggested: null, itemMarketSuggested: null, itemMarketNet: null, feeBps: itemMarketFeeBps(settings), bestRoute: null,
-        cheaperAtSuggested: null, bonusFloor: plain ? summary?.bonusFloor || null : null
-      };
-    }
-
-    const haircut = clamp(Number.isFinite(settings.safetyHaircut) ? settings.safetyHaircut : DEFAULTS.safetyHaircut, 0, 0.10);
-    const bazaarDiscount = clamp(Number.isFinite(settings.bazaarDiscount) ? settings.bazaarDiscount : DEFAULTS.bazaarDiscount, 0, 0.5);
-    const undercut = Math.max(0, asInt(settings.itemMarketUndercut ?? DEFAULTS.itemMarketUndercut));
-    const conservative = Math.max(1, Math.floor(reference * (1 - haircut)));
-    const cap = compFloor ? Math.min(conservative, compFloor) : conservative;
-    const bazaarSuggested = Math.max(1, Math.floor(cap * (1 - bazaarDiscount)));
-    const itemMarketSuggested = Math.max(1, cap - undercut);
-    const feeBps = itemMarketFeeBps(settings);
-    const itemMarketNet = grossToNet(itemMarketSuggested, feeBps);
-    const bazaarNet = settings.bazaarEnabled === false ? Number.NEGATIVE_INFINITY : bazaarSuggested;
-
-    return {
-      groupKey,
-      groupLabel: describeEquipmentGroup(groupKey),
-      plain,
-      quality,
-      bonuses: details.bonuses,
-      rarity: details.rarity,
-      comparables: { count: comparables.length, floor: compFloor, median: Number.isFinite(compMedian) ? Math.round(compMedian) : null, band },
-      group: { count: listings.length, floor: groupFloor, median: Number.isFinite(groupMedian) ? Math.round(groupMedian) : null },
-      sales: { count: sales.length, median: Number.isFinite(salesMedian) ? Math.round(salesMedian) : null },
-      averagePrice,
-      reference,
-      referenceSource,
-      conservative,
-      bazaarSuggested,
-      itemMarketSuggested,
-      itemMarketNet,
-      feeBps,
-      bestRoute: bazaarNet >= itemMarketNet ? "Bazaar" : "Item Market",
-      cheaperAtSuggested: listings.filter((row) => row.price < bazaarSuggested).length,
-      bonusFloor: plain ? summary?.bonusFloor || null : null
-    };
-  }
-
   function museumSetFor(itemId) {
     const id = asInt(itemId, 0);
     if (!id) return null;
@@ -1515,45 +1086,6 @@
       .filter((row) => row.itemId > 0 && row.amount > 0);
   }
 
-  function normalizeItemDetailsRow(row) {
-    if (!row || typeof row !== "object") return null;
-    const stats = row.stats && typeof row.stats === "object" ? row.stats : {};
-    const bonuses = Array.isArray(row.bonuses) ? row.bonuses : [];
-    const quality = Number(stats.quality);
-    return {
-      uid: asInt(row.uid, 0) || null,
-      itemId: asInt(row.id ?? row.item_id, 0) || null,
-      name: row.name ? String(row.name) : "",
-      type: row.type ? String(row.type) : "",
-      subType: row.sub_type == null ? null : String(row.sub_type),
-      quality: Number.isFinite(quality) ? quality : null,
-      damage: Number.isFinite(Number(stats.damage)) ? Number(stats.damage) : null,
-      accuracy: Number.isFinite(Number(stats.accuracy)) ? Number(stats.accuracy) : null,
-      armor: Number.isFinite(Number(stats.armor)) ? Number(stats.armor) : null,
-      bonuses: bonuses.map((bonus) => ({
-        title: String(bonus?.title || "").trim(),
-        value: Number.isFinite(Number(bonus?.value)) ? Number(bonus.value) : null
-      })).filter((bonus) => bonus.title),
-      rarity: row.rarity ? String(row.rarity).toLowerCase() : null
-    };
-  }
-
-  // /torn/{uids}/itemdetails returns an array (current) or, for a single uid,
-  // the deprecated single-object shape until 2027-01-01. Both are accepted.
-  function normalizeItemDetails(payload) {
-    const raw = payload?.itemdetails ?? payload;
-    const rows = Array.isArray(raw) ? raw : (raw && typeof raw === "object" ? [raw] : []);
-    return rows.map(normalizeItemDetailsRow).filter((row) => row && row.uid);
-  }
-
-  function copyLabelFor(copy) {
-    if (!copy) return "";
-    const bonus = (copy.bonuses || []).map((entry) => entry.title).filter(Boolean).join("+");
-    const rarity = copy.rarity ? copy.rarity.toUpperCase() : "";
-    const quality = Number.isFinite(copy.quality) ? `Q ${copy.quality.toFixed(1)}%` : "";
-    return [quality, rarity, bonus || (Number.isFinite(copy.quality) ? "plain" : "")].filter(Boolean).join(" ");
-  }
-
   function normalizeCityShops(payload) {
     const shops = Array.isArray(payload?.cityshops) ? payload.cityshops : [];
     return shops.map((shop) => ({
@@ -1744,45 +1276,6 @@
     return { count: rows.length, median: Math.round(median(prices)), low: Math.min(...prices), high: Math.max(...prices) };
   }
 
-  function normalizeAuctionListing(payload) {
-    const raw = payload?.auctionhouselisting ?? payload;
-    if (!raw || typeof raw !== "object") return null;
-    const item = raw.item && typeof raw.item === "object" ? raw.item : {};
-    const copy = item.stats || item.bonuses ? normalizeItemDetailsRow({ ...item, uid: item.uid ?? 0 }) : null;
-    return {
-      listingId: asInt(raw.id, 0),
-      itemId: asInt(item.id, 0),
-      name: String(item.name || ""),
-      type: String(item.type || ""),
-      price: asInt(raw.price, 0),
-      bids: asInt(raw.bids, 0),
-      timestamp: asInt(raw.timestamp, 0),
-      copy
-    };
-  }
-
-  // Maximum rational bid for a specific weapon/armor copy: the net proceeds
-  // of reselling that copy at its comparable-based price, less the required
-  // ROI. Uses priceOwnedEquipment() so the same comparables drive sell and
-  // buy sides.
-  function equipmentBidGuidance({ snapshot, copy, auctionSales = [], settings, currentBid = 0 }) {
-    if (!snapshot?.equipment || !copy) return null;
-    const pricing = priceOwnedEquipment({ snapshot, copy, auctionSales, settings });
-    if (!pricing) return null;
-    const bestNet = Math.max(asInt(pricing.bazaarSuggested, 0), asInt(pricing.itemMarketNet, 0));
-    if (bestNet <= 0) return null;
-    const maxBid = Math.max(0, Math.floor(bestNet / (1 + settings.minimumROI)));
-    const bid = Math.max(0, asInt(currentBid, 0));
-    return {
-      maxBid,
-      headroom: maxBid - bid,
-      bestNet,
-      pricing,
-      label: copyLabelFor(copy),
-      state: maxBid - bid > 0 ? (pricing.thinEvidence ? "YELLOW" : "GREEN") : "GREY"
-    };
-  }
-
   // Browse-grid overlay: discount of the displayed cheapest price against
   // Torn's official market value. No order book is fetched for the grid.
   function evaluateBrowseCard({ price, marketPrice, settings }) {
@@ -1919,12 +1412,6 @@
     evaluateDirectBuy,
     maxRationalBid,
     estimateInventoryExit,
-    summarizeEquipmentListings,
-    equipmentGroupKey,
-    analyzeEquipmentListings,
-    equipmentSellPricing,
-    parseEquipmentDetailsText,
-    priceOwnedEquipment,
     normalizeAuctionSales,
     museumSetFor,
     museumValuation,
@@ -1941,8 +1428,6 @@
     officialExit,
     bestAvailableExit,
     normalizeInventory,
-    normalizeItemDetails,
-    copyLabelFor,
     normalizeCityShops,
     shopSellFloor,
     foreignOffers,
@@ -1953,8 +1438,6 @@
     museumByName,
     auctionTimingStats,
     stackableSalesSummary,
-    normalizeAuctionListing,
-    equipmentBidGuidance,
     evaluateBrowseCard,
     normalizePricingRules,
     applyPricingRule,
@@ -2141,8 +1624,7 @@
           top20Quantity: listings.slice(0, 20).reduce((sum, row) => sum + row.quantity, 0)
         },
         supportedCommodity: raw.supportedCommodity !== false,
-        equipment: raw.equipment === true,
-        equipmentSummary: raw.equipmentSummary && typeof raw.equipmentSummary === "object" ? raw.equipmentSummary : null
+        equipment: raw.equipment === true
       };
     }
 
@@ -2165,8 +1647,7 @@
         medianListingPrice: snapshot.medianListingPrice,
         calculatedMarketAnchor: snapshot.calculatedMarketAnchor,
         supportedCommodity: snapshot.supportedCommodity,
-        equipment: snapshot.equipment === true,
-        equipmentSummary: snapshot.equipmentSummary || null
+        equipment: snapshot.equipment === true
       });
     }
 
@@ -2212,22 +1693,6 @@
 
     static saveInventory(items) {
       Store.set(STORAGE_KEYS.inventory, { savedAt: Date.now(), items });
-    }
-
-    static itemDetailsCache() {
-      const raw = Store.get(STORAGE_KEYS.itemDetails, {});
-      return raw && typeof raw === "object" ? raw : {};
-    }
-
-    static saveItemDetails(rows) {
-      const cache = Store.itemDetailsCache();
-      rows.forEach((row) => { if (row?.uid) cache[row.uid] = { ...row, savedAt: Date.now() }; });
-      const keys = Object.keys(cache);
-      if (keys.length > ITEM_DETAILS_MAX_CACHED) {
-        keys.sort((a, b) => asInt(cache[a].savedAt) - asInt(cache[b].savedAt));
-        keys.slice(0, keys.length - ITEM_DETAILS_MAX_CACHED).forEach((key) => { delete cache[key]; });
-      }
-      Store.set(STORAGE_KEYS.itemDetails, cache);
     }
 
     static cityShops() {
@@ -2451,7 +1916,6 @@
           return data;
         })
         .finally(() => this.inFlight.delete(cacheKey));
-
       this.inFlight.set(cacheKey, promise);
       return promise;
     }
@@ -2519,12 +1983,6 @@
       return this.request(`/user/inventory?limit=${INVENTORY_PAGE_LIMIT}&offset=${Math.max(0, asInt(offset))}${category}`, { cacheMs: INVENTORY_TTL_MS, priority });
     }
 
-    async itemDetails(uids, { priority = 110 } = {}) {
-      const ids = Array.from(new Set(uids.map((uid) => asInt(uid)).filter(Boolean))).slice(0, ITEM_DETAILS_BATCH);
-      if (!ids.length) return { itemdetails: [] };
-      return this.request(`/torn/${ids.join(",")}/itemdetails`, { cacheMs: ONE_DAY_MS, priority });
-    }
-
     async cityShops({ priority = 100 } = {}) {
       return this.request("/torn/cityshops", { cacheMs: CITY_SHOPS_TTL_MS, priority });
     }
@@ -2534,9 +1992,6 @@
       return this.request(`/torn/items${category}`, { cacheMs: FOREIGN_CATALOG_TTL_MS, priority });
     }
 
-    async auctionListing(listingId, { priority = 80 } = {}) {
-      return this.request(`/market/${asInt(listingId)}/auctionhouselisting`, { cacheMs: AUCTION_LISTING_TTL_MS, priority });
-    }
   }
 
   const api = new TornApi();
@@ -2690,32 +2145,6 @@
     return items;
   }
 
-  // Stats, bonuses and rarity for owned copies, by uid, 25 per request.
-  async function loadItemDetails(uids, { priority = 110 } = {}) {
-    const wanted = Array.from(new Set(uids.map((uid) => asInt(uid)).filter(Boolean)));
-    const cache = Store.itemDetailsCache();
-    const result = new Map();
-    const missing = [];
-    wanted.forEach((uid) => {
-      const row = cache[uid];
-      if (row && Date.now() - asInt(row.savedAt) < ITEM_META_TTL_MS) result.set(uid, row);
-      else missing.push(uid);
-    });
-    for (let index = 0; index < missing.length; index += ITEM_DETAILS_BATCH) {
-      const batch = missing.slice(index, index + ITEM_DETAILS_BATCH);
-      try {
-        const payload = await api.itemDetails(batch, { priority });
-        const rows = normalizeItemDetails(payload);
-        Store.saveItemDetails(rows);
-        rows.forEach((row) => result.set(row.uid, row));
-      } catch (error) {
-        log("Item details batch failed", batch.length, error.message);
-        if (error?.tornCode === 2 || error?.tornCode === 16) throw error;
-      }
-    }
-    return result;
-  }
-
   async function loadCityShops({ force = false, priority = 100 } = {}) {
     const cached = Store.cityShops();
     if (!force && cached && Date.now() - asInt(cached.savedAt) < CITY_SHOPS_TTL_MS) return cached.shops;
@@ -2755,11 +2184,6 @@
     }
     if (items.length) Store.saveForeignCatalog(items);
     return items.length ? items : (cached?.items || []);
-  }
-
-  async function loadAuctionListing(listingId, { priority = 80 } = {}) {
-    const payload = await api.auctionListing(listingId, { priority });
-    return normalizeAuctionListing(payload);
   }
 
   function snapshotCacheState(snapshot, nowMs = Date.now()) {
@@ -3236,11 +2660,6 @@
       // details block) is not a row: it would hijack the item entry and
       // swallow the annotation.
       if (!card || card === node || card.tagName === "IMG" || !(card.textContent || "").trim()) continue;
-      if (node.closest?.(".me-equip-card")) continue;
-      // A "row" that contains an item stats block is the expanded details
-      // container reached through its large picture, not an inventory row.
-      const cardText = card.textContent || "";
-      if (QUALITY_PATTERN.test(cardText) && STATS_PATTERN.test(cardText)) continue;
       if (!isInventoryListCandidate(card, inventoryMarker)) continue;
       const rect = card?.getBoundingClientRect?.();
       if (rect && (rect.width <= 0 || rect.height <= 0)) continue;
@@ -3436,9 +2855,7 @@
       if (String(row.className || "").includes("item___UN3Mg")) return false;
       const rect = row.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return false;
-      // Expanded rows carry Torn's item-details panel and grow well past the
-      // normal row height; they must stay recognisable.
-      if (rect.height > 300 && !QUALITY_PATTERN.test(row.textContent || "")) return false;
+      if (rect.height > 300) return false;
       const image = row.querySelector("div.image-wrap img, img[src*='/items/'], img[srcset*='/items/']");
       const amount = row.querySelector("div[class*='amount___'], div.amount-main-wrap") || row;
       const input = Array.from(amount.querySelectorAll("input")).find((candidate) => {
@@ -3645,7 +3062,7 @@
   function collectSellFormRows({ root = document, limit = clamp(settings.scanMaxVisibleItems, 1, 50) } = {}) {
     const byCard = new Map();
     const images = Array.from(root.querySelectorAll("img[src*='/items/'], img[srcset*='/items/'], [style*='/items/']"))
-      .filter((node) => !node.closest("#market-edge-root,.me-inline-analysis,.me-equip-card"));
+      .filter((node) => !node.closest("#market-edge-root,.me-inline-analysis"));
     const nearest = images
       .map((node) => ({ node, priority: viewportPriority({ card: node }) }))
       .sort((a, b) => b.priority - a.priority)
@@ -3735,49 +3152,13 @@
     const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
     let node = walker.nextNode();
     while (node) {
-      if (!node.parentElement?.closest?.(".me-inline-analysis,.me-equip-card")) {
+      if (!node.parentElement?.closest?.(".me-inline-analysis")) {
         const value = String(node.textContent || "").trim();
         if (value) parts.push(value);
       }
       node = walker.nextNode();
     }
     return parts.join(" ");
-  }
-
-  // Torn exposes the copy's uid on some inventory rows; when present the
-  // exact copy can be priced through /torn/{uids}/itemdetails without
-  // opening its details panel.
-  function rowUid(card) {
-    if (!card?.getAttribute) return null;
-    // Torn's inventory rows expose the per-copy armoury id (the API's item
-    // uid) as data-armoryid on the row or on the equip/unequip button (whose
-    // data-id is the same value), legacy rows as .actions[xid].
-    const read = (element, names) => {
-      for (const name of names) {
-        const raw = element.getAttribute?.(name);
-        const digits = String(raw || "").match(/\d{3,}/);
-        if (digits) return asInt(digits[0], 0) || null;
-      }
-      return null;
-    };
-    const own = read(card, ["data-armoryid", "data-armouryid", "data-armoury-id", "data-uid", "data-item-uid", "uid"]);
-    if (own) return own;
-    const action = card.querySelector("[data-action='equip'],[data-action='unequip'],button[name='equip'],button[name='unequip'],[data-armoryid],[data-armouryid],[data-uid],.actions[xid],[xid]");
-    if (action) {
-      const value = read(action, ["data-armoryid", "data-armouryid", "data-uid", "data-id", "xid"]);
-      if (value) return value;
-    }
-    // Last resort: any attribute on the row's nodes whose name mentions an
-    // armoury id or uid (Torn renames these between builds).
-    const nodes = Array.from(card.querySelectorAll("*")).slice(0, 60);
-    for (const node of [card, ...nodes]) {
-      for (const attr of Array.from(node.attributes || [])) {
-        if (!/armou?r(?:y|ies)?[-_]?id|(?:^|[-_])uid$/i.test(attr.name)) continue;
-        const digits = String(attr.value || "").match(/\d{3,}/);
-        if (digits) return asInt(digits[0], 0) || null;
-      }
-    }
-    return null;
   }
 
   function collectManagedBazaarItems() {
@@ -3788,7 +3169,7 @@
     const candidates = new Set();
     const selector = itemIdentitySelector();
     document.querySelectorAll(selector).forEach((node) => {
-      if (!node.closest("#market-edge-root") && !node.closest(".me-inline-analysis,.me-equip-card")) candidates.add(node);
+      if (!node.closest("#market-edge-root") && !node.closest(".me-inline-analysis")) candidates.add(node);
     });
 
     const byId = new Map();
@@ -3824,157 +3205,7 @@
     return Array.from(byId.values()).sort((a, b) => viewportPriority(b) - viewportPriority(a)).slice(0, clamp(settings.scanMaxVisibleItems, 1, 50));
   }
 
-  // Expanded item-details panels (Bazaar add form, inventory) show the exact
-  // copy's quality, damage/accuracy and bonus icons. Each panel is matched to
-  // its item id through the panel's own large image or the preceding row.
-  function detailsPanelHints(container) {
-    const hints = [];
-    container.querySelectorAll("[title],[aria-label],img[alt],[class*='bonus'],[class*='rarity'],[class*='yellow'],[class*='orange'],[class*='red']").forEach((node) => {
-      if (node.closest(".me-equip-card,#market-edge-root")) return;
-      ["title", "aria-label", "alt", "class", "data-bonus", "data-title"].forEach((attr) => {
-        const value = node.getAttribute?.(attr);
-        if (value) hints.push(String(value));
-      });
-    });
-    return hints;
-  }
-
   const BAZAAR_ADD_ROW_SELECTOR = "ul.items-cont li.clearfix, div[class*='itemsContainner___'] div[class*='item___'], div[class*='rowItems___'] div[class*='item___']";
-
-  // Pricing cards are tracked by the copy key rather than by DOM position:
-  // Torn's React stats wrapper may re-render, and the card lives outside it.
-  function findDetailCard(detailOrKey) {
-    const key = typeof detailOrKey === "string" ? detailOrKey : detailOrKey?.key;
-    if (!key) return null;
-    return Array.from(document.querySelectorAll(".me-equip-card")).find((card) => card.dataset.meDetailKey === key) || null;
-  }
-
-  // Where to put the card: the nearest ancestor of the stats block that is a
-  // plain block container (not grid/flex/inline), so the wrapper's layout
-  // cannot hide it. Falls back to the panel's parent.
-  function detailCardHost(panel) {
-    let fallback = panel?.parentElement || null;
-    for (let node = panel?.parentElement, depth = 0; node && node !== document.body && depth < 5; depth += 1, node = node.parentElement) {
-      let display = "";
-      try {
-        display = String(window.getComputedStyle(node).display || "");
-      } catch {
-        display = "";
-      }
-      if (/^(block|list-item|flow-root|table-cell|table)$/.test(display)) return node;
-      if (!display) fallback = node;
-    }
-    return fallback;
-  }
-
-  // Find Torn's item-stats blocks by walking text nodes for "Quality:" and
-  // climbing to the innermost element that also holds Damage/Accuracy/Armor.
-  // Linear in the number of text nodes, no layout reads except for the few
-  // panels found; safe to call from the mutation signature on long lists.
-  function findStatsPanels(root) {
-    const panels = new Set();
-    if (!root || typeof document.createTreeWalker !== "function") return [];
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-      acceptNode: (node) => (/Quality/i.test(node.textContent || "") ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP)
-    });
-    let textNode = walker.nextNode();
-    while (textNode) {
-      let element = textNode.parentElement;
-      for (let depth = 0; element && element !== root && depth < 8; depth += 1, element = element.parentElement) {
-        if (element.closest("#market-edge-root,.me-equip-card")) break;
-        const text = element.textContent || "";
-        if (text.length > 2500) break;
-        if (QUALITY_PATTERN.test(text) && STATS_PATTERN.test(text)) {
-          panels.add(element);
-          break;
-        }
-      }
-      textNode = walker.nextNode();
-    }
-    return Array.from(panels).filter((element) => {
-      const rect = element.getBoundingClientRect();
-      return rect.width > 0 && rect.height > 0;
-    });
-  }
-
-  function collectExpandedEquipmentDetails(surface, { resolveRows = true } = {}) {
-    const results = [];
-    // The walker is linear and cheap, so the whole page is scanned; the row
-    // association below keeps panels tied to their own item.
-    const panels = findStatsPanels(document.body);
-    if (!panels.length) return results;
-
-    // Known rows: the add-form rows on the Bazaar, the inventory row cards
-    // elsewhere. Torn nests the panel inside the row on the Bazaar add form
-    // and places it after the row on the inventory page; both are handled by
-    // checking ancestors first, then the previous siblings of the panel's
-    // top-level wrapper.
-    let knownRows = [];
-    if (resolveRows) {
-      if (surface === "bazaar") {
-        const section = bazaarAddSection();
-        knownRows = section ? knownBazaarAddRows(section) : [];
-      } else if (surface === "inventory") {
-        knownRows = collectVisibleItems({ requireMoney: false }).map((item) => item.card);
-      }
-    }
-    const rowsWithin = (element) => knownRows.filter((known) => element === known || element.contains(known) || known.contains(element));
-
-    panels.forEach((panel) => {
-      let row = null;
-      if (resolveRows && knownRows.length) {
-        // 1) Nested layout: climb until an ancestor holds exactly one known
-        //    row card (the expanded row). Stop as soon as several are inside.
-        for (let ancestor = panel.parentElement, depth = 0; ancestor && ancestor !== document.body && depth < 12; depth += 1, ancestor = ancestor.parentElement) {
-          const contained = rowsWithin(ancestor);
-          if (contained.length === 1) {
-            row = contained[0];
-            break;
-          }
-          if (contained.length > 1) break;
-        }
-        // 2) Sibling layout: from the panel's top-level wrapper (the child of
-        //    the list holding several rows), look at the rows just before it.
-        if (!row) {
-          let top = panel;
-          while (top.parentElement && top.parentElement !== document.body && rowsWithin(top.parentElement).length <= 1) top = top.parentElement;
-          let sibling = top.previousElementSibling;
-          for (let depth = 0; sibling && depth < 4 && !row; depth += 1, sibling = sibling.previousElementSibling) {
-            const contained = rowsWithin(sibling);
-            if (contained.length === 1) row = contained[0];
-            else if (contained.length > 1) break;
-          }
-        }
-      }
-      if (!row && resolveRows && surface === "inventory") {
-        // No known cards nearby (row failed collection): fall back to the
-        // nearest preceding element holding a single item id.
-        let sibling = panel.closest("li,tr,[role='row']")?.previousElementSibling || null;
-        for (let depth = 0; sibling && depth < 4 && !row; depth += 1, sibling = sibling.previousElementSibling) {
-          if (directItemIdsWithin(sibling).size === 1) row = sibling;
-        }
-      }
-      // Item id: prefer the row image (unambiguous), then the closest image
-      // around the panel (Torn shows a large item image in the details).
-      let itemId = null;
-      if (row) {
-        const rowImage = row.querySelector("div.image-wrap img, img[src*='/items/'], img[srcset*='/items/']");
-        itemId = itemIdFromElement(rowImage || row);
-      }
-      for (let scope = panel.parentElement, depth = 0; !itemId && scope && scope !== document.body && depth < 8; depth += 1, scope = scope.parentElement) {
-        const images = Array.from(scope.querySelectorAll("img[src*='/items/'], img[srcset*='/items/'], [style*='/items/']")).filter((node) => !node.closest(".me-equip-card,#market-edge-root"));
-        const ids = new Set(images.map((image) => itemIdFromElement(image)).filter(Boolean));
-        if (ids.size === 1) itemId = Array.from(ids)[0];
-        else if (ids.size > 1) break;
-      }
-      if (!itemId) return;
-      const hintScope = row && row.contains(panel) ? row : (panel.parentElement || panel);
-      const copy = parseEquipmentDetailsText(panel.innerText || panel.textContent || "", detailsPanelHints(hintScope));
-      if (!copy) return;
-      results.push({ itemId, panel, row, copy, key: `${itemId}|${copy.quality}|${copy.damage}|${copy.armor}|${copy.bonuses.map((bonus) => bonus.title).join("+")}|${copy.rarity || ""}` });
-    });
-    return results;
-  }
 
   function collectOwnBazaarItems() {
     // Add-form rows take precedence: once a price has been filled into an
@@ -3997,34 +3228,6 @@
       .slice(0, clamp(settings.scanMaxVisibleItems, 1, 50));
   }
 
-  // Auction listing id from a row, when Torn exposes it (attributes, ids or
-  // links). It must differ from the item id; without it equipment rows fall
-  // back to the row's own text for the copy's stats.
-  function auctionListingIdFrom(li, itemId) {
-    if (!li) return null;
-    const candidates = [];
-    ["data-listing-id", "data-listingid", "data-auction-id", "data-auctionid", "data-aid", "data-id", "id"].forEach((attr) => {
-      const raw = li.getAttribute?.(attr);
-      if (raw) candidates.push(raw);
-    });
-    li.querySelectorAll("a[href*='ID='],a[href*='id='],input[type='hidden'][name*='id' i],[data-listing-id],[data-auction-id],[data-aid]").forEach((node) => {
-      const href = node.getAttribute("href") || "";
-      const match = href.match(/(?:auctionID|auctionId|aID|listingID|listingId|ID)=(\d+)/i);
-      if (match) candidates.push(match[1]);
-      ["data-listing-id", "data-auction-id", "data-aid", "value"].forEach((attr) => {
-        const raw = node.getAttribute(attr);
-        if (raw) candidates.push(raw);
-      });
-    });
-    for (const raw of candidates) {
-      const digits = String(raw).match(/\d{3,}/);
-      if (!digits) continue;
-      const value = asInt(digits[0], 0);
-      if (value && value !== itemId) return value;
-    }
-    return null;
-  }
-
   function collectAuctionItems() {
     const rows = [];
     document.querySelectorAll("div.items-list-wrap > ul.items-list > li").forEach((li) => {
@@ -4036,11 +3239,7 @@
       const bidText = (li.querySelector("div.c-bid-wrap")?.textContent || li.querySelector("div.mob-wrap .top-bid-mob-wrap")?.textContent || "").trim();
       const price = /^none$|bid:\s*none/i.test(bidText) ? 0 : asInt(String(bidText).replace(/[^0-9]/g, ""), 0);
       const text = li.innerText || "";
-      // Torn prints the copy's quality and bonuses inside the row on the
-      // Auction House; when present they price the exact copy without a
-      // listing request.
-      const copyHint = QUALITY_PATTERN.test(text) ? parseEquipmentDetailsText(text, detailsPanelHints(li)) : null;
-      rows.push({ itemId, name, price, quantity: 1, card: li, listingId: auctionListingIdFrom(li, itemId), copyHint, domTextLength: text.length });
+      rows.push({ itemId, name, price, quantity: 1, card: li, domTextLength: text.length });
     });
     return rows.sort((a, b) => viewportPriority(b) - viewportPriority(a)).slice(0, clamp(settings.scanMaxVisibleItems, 1, 50));
   }
@@ -4263,17 +3462,6 @@
     .me-pill.GREY { color:#aaa; }
     .me-pill.RED { color:#e27a7a; border-color:rgba(199,98,98,.5); }
     .me-inline-input { width:110px; padding:4px 6px; border:1px solid #555; border-radius:4px; background:#171719; color:#eee; font-size:11px; }
-    .me-equip-card { margin:8px 0 4px !important; padding:8px 10px !important; border:1px solid rgba(255,255,255,.16) !important; border-radius:6px !important; background:rgba(15,15,17,.72) !important; color:#ddd !important; font:11px/1.4 Arial,sans-serif !important; text-align:left !important; }
-    .me-equip-card .me-equip-head { display:flex !important; align-items:center !important; gap:8px !important; flex-wrap:wrap !important; margin-bottom:5px !important; }
-    .me-equip-card .me-equip-brand { font-weight:800 !important; color:#eee !important; letter-spacing:.04em !important; }
-    .me-equip-card .me-equip-price { font-size:14px !important; font-weight:800 !important; color:#fff !important; }
-    .me-equip-card .me-equip-alt { color:#aaa !important; }
-    .me-equip-card .me-equip-facts { display:grid !important; grid-template-columns:auto 1fr !important; gap:2px 10px !important; font-size:10.5px !important; }
-    .me-equip-card .me-equip-facts .label { color:#999 !important; }
-    .me-equip-card .me-equip-facts .value { color:#ddd !important; font-variant-numeric:tabular-nums !important; }
-    .me-equip-card .me-equip-note { margin-top:5px !important; color:#aaa !important; font-size:10px !important; }
-    .me-equip-card .me-equip-warn { color:#f0ca66 !important; }
-    .me-equip-card .me-bazaar-fill-btn { height:24px !important; min-width:30px !important; }
     .me-launcher { position:fixed; left:10px; bottom:10px; z-index:999997; padding:6px 9px; border-radius:16px; border:1px solid rgba(255,255,255,.25); background:rgba(28,28,30,.94); color:#eee; font:800 11px/1 Arial,sans-serif; cursor:pointer; box-shadow:0 4px 14px rgba(0,0,0,.4); }
     .me-toast-host { position:fixed; left:10px; bottom:48px; z-index:999999; display:flex; flex-direction:column; gap:6px; max-width:min(360px, calc(100vw - 20px)); }
     .me-toast { background:rgba(28,28,30,.97); border:1px solid rgba(74,165,100,.6); border-radius:6px; padding:8px 10px; color:#eee; font:12px/1.35 Arial,sans-serif; box-shadow:0 8px 24px rgba(0,0,0,.45); }
@@ -4432,7 +3620,6 @@
           <label>I list anonymously on the Item Market (+10% fee)</label><input data-setting="anonymousListing" type="checkbox" ${current.anonymousListing ? "checked" : ""}>
           <label>Anonymous fee waived by 5-star company perk</label><input data-setting="anonymousFeeWaived" type="checkbox" ${current.anonymousFeeWaived ? "checked" : ""}>
           <label>Museum set route for plushies/flowers</label><input data-setting="museumSetsEnabled" type="checkbox" ${current.museumSetsEnabled ? "checked" : ""}>
-          <label>Weapon/armor comparables</label><input data-setting="equipmentEnabled" type="checkbox" ${current.equipmentEnabled ? "checked" : ""}>
         </div>
 
         <div class="me-section-title">Risk & scanning</div>
@@ -4599,7 +3786,7 @@
   }
 
   function clearInlineAnalysis() {
-    document.querySelectorAll(".me-inline-analysis,.me-equip-card").forEach((node) => node.remove());
+    document.querySelectorAll(".me-inline-analysis").forEach((node) => node.remove());
     document.querySelectorAll(".me-bazaar-add-controls,.me-bazaar-add-host").forEach((node) => {
       node.classList.remove("me-bazaar-add-controls", "me-bazaar-add-host");
     });
@@ -4712,20 +3899,17 @@
     }
 
     const targetText = formatMoney(target);
-    const pricing = source.equipmentPricing || null;
-    const copyLabel = source.copyLabel || "";
+    const qty = Math.max(1, asInt(visible.maxAvailable || visible.quantity, 1));
+    const totalHtml = qty > 1
+      ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Total at this price for the ${qty} you own">x${qty} ${formatMoney(target * qty)}</span>`
+      : "";
     const netHtml = result?.sellForm && Number.isFinite(source.net)
       ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Net per unit after the ${source.feeBps / 100}% Item Market fee">net ${formatMoney(source.net)}</span>`
       : "";
-    const equipmentHtml = pricing
-      ? equipmentContextHtml(pricing)
-      : (copyLabel ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Priced from this copy's details">${escapeHtml(copyLabel)}</span>` : "");
-    const priceTitle = pricing
-      ? `Suggested ${venue} price for a plain (no bonus) copy: ${formatMoney(target, true)}. ${equipmentContextTitle(pricing)}`
-      : (copyLabel ? `Suggested ${venue} price for this copy (${copyLabel}): ${formatMoney(target, true)}` : `Suggested ${venue} selling price${source.floor ? ` (Item Market floor ${formatMoney(source.floor, true)})` : ""}`);
+    const priceTitle = `Suggested ${venue} selling price${source.floor ? ` (Item Market floor ${formatMoney(source.floor, true)})` : ""}`;
     const block = renderInlineHtml(
       visible,
-      `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="${escapeHtml(priceTitle)}">${targetText}</span><button class="me-bazaar-fill-btn" type="button" aria-label="Fill price and maximum quantity" title="Fill price with ${escapeHtml(targetText)} and quantity with max available; ${escapeHtml(venue === "Bazaar" ? "ADD TO BAZAAR" : "listing")} stays manual">^</button>${netHtml}${equipmentHtml}${stale}`,
+      `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="${escapeHtml(priceTitle)}">${targetText}</span><button class="me-bazaar-fill-btn" type="button" aria-label="Fill price and maximum quantity" title="Fill price with ${escapeHtml(targetText)} and quantity with max available; ${escapeHtml(venue === "Bazaar" ? "ADD TO BAZAAR" : "listing")} stays manual">^</button>${totalHtml}${netHtml}${stale}`,
       "GREY",
       "me-bazaar-add"
     );
@@ -4765,140 +3949,6 @@
     return block;
   }
 
-  function equipmentContextTitle(pricing) {
-    const parts = [
-      pricing.plainFloor ? `Cheapest plain Item Market listing: ${formatMoney(pricing.plainFloor, true)}` : "No plain Item Market listing found",
-      pricing.plainMedian ? `Plain listing median: ${formatMoney(pricing.plainMedian, true)}` : "",
-      pricing.averagePrice ? `Torn daily average: ${formatMoney(pricing.averagePrice, true)}` : "",
-      pricing.salesMedian ? `Ended Auction House sales (30d, plain): median ${formatMoney(pricing.salesMedian, true)} over ${pricing.salesCount}` : "No plain Auction House sales in 30 days",
-      pricing.bonusFloor ? `Bonus/rarity copies list from ${formatMoney(pricing.bonusFloor, true)}; if yours has a bonus, price it on the Item Market page instead` : "",
-      `Item Market alternative: ${formatMoney(pricing.itemMarketSuggested, true)} (net ${formatMoney(pricing.itemMarketNet, true)} after ${pricing.feeBps / 100}%)`
-    ].filter(Boolean);
-    return parts.join("\n");
-  }
-
-  function equipmentContextHtml(pricing) {
-    const bits = [];
-    if (pricing.plainFloor) bits.push(`<span class="me-inline-secondary" title="Cheapest plain Item Market listing">floor ${formatMoney(pricing.plainFloor)}</span>`);
-    if (pricing.salesMedian) bits.push(`<span class="me-inline-secondary" title="Median of ${pricing.salesCount} ended Auction House sales of plain copies in 30 days">AH ${formatMoney(pricing.salesMedian)}</span>`);
-    else if (pricing.averagePrice) bits.push(`<span class="me-inline-secondary" title="Torn daily average">avg ${formatMoney(pricing.averagePrice)}</span>`);
-    if (pricing.bonusFloor) bits.push(`<span class="me-inline-secondary" title="Cheapest listing with a bonus or rarity">bonus ${formatMoney(pricing.bonusFloor)}+</span>`);
-    return bits.map((bit) => `<span class="me-inline-sep">|</span>${bit}`).join("");
-  }
-
-  function fillBazaarRowFromDetails(row, price) {
-    if (!row || !Number.isFinite(price) || price <= 0) return { priceFilled: false, quantityFilled: false };
-    const priceInput = findBazaarAddPriceInput(row);
-    if (!priceInput) return { priceFilled: false, quantityFilled: false };
-    const priceFilled = setBazaarInputValue(priceInput, price);
-    let quantityFilled = false;
-    const checkbox = findBazaarAddQuantityCheckbox(row);
-    if (checkbox?.isConnected) {
-      if (!checkbox.checked) checkbox.click();
-      quantityFilled = Boolean(checkbox.checked);
-    } else {
-      const quantityInput = findBazaarAddQuantityInput(row, priceInput);
-      if (quantityInput?.isConnected) {
-        quantityFilled = setBazaarInputValue(quantityInput, 1);
-        quantityInput.dispatchEvent(new Event("keyup", { bubbles: true, composed: true }));
-      }
-    }
-    return { priceFilled, quantityFilled };
-  }
-
-  const cardPanels = new WeakMap();
-
-  function renderEquipmentDetailCard(detail, pricing, { canFill = false, loading = false, error = "" } = {}) {
-    const panel = detail?.panel;
-    if (!panel?.isConnected) return null;
-    removeDetailCards(detail);
-    const card = document.createElement("div");
-    card.className = "me-equip-card";
-    card.dataset.meDetailKey = detail.key;
-    card.dataset.meComplete = loading ? "0" : "1";
-    // Torn's details wrapper may be a grid or flex container; make the card a
-    // full-width block regardless of the parent's layout.
-    card.style.cssText = "display:block;width:100%;box-sizing:border-box;grid-column:1 / -1;flex:0 0 100%;order:999;";
-
-    const copy = detail.copy;
-    const copyLabel = [
-      Number.isFinite(copy.quality) ? `Q ${copy.quality.toFixed(1)}%` : null,
-      copy.bonuses.length ? copy.bonuses.map((bonus) => `${bonus.title}${bonus.value ? ` ${bonus.value}%` : ""}`).join(" + ") : "plain (no bonus)",
-      copy.rarity ? copy.rarity.toUpperCase() : null
-    ].filter(Boolean).join(" · ");
-
-    if (loading) {
-      card.innerHTML = `<div class="me-equip-head"><span class="me-equip-brand">ME</span><span class="me-equip-alt">${escapeHtml(copyLabel)}</span><span class="me-equip-alt">pricing this copy...</span></div>`;
-      detailCardHost(panel).appendChild(card);
-      cardPanels.set(card, panel);
-      return card;
-    }
-
-    if (error) {
-      card.innerHTML = `<div class="me-equip-head"><span class="me-equip-brand">ME</span><span class="me-equip-alt">${escapeHtml(copyLabel)}</span></div><div class="me-equip-note me-equip-warn">${escapeHtml(error)} Collapse and reopen the details to retry.</div>`;
-      detailCardHost(panel).appendChild(card);
-      return card;
-    }
-
-    if (!pricing || !pricing.bazaarSuggested) {
-      const groupCount = pricing?.group?.count || 0;
-      card.innerHTML = `<div class="me-equip-head"><span class="me-equip-brand">ME</span><span class="me-equip-alt">${escapeHtml(copyLabel)}</span></div>
-        <div class="me-equip-note">No comparable ${escapeHtml(pricing?.groupLabel || "listings")} ${groupCount ? "" : "are on the Item Market and no recent Auction House sales were found"}. Price this copy manually or check the Item Market page for the closest rolls.</div>`;
-      detailCardHost(panel).appendChild(card);
-      cardPanels.set(card, panel);
-      return card;
-    }
-
-    const bandText = pricing.comparables.band
-      ? `${pricing.comparables.count} listings within Q ±${pricing.comparables.band}`
-      : `${pricing.comparables.count} listings in group (no quality match)`;
-    const facts = [
-      ["Comparables", `${pricing.comparables.floor ? `from ${formatMoney(pricing.comparables.floor)}, median ${formatMoney(pricing.comparables.median)}` : "-"} (${bandText})`],
-      ["AH sold (30d)", pricing.sales.count ? `median ${formatMoney(pricing.sales.median)} over ${pricing.sales.count}` : "none for this group"],
-      pricing.plain && pricing.averagePrice ? ["Torn average", formatMoney(pricing.averagePrice)] : null,
-      ["Item Market", `${formatMoney(pricing.itemMarketSuggested)} (net ${formatMoney(pricing.itemMarketNet)} after ${pricing.feeBps / 100}%)`],
-      pricing.plain && pricing.bonusFloor ? ["Bonus copies", `from ${formatMoney(pricing.bonusFloor)}`] : null
-    ].filter(Boolean);
-
-    const thin = pricing.comparables.count === 0 && pricing.sales.count < 3
-      ? `<div class="me-equip-note me-equip-warn">Thin evidence: no ${escapeHtml(pricing.groupLabel)} listings and only ${pricing.sales.count} Auction House sale(s) in 30 days. Treat this as a rough guide.</div>`
-      : "";
-    const warn = thin + (pricing.cheaperAtSuggested > 0
-      ? `<div class="me-equip-note me-equip-warn">${pricing.cheaperAtSuggested} ${escapeHtml(pricing.groupLabel)} listing(s) are cheaper than this price; they sell first.</div>`
-      : "");
-    const fill = canFill
-      ? `<button class="me-bazaar-fill-btn" type="button" aria-label="Fill Bazaar price and select this item" title="Fill price with ${escapeHtml(formatMoney(pricing.bazaarSuggested, true))} and select this item">^</button>`
-      : "";
-
-    card.innerHTML = `
-      <div class="me-equip-head">
-        <span class="me-equip-brand">ME</span>
-        <span class="me-equip-alt">${escapeHtml(copyLabel)}</span>
-        <span class="me-equip-price" title="Suggested Bazaar price for this copy: ${escapeHtml(formatMoney(pricing.bazaarSuggested, true))}">${formatMoney(pricing.bazaarSuggested)}</span>
-        ${fill}
-        <span class="me-equip-alt">${escapeHtml(pricing.bestRoute)} is the better exit</span>
-      </div>
-      <div class="me-equip-facts">${facts.map(([label, value]) => `<span class="label">${escapeHtml(label)}</span><span class="value">${escapeHtml(value)}</span>`).join("")}</div>
-      ${warn}
-      <div class="me-equip-note">Reference ${formatMoney(pricing.reference)} from ${escapeHtml(pricing.referenceSource)}, minus safety haircut, never above the cheapest comparable. Estimates, not guarantees; ADD TO BAZAAR stays manual.</div>`;
-    detailCardHost(panel).appendChild(card);
-    cardPanels.set(card, panel);
-
-    const button = card.querySelector(".me-bazaar-fill-btn");
-    if (button && detail.row) {
-      button.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        const outcome = fillBazaarRowFromDetails(detail.row, pricing.bazaarSuggested);
-        if (!outcome.priceFilled) return;
-        card.classList.add("me-applied");
-        button.title = outcome.quantityFilled ? `Filled ${formatMoney(pricing.bazaarSuggested, true)} and selected this item` : `Price filled with ${formatMoney(pricing.bazaarSuggested, true)}; select the item manually`;
-        setTimeout(() => card.classList.remove("me-applied"), 700);
-      });
-    }
-    return card;
-  }
-
   function renderInlineResult(surface, result, ownBazaar) {
     const visible = result.visible;
     if (!visible || !visible.card?.isConnected) return null;
@@ -4911,108 +3961,10 @@
       const mv = result.snapshot?.averagePrice ? `MV ${formatMoney(result.snapshot.averagePrice)}` : "no market value";
       return renderInlineHtml(visible, `<span class="me-inline-brand">ME</span><span class="me-inline-secondary" title="No Item Market listings right now; Torn's market value is shown">${mv}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">no listings</span>${stale}`, "GREY");
     }
-    if (result.equipmentRow) {
-      // Sell-side weapon/armor row: exact copy when its uid was priced,
-      // otherwise the plain/bonus floors with a hint to open the details.
-      const row = result.equipmentRow;
-      if (!row.pricing && asInt(visible.card?.dataset?.meCopyPrice, 0) > 0) {
-        // This copy was already priced from its expanded details panel;
-        // keep that price on the row instead of the generic floors.
-        return renderInlineResult(surface, { ...result, equipmentRow: null, equipment: row.summary || { plainFloor: null, bonusFloor: null } }, ownBazaar);
-      }
-      if (row.pricing && row.copy) {
-        const label = copyLabelFor(row.copy);
-        const card = visible.card;
-        if (card?.dataset) {
-          card.dataset.meCopyPrice = String(row.pricing.bazaarSuggested || "");
-          card.dataset.meCopyIm = String(row.pricing.itemMarketSuggested || "");
-          card.dataset.meCopyLabel = label;
-        }
-        if (visible.bazaarAdd) {
-          return renderBazaarAddSuggestion({
-            ...result,
-            sellForm: surface === "imsell" ? { target: row.pricing.itemMarketSuggested, net: row.pricing.itemMarketNet, feeBps: row.pricing.feeBps, copyLabel: label } : null,
-            ownBazaar: surface === "imsell" ? null : { target: row.pricing.bazaarSuggested, copyLabel: label }
-          });
-        }
-        const bz = row.pricing.bazaarSuggested ? formatMoney(row.pricing.bazaarSuggested) : "-";
-        const im = row.pricing.itemMarketSuggested ? formatMoney(row.pricing.itemMarketSuggested) : "-";
-        return renderInlineHtml(visible,
-          `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="Suggested Bazaar price for this copy (priced by uid)">BZ ${bz}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">IM ${im}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${escapeHtml(label)}</span>${stale}`,
-          "GREY"
-        );
-      }
-      const summary = row.summary || {};
-      const plain = summary.plainFloor ? formatMoney(summary.plainFloor) : (result.snapshot?.averagePrice ? `MV ${formatMoney(result.snapshot.averagePrice)}` : "-");
-      const bonusHtml = summary.bonusFloor ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Cheapest listing with a bonus or rarity">bonus ${formatMoney(summary.bonusFloor)}+</span>` : "";
-      return renderInlineHtml(visible,
-        `<span class="me-inline-brand">ME</span><span class="me-inline-secondary" title="Cheapest plain (no bonus) listing on the Item Market; this copy's own quality and bonuses are unknown until its details are opened">floor ${plain}</span>${bonusHtml}<span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Open this item's details to price this exact copy">open details to price</span>${stale}`,
-        "GREY",
-        visible.bazaarAdd ? "me-bazaar-add" : ""
-      );
-    }
-    if (result.equipment) {
-      // Weapons/armor on list pages. Sell-side surfaces (own Bazaar,
-      // inventory) get a plain-copy sell price with context; buy-side
-      // surfaces get the plain and bonus floors to compare against.
-      const summary = result.equipment;
-      const pricing = result.equipmentPricing || null;
-      const copyPrice = asInt(visible.card?.dataset?.meCopyPrice, 0);
-      const copyLabel = String(visible.card?.dataset?.meCopyLabel || "");
-      if (surface === "bazaar" && ownBazaar && visible.bazaarAdd) {
-        // Weapon rows carry no price until the copy has been priced from its
-        // expanded details panel; then that copy's value and the fill control
-        // move onto the row.
-        if (copyPrice > 0) {
-          return renderBazaarAddSuggestion({
-            ...result,
-            ownBazaar: { target: copyPrice, copyLabel }
-          });
-        }
-        return renderInlineHtml(visible,
-          `<span class="me-inline-brand">ME</span><span class="me-inline-secondary" title="Open this item's details to price this exact copy (quality and bonuses)">open details to price</span>${stale}`,
-          "GREY",
-          "me-bazaar-add"
-        );
-      }
-      if (surface === "inventory" && copyPrice > 0) {
-        const copyIm = asInt(visible.card?.dataset?.meCopyIm, 0);
-        return renderInlineHtml(visible,
-          `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="Suggested Bazaar price for this copy (${escapeHtml(copyLabel)})">BZ ${formatMoney(copyPrice)}</span>${copyIm ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary">IM ${formatMoney(copyIm)}</span>` : ""}<span class="me-inline-sep">|</span><span class="me-inline-secondary">${escapeHtml(copyLabel)}</span>${stale}`,
-          "GREY"
-        );
-      }
-      if (surface === "inventory" || (surface === "bazaar" && ownBazaar)) {
-        // Sell-side equipment without a priced copy: nothing to show. An
-        // invisible completed marker stops rescans from re-processing the row.
-        return renderInlineHtml(visible, "", "GREY", "me-hidden");
-      }
-      if (surface === "bazaar" && ownBazaar && pricing) {
-        const delta = pricing.bazaarSuggested - visible.price;
-        const state = delta > 0 ? "YELLOW" : "GREY";
-        return renderInlineHtml(visible,
-          `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="${escapeHtml(equipmentContextTitle(pricing))}">Target ${formatMoney(pricing.bazaarSuggested)}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${delta >= 0 ? "+" : ""}${formatMoney(delta)}</span>${equipmentContextHtml(pricing)}<span class="me-inline-status">${delta > 0 ? "LOW" : "OK"}</span>${stale}`,
-          state
-        );
-      }
-      if (surface === "inventory" && pricing) {
-        const bzClass = pricing.bestRoute === "Bazaar" ? "me-inline-primary" : "me-inline-secondary";
-        const imClass = pricing.bestRoute === "Item Market" ? "me-inline-primary" : "me-inline-secondary";
-        return renderInlineHtml(visible,
-          `<span class="me-inline-brand">ME</span><span class="${bzClass}" title="${escapeHtml(equipmentContextTitle(pricing))}">BZ ${formatMoney(pricing.bazaarSuggested)}</span><span class="me-inline-sep">|</span><span class="${imClass}">IM ${formatMoney(pricing.itemMarketSuggested)}</span>${equipmentContextHtml(pricing)}${stale}`,
-          "GREY"
-        );
-      }
-      const plain = summary.plainFloor ? formatMoney(summary.plainFloor) : "-";
-      const bonus = summary.bonusFloor ? formatMoney(summary.bonusFloor) : null;
-      const bonusHtml = bonus ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Cheapest listing with a bonus or rarity">bonus ${bonus}</span>` : "";
-      return renderInlineHtml(visible,
-        `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="Cheapest plain listing on the Item Market">floor ${plain}</span>${bonusHtml}${stale}`,
-        "GREY"
-      );
-    }
     if (result.unsupported) {
-      return renderInlineHtml(visible, `<span class="me-inline-brand">ME</span><span class="me-inline-secondary">unsupported equipment</span>`, "GREY");
+      // Weapons and armor are not priced: an invisible completed marker keeps
+      // rescans from touching the row again.
+      return renderInlineHtml(visible, "", "GREY", "me-hidden");
     }
 
     if ((surface === "bazaar" && ownBazaar && visible.bazaarAdd) || (surface === "imsell" && result.sellForm)) {
@@ -5020,19 +3972,28 @@
     }
 
     if (result.inventory) {
+      // Compact commodity line: best exit price per unit, owned quantity and
+      // the total at that price. Everything else lives in the tooltip.
       const estimate = result.inventory;
-      const bzValue = estimate?.routes?.bazaar ? formatMoney(estimate.routes.bazaar.suggestedPrice) : "off";
-      const imValue = formatMoney(estimate?.routes?.itemMarket?.suggestedPrice);
-      const best = estimate?.routes?.bestRoute;
-      const bzClass = best === "Bazaar" ? "me-inline-primary" : "me-inline-secondary";
-      const imClass = best === "Item Market" ? "me-inline-primary" : "me-inline-secondary";
-      const museum = estimate?.routes?.museum;
-      const setClass = best === "Museum set" ? "me-inline-primary" : "me-inline-secondary";
-      const setHtml = museum
-        ? `<span class="me-inline-sep">|</span><span class="${setClass}" title="Value implied by completing the ${escapeHtml(museum.label)} and exchanging it for points">SET ${formatMoney(museum.suggestedPrice)}</span>`
-        : "";
+      const routes = estimate.routes;
+      const snapshot = result.snapshot || {};
+      const qty = Math.max(1, asInt(estimate.quantity, 1));
+      const routeOptions = [
+        routes.bazaar ? { key: "Bazaar", label: "BZ", name: "Bazaar", unit: routes.bazaar.suggestedPrice, net: routes.bazaar.net } : null,
+        { key: "Item Market", label: "IM", name: "Item Market", unit: routes.itemMarket.suggestedPrice, net: routes.itemMarket.net },
+        routes.museum ? { key: "Museum set", label: "SET", name: routes.museum.label, unit: routes.museum.suggestedPrice, net: routes.museum.net } : null,
+        routes.shop ? { key: "Sell to shop", label: "SHOP", name: routes.shop.label, unit: routes.shop.suggestedPrice, net: routes.shop.net } : null
+      ].filter(Boolean);
+      const best = routeOptions.find((option) => option.key === routes.bestRoute) || routeOptions[0];
+      const total = best.unit * qty;
+      const title = [
+        `${best.name}: ${formatMoney(best.unit, true)} per unit, ${formatMoney(total, true)} for ${qty}`,
+        ...routeOptions.filter((option) => option !== best).map((option) => `${option.name}: ${formatMoney(option.unit, true)} per unit (net ${formatMoney(Math.floor(option.net / qty), true)} after fees)`),
+        snapshot.lowestPrice ? `Item Market floor ${formatMoney(snapshot.lowestPrice, true)}` : "",
+        snapshot.averagePrice ? `Torn value ${formatMoney(snapshot.averagePrice, true)}` : ""
+      ].filter(Boolean).join("\n");
       return renderInlineHtml(visible,
-        `<span class="me-inline-brand">ME</span><span class="${bzClass}">BZ ${bzValue}</span><span class="me-inline-sep">|</span><span class="${imClass}">IM ${imValue}</span>${setHtml}${stale}`,
+        `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="${escapeHtml(title)}">${best.label} ${formatMoney(best.unit)}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary" title="Owned quantity">x${qty}</span><span class="me-inline-sep">|</span><span class="me-inline-primary" title="Total for the ${qty} you own at ${formatMoney(best.unit, true)}">${formatMoney(total)}</span>${stale}`,
         "GREY"
       );
     }
@@ -5043,22 +4004,6 @@
       const title = `Displayed price versus Torn's official market value ${formatMoney(data.marketPrice, true)}.${Number.isFinite(data.profitPerUnit) ? ` Estimated net per unit after fees via ${data.bestRoute}: ${formatMoney(data.profitPerUnit, true)}.` : ""} Open the item for order-book analysis.`;
       return renderInlineHtml(visible,
         `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="${escapeHtml(title)}">${discount} vs MV</span><span class="me-inline-status">${data.label}</span>${stale}`,
-        data.state
-      );
-    }
-
-    if (result.auctionEquipment) {
-      const data = result.auctionEquipment;
-      const headroomText = data.headroom > 0 ? `+${formatMoney(data.headroom)}` : (Number.isFinite(data.headroom) ? formatMoney(data.headroom) : "-");
-      const title = [
-        `Max rational bid for this copy (${data.label}): ${formatMoney(data.maxBid, true)}`,
-        `Resale net used: ${formatMoney(data.bestNet, true)} (Bazaar ${formatMoney(data.pricing.bazaarSuggested, true)}, Item Market net ${formatMoney(data.pricing.itemMarketNet, true)})`,
-        data.pricing.comparableCount ? `${data.pricing.comparableCount} comparable listings` : "No comparable listings",
-        data.pricing.salesCount ? `${data.pricing.salesCount} ended Auction House sales of this group` : "No ended sales of this group in 30 days",
-        data.pricing.thinEvidence ? "Thin evidence: treat as a floor check" : ""
-      ].filter(Boolean).join("\n");
-      return renderInlineHtml(visible,
-        `<span class="me-inline-brand">ME</span><span class="me-inline-primary" title="${escapeHtml(title)}">Max ${formatMoney(data.maxBid)}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${headroomText}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${escapeHtml(data.label)}</span><span class="me-inline-status">${data.headroom > 0 ? "CONSIDER" : "PASS"}</span>${stale}`,
         data.state
       );
     }
@@ -5233,70 +4178,6 @@
     });
   }
 
-  function equipmentRowsHtml(analysis) {
-    const rows = analysis.rows.slice(0, 25);
-    if (!rows.length) return "";
-    return `<table class="me-table">
-      <thead><tr><th>Group</th><th>Q</th><th>Price</th><th>Comps</th><th>AH sold</th><th>Disc.</th><th></th></tr></thead>
-      <tbody>${rows.map((row) => `<tr class="${row.state}">
-        <td title="${escapeHtml(row.groupLabel)}">${escapeHtml(row.groupLabel)}</td>
-        <td>${Number.isFinite(row.quality) ? row.quality.toFixed(0) : "-"}</td>
-        <td title="${formatMoney(row.price, true)}">${formatMoney(row.price)}</td>
-        <td title="${row.comparableCount} comparable listings${row.qualityMatched ? " (quality matched)" : ""}">${row.comparableMedian ? `${formatMoney(row.comparableMedian)} x${row.comparableCount}` : "-"}</td>
-        <td title="${row.salesCount} ended auctions in 30 days">${row.salesMedian ? `${formatMoney(row.salesMedian)} x${row.salesCount}` : "-"}</td>
-        <td>${Number.isFinite(row.discount) ? `${(row.discount * 100).toFixed(1)}%` : "-"}</td>
-        <td><span class="me-pill ${row.state}">${CLASS_META[row.state]?.label || row.state}</span></td>
-      </tr>`).join("")}</tbody>
-    </table>`;
-  }
-
-  async function renderEquipmentItemMarket(snapshot, historyStats) {
-    const fresh = freshness(snapshot.cacheTimestamp);
-    setPanel(`<div class="me-kicker">Item Market - equipment</div><div class="me-item-name">${escapeHtml(snapshot.itemName)}</div><div class="me-note">Loading ended Auction House sales for comparables...</div>`, fresh.label);
-    const auctionSales = await loadAuctionSales(snapshot.itemId, { priority: 180 });
-    if (detectSurface() !== "itemmarket" || getItemIdFromLocation() !== snapshot.itemId) return;
-    const analysis = analyzeEquipmentListings(snapshot, { auctionSales, settings });
-    const best = analysis.best;
-    const summary = analysis.summary || {};
-    const feeBps = itemMarketFeeBps(settings);
-    const groupsHtml = analysis.groups.slice(0, 8).map((group) => `<div class="me-diag-row">${escapeHtml(group.label)}: ${group.count} listed from ${formatMoney(group.floor)} (median ${formatMoney(group.median)})${group.salesCount ? `; ${group.salesCount} AH sales, median ${formatMoney(group.salesMedian)}` : ""}</div>`).join("");
-
-    setPanel(`
-      <div class="me-kicker">Item Market - equipment comparables</div>
-      <div class="me-item-name">${escapeHtml(snapshot.itemName)}</div>
-      ${metricRows([
-        ["Listings analyzed", `${analysis.rows.length}${snapshot.depthMetrics?.totalListings > analysis.rows.length ? ` of ${snapshot.depthMetrics.totalListings}` : ""}`],
-        ["Plain floor", summary.plainFloor ? formatMoney(summary.plainFloor) : "-"],
-        ["Plain median", summary.plainMedian ? formatMoney(summary.plainMedian) : "-"],
-        ["Bonus/rarity floor", summary.bonusFloor ? formatMoney(summary.bonusFloor) : "-"],
-        ["Torn daily average", snapshot.averagePrice ? formatMoney(snapshot.averagePrice) : "-"],
-        ["AH sales (30d)", String(auctionSales.filter((sale) => sale.details).length)],
-        ["API age", `${formatAge(fresh.ageSeconds)} - ${fresh.label}`]
-      ])}
-      <div class="me-rule"></div>
-      <div class="me-kicker">Best value listing</div>
-      ${best ? `<div class="me-callout ${best.state}">
-        <div class="me-decision ${best.state}">${CLASS_META[best.state].icon} ${CLASS_META[best.state].label}</div>
-        ${metricRows([
-          ["Group", escapeHtml(best.groupLabel)],
-          ["Quality", Number.isFinite(best.quality) ? best.quality.toFixed(1) : "-"],
-          ["Price", formatMoney(best.price)],
-          ["Reference", `${formatMoney(best.reference)} (${escapeHtml(best.referenceSource)})`],
-          ["Discount", `${(best.discount * 100).toFixed(1)}%`],
-          [`Net if resold (IM ${feeBps / 100}%)`, formatMoney(best.expectedNet), best.expectedNet >= 0 ? "me-good" : "me-bad"]
-        ])}
-      </div>` : `<div class="me-note">No listing is priced meaningfully below its comparable group.</div>`}
-      ${equipmentRowsHtml(analysis)}
-      ${groupsHtml ? `<details class="me-diag"><summary>Comparable groups</summary>${groupsHtml}</details>` : ""}
-      ${auctionTimingHtml(auctionSales)}
-      ${watchControlsHtml(snapshot, null)}
-      ${panelToolbarHtml()}
-      <div class="me-note">Equipment is grouped by rarity and bonus set, quality matched within 10 points when enough listings exist. Ended Auction House sales are the only official transaction evidence. Rare rolls trade on intangibles; treat this as a floor check, not a valuation.</div>
-    `, fresh.label);
-    bindWatchControls(snapshot);
-    bindPanelToolbar();
-  }
-
   async function renderItemMarket() {
     if (ownListingsRouteActive()) {
       await renderOwnListingsPanel();
@@ -5318,11 +4199,8 @@
     try {
       const { snapshot, historyStats } = await loadSnapshot(itemId, { limit: API_DEEP_LIMIT, priority: 200 });
       if (!snapshot.supportedCommodity) {
-        if (settings.equipmentEnabled !== false && snapshot.equipment) {
-          await renderEquipmentItemMarket(snapshot, historyStats);
-          return;
-        }
-        setPanel(`<div class="me-kicker">Item Market</div><div class="me-item-name">${escapeHtml(snapshot.itemName)}</div><div class="me-callout GREY"><div class="me-decision GREY">- NOT SUPPORTED</div><div class="me-note">Enable weapon/armor comparables in settings to analyze equipment listings.</div></div>`);
+        setPanel(`<div class="me-kicker">Item Market</div><div class="me-item-name">${escapeHtml(snapshot.itemName)}</div><div class="me-callout GREY"><div class="me-decision GREY">- NOT PRICED</div><div class="me-note">Weapons and armor are not priced by Market Edge; only stackable items are.</div></div>${panelToolbarHtml()}`);
+        bindPanelToolbar();
         return;
       }
 
@@ -5458,14 +4336,7 @@
   function resultForSurface(surface, visible, snapshot, historyStats, ownBazaar, renderMeta = {}, museum = null, extras = {}) {
     const shopSell = extras?.shopSell || null;
     const salesSummary = extras?.salesSummary || null;
-    if (!snapshot?.supportedCommodity) {
-      if (settings.equipmentEnabled !== false && snapshot?.equipment && snapshot.equipmentSummary) {
-        // Buy-side surfaces get plain/bonus floors. Sell-side rows are priced
-        // only from an expanded details panel (see promoteCopyPriceToRow).
-        return { visible, snapshot, equipment: snapshot.equipmentSummary, renderMeta };
-      }
-      return { visible, snapshot, unsupported: true, renderMeta };
-    }
+    if (!snapshot?.supportedCommodity) return { visible, snapshot, unsupported: true, renderMeta };
 
     if (surface === "inventory") {
       const estimate = estimateInventoryExit({ quantity: visible.quantity, snapshot, historyStats, settings, museum, shopSell });
@@ -5614,7 +4485,6 @@
           }
         }, 650);
       }
-      await scanExpandedEquipment(surface, ownBazaar);
       return;
     }
 
@@ -5631,12 +4501,7 @@
       if (force && existing) existing.remove();
       return force || (!scanning && existing?.dataset?.meComplete !== "1");
     });
-    if (!items.length) {
-      // Every row is already annotated; an expanded details panel may still
-      // be new (opening one does not change the rows).
-      await scanExpandedEquipment(surface, ownBazaar);
-      return;
-    }
+    if (!items.length) return;
 
     if (!Store.apiKey()) {
       items.forEach((visible) => renderInlineError(visible, "Add API key in Market Edge settings"));
@@ -5673,25 +4538,7 @@
       recordSellWatch(items.filter((visible) => visible.price > 0 && !visible.bazaarAdd).map((visible) => ({ itemId: visible.itemId, name: visible.name, price: visible.price, amount: visible.quantity, venue: "Bazaar" })), "Bazaar", { prune: items.length < clamp(settings.scanMaxVisibleItems, 1, 50) });
     }
 
-    // Sell-side weapon/armor rows: when Torn exposes the copy's uid on the
-    // row, its stats come from one details batch and the exact copy is
-    // priced; otherwise the row shows the plain/bonus floors.
     const sellSideSurface = surface === "inventory" || surface === "imsell" || (surface === "bazaar" && ownBazaar);
-    let uidDetails = new Map();
-    if (sellSideSurface && settings.equipmentEnabled !== false) {
-      const uids = items
-        .filter((visible) => { const meta = metadata.get(visible.itemId); return meta && !metadataSupportsCommodity(meta); })
-        .map((visible) => { visible.uid = rowUid(visible.card); return visible.uid; })
-        .filter(Boolean);
-      if (uids.length) {
-        try {
-          uidDetails = await loadItemDetails(uids, { priority: 130 });
-        } catch (error) {
-          log("Row uid details unavailable", error.message);
-        }
-        if (detectSurface() !== surface || document.visibilityState !== "visible") return;
-      }
-    }
 
     const tasks = items.map(async (visible, index) => {
       const priority = viewportPriority(visible, index);
@@ -5703,13 +4550,9 @@
           renderInlineResult(surface, { visible, untradable: true, renderMeta: { stale: false } }, ownBazaar);
           return;
         }
-        if (meta && !metadataSupportsCommodity(meta) && settings.equipmentEnabled === false) {
+        if (meta && !metadataSupportsCommodity(meta)) {
+          // Weapons and armor are never priced: no request, hidden marker.
           renderInlineResult(surface, { visible, unsupported: true, renderMeta: { stale: false } }, ownBazaar);
-          return;
-        }
-        const sellSide = sellSideSurface;
-        if (meta && !metadataSupportsCommodity(meta) && sellSide) {
-          await annotateSellSideEquipment(surface, ownBazaar, visible, uidDetails.get(visible.uid) || null, queueGroup, priority);
           return;
         }
         const museum = museumContext.get(visible.itemId) || null;
@@ -5744,10 +4587,10 @@
         });
 
         if (!visible.card?.isConnected || detectSurface() !== surface) return;
-        // Metadata was unavailable and the order book revealed equipment on a
-        // sell-side surface: show the floors, no further requests.
-        if (bundle.snapshot?.equipment && sellSide) {
-          renderInlineResult(surface, { visible, snapshot: bundle.snapshot, equipmentRow: { summary: bundle.snapshot.equipmentSummary || {} }, renderMeta: { stale: false } }, ownBazaar);
+        // Metadata was unavailable and the order book revealed equipment:
+        // not priced, no further requests.
+        if (bundle.snapshot?.equipment) {
+          renderInlineResult(surface, { visible, snapshot: bundle.snapshot, unsupported: true, renderMeta: { stale: false } }, ownBazaar);
           return;
         }
         const result = resultForSurface(surface, visible, bundle.snapshot, bundle.historyStats, ownBazaar, {
@@ -5755,11 +4598,6 @@
           cacheAgeSeconds: bundle.cacheState?.ageSeconds
         }, museum, extras);
         renderInlineResult(surface, result, ownBazaar);
-        // Auction House equipment: price the exact copy (row stats or the
-        // listing endpoint) and derive a maximum rational bid.
-        if (surface === "auction" && bundle.snapshot?.equipment && settings.equipmentEnabled !== false) {
-          await annotateAuctionEquipment(visible, queueGroup, priority);
-        }
       } catch (error) {
         if (error?.marketEdgeCanceled) return;
         recordRuntime("row-error", `item ${visible.itemId} on ${surface}: ${error.message}`);
@@ -5774,7 +4612,6 @@
     });
 
     await Promise.allSettled(tasks);
-    await scanExpandedEquipment(surface, ownBazaar);
     const annotated = items.filter((visible) => visible.card?.querySelector?.(`.me-inline-analysis[data-me-item-id="${visible.itemId}"]`)?.dataset?.meComplete === "1").length;
     recordRuntime("scan", `${surface}: ${annotated}/${items.length} rows`, { surface, rows: items.length, annotated, ms: Date.now() - scanStartedAt });
   }
@@ -5783,72 +4620,6 @@
   // v0.4.0: Auction House equipment bids, browse-grid overlay, portfolio,
   // shop runs, travel plan, repricing workbench and sell-side watch
   // ---------------------------------------------------------------------------
-
-  async function annotateSellSideEquipment(surface, ownBazaar, visible, copy, queueGroup, priority = 0) {
-    if (!visible.card?.isConnected) return;
-    if (copy) {
-      try {
-        const [bundle, auctionSales] = await Promise.all([
-          loadSnapshot(visible.itemId, { limit: API_DEEP_LIMIT, priority, queueGroup }),
-          loadAuctionSales(visible.itemId, { priority })
-        ]);
-        if (!visible.card?.isConnected || detectSurface() !== surface) return;
-        if (bundle.snapshot?.equipment) {
-          const pricing = priceOwnedEquipment({ snapshot: bundle.snapshot, copy, auctionSales, settings });
-          if (pricing) {
-            renderInlineResult(surface, { visible, snapshot: bundle.snapshot, equipmentRow: { pricing, copy, summary: bundle.snapshot.equipmentSummary }, renderMeta: { stale: false } }, ownBazaar);
-            return;
-          }
-        }
-      } catch (error) {
-        if (error?.marketEdgeCanceled) return;
-        log("Uid pricing failed; falling back to floors", visible.itemId, error.message);
-      }
-    }
-    const bundle = await loadSnapshot(visible.itemId, {
-      limit: API_LIST_LIMIT,
-      priority,
-      queueGroup,
-      onCached: (cached) => {
-        if (!visible.card?.isConnected || detectSurface() !== surface) return;
-        renderInlineResult(surface, { visible, snapshot: cached.snapshot, equipmentRow: { summary: cached.snapshot.equipmentSummary || {} }, renderMeta: { stale: Boolean(cached.refreshing) } }, ownBazaar);
-      }
-    });
-    if (!visible.card?.isConnected || detectSurface() !== surface) return;
-    if (!(bundle.snapshot?.listings || []).length) {
-      renderInlineResult(surface, { visible, snapshot: bundle.snapshot, noListings: true, renderMeta: { stale: false } }, ownBazaar);
-      return;
-    }
-    renderInlineResult(surface, { visible, snapshot: bundle.snapshot, equipmentRow: { summary: bundle.snapshot.equipmentSummary || {} }, renderMeta: { stale: false } }, ownBazaar);
-  }
-
-  async function annotateAuctionEquipment(visible, queueGroup, priority = 0) {
-    if (!visible?.card?.isConnected) return;
-    let copy = visible.copyHint || null;
-    let listing = null;
-    if (!copy && visible.listingId) {
-      try {
-        listing = await loadAuctionListing(visible.listingId, { priority });
-        if (listing?.itemId && listing.itemId !== visible.itemId) listing = null;
-        copy = listing?.copy || null;
-      } catch (error) {
-        log("Auction listing details unavailable", visible.listingId, error.message);
-      }
-    }
-    if (!copy || !visible.card?.isConnected || detectSurface() !== "auction") return;
-    try {
-      const [bundle, auctionSales] = await Promise.all([
-        loadSnapshot(visible.itemId, { limit: API_DEEP_LIMIT, priority, queueGroup }),
-        loadAuctionSales(visible.itemId, { priority })
-      ]);
-      if (!visible.card?.isConnected || detectSurface() !== "auction") return;
-      const guidance = equipmentBidGuidance({ snapshot: bundle.snapshot, copy, auctionSales, settings, currentBid: listing?.price || visible.price });
-      if (!guidance) return;
-      renderInlineResult("auction", { visible, snapshot: bundle.snapshot, auctionEquipment: guidance, renderMeta: { stale: false } }, false);
-    } catch (error) {
-      if (!error?.marketEdgeCanceled) log("Auction equipment guidance failed", visible.itemId, error.message);
-    }
-  }
 
   // Item Market browse grid: every visible card compared with Torn's official
   // market value from one batched metadata request. No order books.
@@ -5963,7 +4734,7 @@
   // reading the page. Quick pass from market values, then order-book
   // refinement for the most valuable commodities and uid-based pricing for
   // equipment copies.
-  const portfolioState = { rows: [], refining: false, refinedIds: new Set(), pricedUids: new Set(), loadedAt: 0 };
+  const portfolioState = { rows: [], refining: false, refinedIds: new Set(), loadedAt: 0 };
 
   function portfolioRowHtml(row) {
     const unit = Number.isFinite(row.unitNet) && row.unitNet > 0 ? formatMoney(row.unitNet) : "-";
@@ -5971,10 +4742,10 @@
     const flags = [
       row.untradable ? `<span class="me-pill GREY" title="Not tradable">untradable</span>` : "",
       row.equipped ? `<span class="me-pill GREY" title="Currently equipped">equipped</span>` : "",
-      row.source === "order book" ? `<span class="me-pill GREEN" title="Valued from the live order book">book</span>` : (row.source === "comparables" ? `<span class="me-pill GREEN" title="Priced from comparable listings and ended auctions">comps</span>` : ""),
+      row.source === "order book" ? `<span class="me-pill GREEN" title="Valued from the live order book">book</span>` : "",
       row.museum ? `<span class="me-pill YELLOW" title="${escapeHtml(row.museum)}">museum</span>` : ""
     ].filter(Boolean).join(" ");
-    const name = `<a href="${itemMarketLink(row.itemId, row.name)}" style="color:inherit">${escapeHtml(row.name)}</a>${row.copyLabel ? ` <span class="me-inline-secondary">${escapeHtml(row.copyLabel)}</span>` : ""}`;
+    const name = `<a href="${itemMarketLink(row.itemId, row.name)}" style="color:inherit">${escapeHtml(row.name)}</a>`;
     return `<tr title="${escapeHtml(row.note || "")}"><td>${name} ${flags}</td><td>${row.amount.toLocaleString("en-US")}</td><td>${unit}</td><td>${escapeHtml(row.route || "-")}</td><td>${total}</td></tr>`;
   }
 
@@ -5997,11 +4768,11 @@
       </table>
       ${sorted.length > 80 ? `<div class="me-note">Showing the 80 most valuable rows of ${sorted.length}.</div>` : ""}
       <div class="me-actions">
-        <button class="me-btn me-portfolio-refine" type="button" title="Fetch order books for the most valuable commodities and price equipment copies by uid">Refine (${Math.max(1, asInt(settings.portfolioRefineRequests, PORTFOLIO_REFINE_DEFAULT))} requests)</button>
+        <button class="me-btn me-portfolio-refine" type="button" title="Fetch order books for the most valuable stackable items">Refine (${Math.max(1, asInt(settings.portfolioRefineRequests, PORTFOLIO_REFINE_DEFAULT))} requests)</button>
         <button class="me-btn me-portfolio-reload" type="button">Reload inventory</button>
       </div>
       ${panelToolbarHtml()}
-      <div class="me-note">Quick values come from Torn's official market value with a ${((clamp(settings.safetyHaircut + 0.02, 0, 0.10)) * 100).toFixed(1)}% haircut and the fee model. Refine replaces them with order-book exits (commodities) and comparable pricing per copy (weapons/armor, via each copy's uid). Torn caches the inventory selection for one hour. Nothing is listed or sold.</div>`;
+      <div class="me-note">Quick values come from Torn's official market value with a ${((clamp(settings.safetyHaircut + 0.02, 0, 0.10)) * 100).toFixed(1)}% haircut and the fee model. Refine replaces them with order-book exits. Weapons and armor are not priced. Torn caches the inventory selection for one hour. Nothing is listed or sold.</div>`;
   }
 
   async function buildPortfolioRows(items) {
@@ -6036,10 +4807,10 @@
           equipped: item.equipped,
           untradable: meta ? meta.isTradable === false : false,
           equipment: true,
-          unitNet: asInt(meta?.marketPrice, 0) ? officialExit(meta.marketPrice, settings).bazaarSuggestedPrice : null,
-          route: asInt(meta?.marketPrice, 0) ? "Bazaar (plain est.)" : "-",
-          source: "official",
-          note: "Plain-copy estimate until refined by uid."
+          unitNet: null,
+          route: "not priced",
+          source: "none",
+          note: "Weapons and armor are not priced."
         });
         return;
       }
@@ -6105,46 +4876,6 @@
         }
         render(`Refining... ${used}/${budget} requests used`);
       }
-      // Equipment copies by uid: details in batches of 25, then one deep
-      // order book and one sales request per item type.
-      const copies = portfolioState.rows.filter((row) => row.equipment && row.uid && !portfolioState.pricedUids.has(row.uid) && !row.untradable);
-      if (copies.length && used < budget) {
-        const details = await loadItemDetails(copies.map((row) => row.uid), { priority: 85 });
-        used += Math.ceil(copies.length / ITEM_DETAILS_BATCH);
-        const byItem = new Map();
-        copies.forEach((row) => {
-          if (!byItem.has(row.itemId)) byItem.set(row.itemId, []);
-          byItem.get(row.itemId).push(row);
-        });
-        for (const [itemId, group] of byItem.entries()) {
-          if (used >= budget) break;
-          try {
-            const [bundle, auctionSales] = await Promise.all([
-              loadSnapshot(itemId, { limit: API_DEEP_LIMIT, priority: 80, queueGroup: "portfolio" }),
-              loadAuctionSales(itemId, { priority: 80 })
-            ]);
-            used += 2;
-            group.forEach((row) => {
-              const copy = details.get(row.uid);
-              if (!copy) return;
-              const pricing = priceOwnedEquipment({ snapshot: bundle.snapshot, copy, auctionSales, settings });
-              portfolioState.pricedUids.add(row.uid);
-              if (!pricing) return;
-              const bazaar = asInt(pricing.bazaarSuggested, 0);
-              const im = asInt(pricing.itemMarketNet, 0);
-              row.unitNet = Math.max(bazaar, im);
-              row.route = bazaar >= im ? "Bazaar" : "Item Market";
-              row.source = "comparables";
-              row.copyLabel = copyLabelFor(copy);
-              row.note = `${pricing.comparableCount || 0} comparable listings, ${pricing.salesCount || 0} ended auctions${pricing.thinEvidence ? "; thin evidence" : ""}`;
-            });
-          } catch (error) {
-            if (error?.marketEdgeCanceled) return;
-            log("Portfolio equipment refine failed", itemId, error.message);
-          }
-          render(`Refining equipment... ${Math.min(used, budget)}/${budget} requests used`);
-        }
-      }
     } finally {
       portfolioState.refining = false;
       render(used >= budget ? `Refine budget reached (${budget}). Press Refine again for more.` : "");
@@ -6183,7 +4914,6 @@
       }
       portfolioState.rows = await buildPortfolioRows(items);
       portfolioState.refinedIds = new Set();
-      portfolioState.pricedUids = new Set();
       portfolioState.loadedAt = Date.now();
       render("Quick values ready. Refine for order-book and per-copy pricing.");
     } catch (error) {
@@ -6447,7 +5177,7 @@
     Object.entries(surfaces).forEach(([surface, bucket]) => {
       lines.push(`  ${surface}: ${bucket.scans} scans, last pass ${bucket.annotated}/${bucket.rows} rows annotated, avg ${Math.round(bucket.ms / bucket.scans)} ms, worst ${bucket.worstMs} ms`);
     });
-    lines.push(`overlays on page: ${document.querySelectorAll(".me-inline-analysis").length} (${document.querySelectorAll(".me-inline-analysis.RED").length} errors), pricing cards: ${document.querySelectorAll(".me-equip-card").length}`);
+    lines.push(`overlays on page: ${document.querySelectorAll(".me-inline-analysis").length} (${document.querySelectorAll(".me-inline-analysis.RED").length} errors)`);
     lines.push(overlayVisibilityLine());
     lines.push(`queue: ${api.scheduler.queue.length} waiting, ${api.scheduler.active} in flight, ${api.scheduler.requestTimes.length} requests in the last minute`);
     runtimeLog.filter((entry) => entry.kind !== "scan").slice(-12).forEach((entry) => {
@@ -6465,29 +5195,11 @@
       lines.push(`runtime report failed: ${error.message}`, "");
     }
     try {
-      const panels = findStatsPanels(document.body);
-      lines.push(`stats panels found: ${panels.length}`);
-      panels.slice(0, 3).forEach((panel, index) => {
-        lines.push(`--- panel ${index + 1} ancestors (innermost first)`);
-        lines.push(ancestorChain(panel, 12));
-        lines.push(`panel text: ${(panel.textContent || "").replace(/\s+/g, " ").trim().slice(0, 300)}`);
-        const previous = panel.closest("li,tr,[role='row']")?.previousElementSibling;
-        if (previous) lines.push(`previous sibling of closest row-like ancestor: ${describeNode(previous)}`);
-      });
-      const details = collectExpandedEquipmentDetails(surface);
-      lines.push("", `resolved details: ${details.length}`);
-      lines.push(`pricing cards on page: ${document.querySelectorAll(".me-equip-card").length}`);
-      document.querySelectorAll(".me-equip-card").forEach((card, index) => lines.push(`card ${index + 1} [complete=${card.dataset.meComplete}] parent: ${describeNode(card.parentElement)} text: ${(card.textContent || "").replace(/\s+/g, " ").trim().slice(0, 160)}`));
-      lines.push(`last details outcome: ${lastDetailsOutcome || "none yet"}`);
-      lines.push(`details in flight: ${detailsInFlight.size}, retry counters: ${JSON.stringify(Array.from(detailRetries.entries()))}`);
-      lines.push(`api key present: ${Boolean(Store.apiKey())}, equipment enabled: ${settings.equipmentEnabled !== false}`);
-      details.slice(0, 3).forEach((detail, index) => {
-        lines.push(`detail ${index + 1}: item ${detail.itemId}, copy ${JSON.stringify(detail.copy)}, row: ${detail.row ? describeNode(detail.row) : "none"}`);
-      });
-      const rows = surface === "bazaar" ? collectBazaarAddItems() : collectVisibleItems({ requireMoney: surface !== "inventory" });
+      lines.push(`api key present: ${Boolean(Store.apiKey())}`);
+      const rows = surface === "bazaar" ? collectBazaarAddItems() : (surface === "imsell" ? collectSellFormRows() : collectVisibleItems({ requireMoney: surface !== "inventory" }));
       lines.push("", `rows collected: ${rows.length}`);
       rows.slice(0, 3).forEach((item, index) => {
-        lines.push(`--- row ${index + 1}: item ${item.itemId} "${item.name}" uid: ${rowUid(item.card) || "none"}`);
+        lines.push(`--- row ${index + 1}: item ${item.itemId} "${item.name}" qty ${item.quantity}`);
         lines.push(ancestorChain(item.card, 6));
         lines.push(`row children: ${Array.from(item.card.children || []).slice(0, 8).map((child) => describeNode(child)).join(" | ")}`);
         const overlay = item.card.querySelector(".me-inline-analysis");
@@ -6499,160 +5211,6 @@
     return lines.join("\n");
   }
 
-  // Once a copy has been priced from its details panel, its value (and the
-  // fill control on the Bazaar add form) moves onto the row so the player can
-  // keep working from the list.
-  function promoteCopyPriceToRow(surface, ownBazaar, detail, pricing, snapshot) {
-    if (!detail?.row?.isConnected || !pricing?.bazaarSuggested) return;
-    const copy = detail.copy;
-    const label = [
-      Number.isFinite(copy.quality) ? `Q ${copy.quality.toFixed(1)}%` : null,
-      copy.bonuses.length ? copy.bonuses.map((bonus) => bonus.title).join("+") : "plain"
-    ].filter(Boolean).join(" ");
-    const items = surface === "bazaar" ? collectBazaarAddItems() : collectVisibleItems({ requireMoney: false });
-    const visible = items.find((item) => item.card === detail.row || item.card.contains(detail.row) || detail.row.contains(item.card));
-    const card = visible?.card || detail.row;
-    card.dataset.meCopyPrice = String(pricing.bazaarSuggested);
-    card.dataset.meCopyIm = String(pricing.itemMarketSuggested || "");
-    card.dataset.meCopyLabel = label;
-    if (!visible) return;
-    renderInlineResult(surface, {
-      visible,
-      snapshot,
-      equipment: snapshot.equipmentSummary || { plainFloor: null, bonusFloor: null },
-      renderMeta: { stale: false }
-    }, ownBazaar);
-  }
-
-  // Expanded item-details panels on sell-side surfaces: price the exact copy
-  // against the deep order book (limit 100) and ended Auction House sales.
-  function removeDetailCards(detailOrKey) {
-    let card = findDetailCard(detailOrKey);
-    while (card) {
-      card.remove();
-      card = findDetailCard(detailOrKey);
-    }
-  }
-
-  // Torn keeps the details container when a panel collapses; the card must
-  // not outlive the stats block it was attached to.
-  function cleanupOrphanedDetailCards(surface) {
-    const cards = document.querySelectorAll(".me-equip-card");
-    if (!cards.length) return;
-    let openKeys = null;
-    try {
-      openKeys = new Set(collectExpandedEquipmentDetails(surface, { resolveRows: false }).map((detail) => detail.key));
-    } catch {
-      openKeys = null;
-    }
-    cards.forEach((card) => {
-      const panel = cardPanels.get(card);
-      const panelAlive = panel?.isConnected && QUALITY_PATTERN.test(panel.textContent || "");
-      const keyOpen = openKeys ? openKeys.has(card.dataset.meDetailKey) : panelAlive;
-      if (!panelAlive && !keyOpen) card.remove();
-    });
-  }
-
-
-  let lastDetailsOutcome = "";
-  const detailsInFlight = new Set();
-
-  // Re-find a panel by key after an await: React may have re-rendered the
-  // details block while the API request was pending.
-  function relocateDetail(surface, detail) {
-    if (detail.panel.isConnected) return detail;
-    const candidates = collectExpandedEquipmentDetails(surface);
-    // Exact key first; otherwise the same item whose panel is still open
-    // (bonus/quality text may be mid-render when React swaps the block).
-    return candidates.find((candidate) => candidate.key === detail.key)
-      || candidates.find((candidate) => candidate.itemId === detail.itemId && candidate.copy.quality === detail.copy.quality)
-      || candidates.find((candidate) => candidate.itemId === detail.itemId)
-      || null;
-  }
-
-  const detailRetries = new Map();
-
-  // Transient failures (panel swapped mid-request, surface briefly undetected)
-  // get a few delayed retries; opening the details again always resets.
-  function scheduleDetailRetry(surface, ownBazaar, key, reason) {
-    const attempts = (detailRetries.get(key) || 0) + 1;
-    detailRetries.set(key, attempts);
-    lastDetailsOutcome = `${reason}; retry ${attempts}/3`;
-    if (attempts > 3) return;
-    setTimeout(() => {
-      if (document.visibilityState !== "visible" || detectSurface() !== surface) return;
-      scanExpandedEquipment(surface, ownBazaar).catch((error) => log("Details retry failed", error.message));
-    }, 1200 * attempts);
-  }
-
-  async function scanExpandedEquipment(surface, ownBazaar) {
-    cleanupOrphanedDetailCards(surface);
-    if (settings.equipmentEnabled === false) return;
-    const sellSide = surface === "inventory" || (surface === "bazaar" && ownBazaar);
-    if (!sellSide || !Store.apiKey()) return;
-    let details = [];
-    try {
-      details = collectExpandedEquipmentDetails(surface);
-    } catch (error) {
-      lastDetailsOutcome = `panel scan failed: ${error.message}`;
-      log("Details panel scan failed", error.message);
-      return;
-    }
-    details = details.filter((detail) => {
-      if (detailsInFlight.has(detail.key)) return false;
-      const card = findDetailCard(detail);
-      return !(card && card.dataset.meComplete === "1");
-    });
-    if (!details.length) return;
-
-    await Promise.allSettled(details.map(async (initial) => {
-      let detail = initial;
-      detailsInFlight.add(detail.key);
-      try {
-        renderEquipmentDetailCard(detail, null, { loading: true });
-        // Details requests use their own queue group so list-scan
-        // cancellations (frequent on the inventory page) cannot kill them.
-        const bundle = await loadSnapshot(detail.itemId, { limit: API_DEEP_LIMIT, priority: 180, queueGroup: "details" });
-        if (detectSurface() !== surface) {
-          scheduleDetailRetry(surface, ownBazaar, initial.key, "surface changed during pricing");
-          return;
-        }
-        detail = relocateDetail(surface, detail);
-        if (!detail) {
-          scheduleDetailRetry(surface, ownBazaar, initial.key, "details panel disappeared before pricing");
-          return;
-        }
-        if (!bundle.snapshot.equipment) {
-          renderEquipmentDetailCard(detail, null, { error: "Torn lists this item without stats; the commodity model applies." });
-          lastDetailsOutcome = `item ${detail.itemId} is not equipment`;
-          return;
-        }
-        const auctionSales = await loadAuctionSales(detail.itemId, { priority: 170 });
-        if (detectSurface() !== surface) {
-          scheduleDetailRetry(surface, ownBazaar, initial.key, "surface changed during pricing");
-          return;
-        }
-        detail = relocateDetail(surface, detail);
-        if (!detail) {
-          scheduleDetailRetry(surface, ownBazaar, initial.key, "details panel disappeared before rendering");
-          return;
-        }
-        const pricing = priceOwnedEquipment({ snapshot: bundle.snapshot, copy: detail.copy, auctionSales, settings });
-        renderEquipmentDetailCard(detail, pricing, { canFill: surface === "bazaar" && Boolean(detail.row) });
-        promoteCopyPriceToRow(surface, ownBazaar, detail, pricing, bundle.snapshot);
-        detailRetries.delete(initial.key);
-        lastDetailsOutcome = `priced item ${detail.itemId}: ${pricing?.bazaarSuggested ? formatMoney(pricing.bazaarSuggested, true) : "no comparables"}`;
-      } catch (error) {
-        const message = describeApiError(error, { feature: "Copy pricing" });
-        lastDetailsOutcome = `pricing failed for item ${detail.itemId}: ${message}`;
-        log("Details pricing failed", detail.itemId, message);
-        const current = relocateDetail(surface, detail);
-        if (current) renderEquipmentDetailCard(current, null, { error: message });
-      } finally {
-        detailsInFlight.delete(initial.key);
-      }
-    }));
-  }
 
   // ---------------------------------------------------------------------------
   // Own Item Market listings panel (Limited access key)
@@ -7073,18 +5631,11 @@
         if (itemId) entries.add(`${itemId}@${listRowIdentity(card)}`);
       });
     }
-    if ((surface === "bazaar" || surface === "inventory" || surface === "imsell") && /Quality/i.test(document.body?.textContent || "")) {
-      try {
-        collectExpandedEquipmentDetails(surface, { resolveRows: false }).forEach((detail) => entries.add(`detail:${detail.key}@${listRowIdentity(detail.panel)}`));
-      } catch {
-        // Details detection is best effort.
-      }
-    }
     // The signature only needs to notice structural change, so it works on
     // the identity nodes themselves; row/card resolution (which reads
     // innerText and forces layout) is left to the scan.
     document.querySelectorAll(itemIdentitySelector()).forEach((node) => {
-      if (node.closest?.("#market-edge-root,.me-inline-analysis,.me-equip-card")) return;
+      if (node.closest?.("#market-edge-root,.me-inline-analysis")) return;
       const itemId = itemIdFromElement(node);
       if (!itemId) return;
       entries.add(`${itemId}@${listRowIdentity(node)}`);
@@ -7309,8 +5860,6 @@
       renderOwnListingsPanel,
       renderWatchlistPanel,
       scanVisibleSurface,
-      scanExpandedEquipment,
-      collectExpandedEquipmentDetails,
       listSurfaceSignature,
       inventoryListMarker,
       watchTick,
@@ -7323,16 +5872,13 @@
       renderShopRunsPanel,
       renderTravelPlanPanel,
       scanBrowseGrid,
-      annotateAuctionEquipment,
       recordSellWatch,
       sellWatchTick,
       fillAllVisiblePrices,
       collectOwnListingRows,
       collectSellFormRows,
-      rowUid,
       fillOwnListingOnPage,
       loadInventory,
-      loadItemDetails,
       loadCityShops,
       loadForeignCatalog,
       currentCityShopName,

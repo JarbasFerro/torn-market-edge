@@ -6,6 +6,19 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-09
+
+### Removed
+
+- **All weapon and armor pricing.** Comparable groups, expanded-details pricing cards, per-copy pricing by uid, Auction House bid guidance for equipment, the equipment Item Market panel and the "Weapon/armor comparables" setting are gone. Equipment rows on every surface receive only an invisible completed marker: no request is made and nothing is shown. The Item Market item page says "NOT PRICED" for weapons and armor. Reason: the comparables were not reliable enough to act on.
+- The `/torn/{uids}/itemdetails` and `/market/{id}/auctionhouselisting` endpoints are no longer called; the per-uid details cache is no longer written.
+
+### Changed
+
+- **Compact commodity line on inventory rows.** Each stackable item now shows one short line: best exit route, price per unit, the quantity you own and the total at that price (for example `ME BZ $820k | x10 | $8.20m`). The other routes, floor and Torn value moved to the tooltip.
+- Bazaar add and Item Market sell rows show the total for the owned quantity next to the suggested price.
+- The page structure report no longer lists stats panels or pricing cards.
+
 ## [0.4.4] - 2026-09-09
 
 ### Fixed

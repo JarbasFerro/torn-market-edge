@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.4.4
+// @version      0.5.0
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.4.4",
+    version: "0.5.0",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -63,15 +63,12 @@
   const WATCHLIST_MAX_ITEMS = 25;
   const WATCHLIST_ALERT_COOLDOWN_MS = 10 * ONE_MINUTE_MS;
   const OWN_LISTINGS_MAX = 25;
-  // v0.4.4 surfaces: portfolio, shop runs, travel planner, auction guidance.
+  // v0.5.0 surfaces: portfolio, shop runs, travel planner, auction guidance.
   const INVENTORY_TTL_MS = 60 * ONE_MINUTE_MS;
   const INVENTORY_PAGE_LIMIT = 250;
   const INVENTORY_MAX_PAGES = 8;
-  const ITEM_DETAILS_BATCH = 25;
-  const ITEM_DETAILS_MAX_CACHED = 400;
   const CITY_SHOPS_TTL_MS = 5 * ONE_MINUTE_MS;
   const FOREIGN_CATALOG_TTL_MS = 6 * 60 * ONE_MINUTE_MS;
-  const AUCTION_LISTING_TTL_MS = 5 * ONE_MINUTE_MS;
   const SELL_WATCH_MAX_ITEMS = 40;
   const SELL_WATCH_ALERT_COOLDOWN_MS = 30 * ONE_MINUTE_MS;
   const PORTFOLIO_REFINE_DEFAULT = 30;
@@ -101,7 +98,6 @@
     pricingRules: "marketEdge.pricingRules.v1",
     sellWatch: "marketEdge.sellWatch.v1",
     inventory: "marketEdge.inventory.v1",
-    itemDetails: "marketEdge.itemDetails.v1",
     cityShops: "marketEdge.cityShops.v1",
     foreignCatalog: "marketEdge.foreignCatalog.v1",
     itemMetaPrefix: "marketEdge.itemMeta.v2."
@@ -122,7 +118,6 @@
     anonymousListing: false,
     anonymousFeeWaived: false,
     museumSetsEnabled: true,
-    equipmentEnabled: true,
     watchlistEnabled: true,
     watchlistIntervalSeconds: 60,
     minimumGreenConfidence: "MEDIUM",
@@ -165,25 +160,6 @@
   const MUSEUM_NAME_SETS = Object.freeze([
     Object.freeze({ key: "arrowhead", label: "Arrowhead set", pattern: /arrowhead/i, size: 6, points: 25 })
   ]);
-
-  // Weapon/armor bonus names as Torn labels them. Used to recognise bonus
-  // icons in an expanded item-details panel; unknown names are ignored.
-  const KNOWN_BONUSES = Object.freeze([
-    "Achilles", "Assassinate", "Backstab", "Berserk", "Bleed", "Blindfire", "Bloodlust", "Burn", "Comeback",
-    "Conserve", "Cripple", "Crusher", "Cupid", "Deadeye", "Deadly", "Demoralize", "Disarm", "Double-edged",
-    "Double Tap", "Empower", "Eviscerate", "Execute", "Expose", "Finale", "Focus", "Freeze", "Frenzy", "Fury",
-    "Grace", "Hazardous", "Home Run", "Impenetrable", "Impregnable", "Insurmountable", "Invulnerable", "Irradiate",
-    "Lacerate", "Motivation", "Paralyze", "Parry", "Penetrate", "Plunder", "Poison", "Powerful", "Proficience",
-    "Puncture", "Quicken", "Rage", "Revitalize", "Roshambo", "Shock", "Sleep", "Slow", "Smash", "Smurf",
-    "Specialist", "Spray", "Stricken", "Storm", "Stun", "Suppress", "Sure Shot", "Throttle", "Toxin", "Warlord",
-    "Weaken", "Wind-up", "Wither"
-  ]);
-
-  // Torn renders stat labels and values in separate nodes, sometimes with the
-  // colon supplied by CSS, so the patterns tolerate a missing colon and a
-  // short run of icon/whitespace characters before the number.
-  const QUALITY_PATTERN = /Quality\s*:?\s*[^\d%]{0,24}([\d.]+)\s*%/i;
-  const STATS_PATTERN = /Damage|Accuracy|Armou?r/i;
 
   const KEY_ACCESS_RANK = Object.freeze({
     "Public Only": 1,
@@ -284,46 +260,6 @@
     return /weapon|armor|armour/i.test(String(type || ""));
   }
 
-  function bonusSignature(details) {
-    const bonuses = Array.isArray(details?.bonuses) ? details.bonuses : [];
-    return bonuses
-      .map((bonus) => String(bonus?.title || bonus?.name || "").trim().toLowerCase())
-      .filter(Boolean)
-      .sort()
-      .join("+");
-  }
-
-  function equipmentGroupKey(details) {
-    const rarity = String(details?.rarity || "plain").toLowerCase();
-    const signature = bonusSignature(details);
-    return `${rarity}|${signature || "none"}`;
-  }
-
-  function summarizeEquipmentListings(listings) {
-    const detailed = listings.filter((row) => row.itemDetails && typeof row.itemDetails === "object");
-    if (!detailed.length) return null;
-    const plain = detailed.filter((row) => !bonusSignature(row.itemDetails) && !row.itemDetails.rarity);
-    const bonus = detailed.filter((row) => bonusSignature(row.itemDetails) || row.itemDetails.rarity);
-    const groups = new Map();
-    detailed.forEach((row) => {
-      const key = equipmentGroupKey(row.itemDetails);
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(row.price);
-    });
-    return {
-      listingCount: detailed.length,
-      plainFloor: plain.length ? Math.min(...plain.map((row) => row.price)) : null,
-      plainMedian: median(plain.map((row) => row.price)),
-      bonusFloor: bonus.length ? Math.min(...bonus.map((row) => row.price)) : null,
-      groups: Array.from(groups.entries()).map(([key, prices]) => ({
-        key,
-        count: prices.length,
-        floor: Math.min(...prices),
-        median: median(prices)
-      }))
-    };
-  }
-
   function robustMarketAnchor(listings) {
     const sorted = listings
       .filter((row) => Number.isFinite(row.price) && row.price > 0 && Number.isFinite(row.quantity) && row.quantity > 0)
@@ -395,10 +331,9 @@
       medianListingPrice: median(prices),
       calculatedMarketAnchor: robustMarketAnchor(listings),
       // The commodity model only applies to fungible stackable items.
-      // Equipment is valued separately through comparable-group analysis.
+      // Weapons and armor are never priced.
       supportedCommodity: !equipment,
-      equipment,
-      equipmentSummary: equipment ? summarizeEquipmentListings(listings) : null
+      equipment
     };
   }
 

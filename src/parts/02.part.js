@@ -33,370 +33,6 @@
       .sort((a, b) => b.timestamp - a.timestamp);
   }
 
-  function equipmentQuality(details) {
-    const quality = Number(details?.stats?.quality);
-    return Number.isFinite(quality) ? quality : null;
-  }
-
-  function describeEquipmentGroup(key) {
-    const [rarity, signature] = String(key || "plain|none").split("|");
-    const bonuses = signature && signature !== "none" ? signature.split("+") : [];
-    const rarityLabel = rarity && rarity !== "plain" ? rarity.toUpperCase() : "Plain";
-    return bonuses.length ? `${rarityLabel} ${bonuses.join(" + ")}` : rarityLabel;
-  }
-
-  // Comparable-group valuation for weapons and armor. Listings are grouped by
-  // rarity + bonus signature; quality is matched softly (+/-10) when the group
-  // is deep enough. Ended Auction House sales of the same group are the only
-  // official transaction evidence and are used as a cap on the comparable
-  // median. Nothing here is a guarantee: rare bonus rolls trade on intangibles.
-  function analyzeEquipmentListings(snapshot, { auctionSales = [], settings = {} } = {}) {
-    const listings = (snapshot?.listings || []).filter((row) => row.itemDetails && typeof row.itemDetails === "object");
-    if (!listings.length) return { rows: [], groups: [], best: null, summary: null };
-
-    const minimumDiscount = Number.isFinite(settings.minimumDiscount) ? settings.minimumDiscount : DEFAULTS.minimumDiscount;
-    const haircut = clamp(Number.isFinite(settings.safetyHaircut) ? settings.safetyHaircut : DEFAULTS.safetyHaircut, 0, 0.10);
-    const feeBps = itemMarketFeeBps(settings);
-
-    const groupMap = new Map();
-    listings.forEach((row) => {
-      const key = equipmentGroupKey(row.itemDetails);
-      if (!groupMap.has(key)) groupMap.set(key, []);
-      groupMap.get(key).push(row);
-    });
-
-    const salesMap = new Map();
-    (auctionSales || []).forEach((sale) => {
-      if (!sale?.details || sale.price <= 0) return;
-      if (snapshot?.itemId && sale.itemId && sale.itemId !== snapshot.itemId) return;
-      const key = equipmentGroupKey(sale.details);
-      if (!salesMap.has(key)) salesMap.set(key, []);
-      salesMap.get(key).push(sale.price);
-    });
-
-    const rows = listings.map((row) => {
-      const key = equipmentGroupKey(row.itemDetails);
-      const quality = equipmentQuality(row.itemDetails);
-      const group = groupMap.get(key) || [];
-      const othersAll = group.filter((other) => other !== row);
-      const qualityMatched = Number.isFinite(quality)
-        ? othersAll.filter((other) => {
-          const otherQuality = equipmentQuality(other.itemDetails);
-          return Number.isFinite(otherQuality) && Math.abs(otherQuality - quality) <= 10;
-        })
-        : [];
-      const comparables = qualityMatched.length >= 3 ? qualityMatched : othersAll;
-      const compMedian = median(comparables.map((other) => other.price));
-      const sales = salesMap.get(key) || [];
-      const salesMedian = median(sales);
-
-      let reference = null;
-      let referenceSource = "none";
-      if (Number.isFinite(compMedian) && Number.isFinite(salesMedian)) {
-        reference = Math.min(compMedian, Math.round(salesMedian * 1.05));
-        referenceSource = "listings + AH sales";
-      } else if (Number.isFinite(compMedian)) {
-        reference = compMedian;
-        referenceSource = "comparable listings";
-      } else if (Number.isFinite(salesMedian)) {
-        reference = salesMedian;
-        referenceSource = "AH sales";
-      }
-
-      const discount = reference ? 1 - row.price / reference : null;
-      const resalePrice = reference ? Math.max(1, Math.floor(reference * (1 - haircut))) : null;
-      const expectedNet = resalePrice ? grossToNet(resalePrice, feeBps) - row.price : null;
-      const evidence = comparables.length + sales.length;
-
-      let state = "GREY";
-      if (Number.isFinite(discount) && Number.isFinite(expectedNet) && expectedNet > 0 && discount >= minimumDiscount) {
-        const strong = comparables.length >= 4 && (sales.length === 0 || salesMedian >= row.price * (1 + minimumDiscount));
-        state = strong ? "GREEN" : evidence >= 2 ? "YELLOW" : "GREY";
-      } else if (Number.isFinite(expectedNet) && expectedNet < 0 && Number.isFinite(discount) && discount < 0) {
-        state = "RED";
-      }
-
-      return {
-        price: row.price,
-        quantity: row.quantity,
-        uid: row.itemDetails.uid ?? null,
-        groupKey: key,
-        groupLabel: describeEquipmentGroup(key),
-        rarity: row.itemDetails.rarity ?? null,
-        bonuses: Array.isArray(row.itemDetails.bonuses) ? row.itemDetails.bonuses.map((bonus) => ({
-          title: String(bonus?.title || ""),
-          value: asInt(bonus?.value, 0)
-        })) : [],
-        quality,
-        qualityMatched: qualityMatched.length >= 3,
-        comparableCount: comparables.length,
-        comparableMedian: Number.isFinite(compMedian) ? Math.round(compMedian) : null,
-        salesCount: sales.length,
-        salesMedian: Number.isFinite(salesMedian) ? Math.round(salesMedian) : null,
-        reference,
-        referenceSource,
-        discount,
-        resalePrice,
-        expectedNet,
-        state
-      };
-    });
-
-    const groups = Array.from(groupMap.entries()).map(([key, members]) => {
-      const prices = members.map((member) => member.price);
-      const sales = salesMap.get(key) || [];
-      return {
-        key,
-        label: describeEquipmentGroup(key),
-        count: members.length,
-        floor: Math.min(...prices),
-        median: Math.round(median(prices)),
-        salesCount: sales.length,
-        salesMedian: sales.length ? Math.round(median(sales)) : null
-      };
-    }).sort((a, b) => b.count - a.count || a.floor - b.floor);
-
-    const stateRank = { GREEN: 4, YELLOW: 3, GREY: 2, RED: 1 };
-    const best = rows
-      .filter((row) => row.state === "GREEN" || row.state === "YELLOW")
-      .sort((a, b) => (stateRank[b.state] - stateRank[a.state]) || (b.discount - a.discount))[0] || null;
-
-    return { rows, groups, best, summary: snapshot?.equipmentSummary || summarizeEquipmentListings(listings) };
-  }
-
-  // Sell-side pricing for a weapon/armor the player owns when its individual
-  // stats are unknown (Bazaar add form, inventory). Assumes a plain roll: the
-  // reference is the lowest of the plain listing median, Torn's daily average
-  // and ended Auction House sales of plain copies, and the sell price never
-  // exceeds the current plain Item Market floor because buyers compare there.
-  function equipmentSellPricing(snapshot, settings = {}, auctionSales = []) {
-    const summary = snapshot?.equipmentSummary;
-    if (!summary) return null;
-    const plainSales = (auctionSales || [])
-      .filter((sale) => sale?.details && !bonusSignature(sale.details) && !sale.details.rarity)
-      .filter((sale) => !snapshot?.itemId || !sale.itemId || sale.itemId === snapshot.itemId)
-      .map((sale) => sale.price)
-      .filter((price) => price > 0);
-    const salesMedian = median(plainSales);
-    const averagePrice = asInt(snapshot?.averagePrice, 0) || null;
-    const candidates = [
-      summary.plainMedian,
-      averagePrice ? Math.round(averagePrice * 1.05) : null,
-      Number.isFinite(salesMedian) ? Math.round(salesMedian * 1.05) : null
-    ].filter((value) => Number.isFinite(value) && value > 0);
-    const reference = candidates.length ? Math.min(...candidates) : (summary.plainFloor || null);
-    if (!reference) return null;
-
-    const haircut = clamp(Number.isFinite(settings.safetyHaircut) ? settings.safetyHaircut : DEFAULTS.safetyHaircut, 0, 0.10);
-    const bazaarDiscount = clamp(Number.isFinite(settings.bazaarDiscount) ? settings.bazaarDiscount : DEFAULTS.bazaarDiscount, 0, 0.5);
-    const undercut = Math.max(0, asInt(settings.itemMarketUndercut ?? DEFAULTS.itemMarketUndercut));
-    const conservative = Math.max(1, Math.floor(reference * (1 - haircut)));
-    const floorCapped = summary.plainFloor ? Math.min(conservative, summary.plainFloor) : conservative;
-    const bazaarSuggested = Math.max(1, Math.floor(floorCapped * (1 - bazaarDiscount)));
-    const itemMarketSuggested = Math.max(1, floorCapped - undercut);
-    const feeBps = itemMarketFeeBps(settings);
-    const itemMarketNet = grossToNet(itemMarketSuggested, feeBps);
-    const bazaarNet = settings.bazaarEnabled === false ? Number.NEGATIVE_INFINITY : bazaarSuggested;
-
-    return {
-      assumesPlain: true,
-      plainFloor: summary.plainFloor || null,
-      plainMedian: summary.plainMedian ? Math.round(summary.plainMedian) : null,
-      plainListings: summary.listingCount || 0,
-      bonusFloor: summary.bonusFloor || null,
-      averagePrice,
-      salesMedian: Number.isFinite(salesMedian) ? Math.round(salesMedian) : null,
-      salesCount: plainSales.length,
-      reference,
-      conservative,
-      bazaarSuggested,
-      itemMarketSuggested,
-      itemMarketNet,
-      feeBps,
-      bestRoute: bazaarNet >= itemMarketNet ? "Bazaar" : "Item Market"
-    };
-  }
-
-  function normalizeBonusName(value) {
-    return String(value || "").toLowerCase().replace(/[^a-z]/g, "");
-  }
-
-  // Parse the stats of one owned copy from Torn's expanded item-details
-  // panel. `text` is the panel text; `hints` are attribute values (title,
-  // alt, aria-label, class names) collected from the panel's icons, which is
-  // where bonus names and rarity colours live.
-  function parseEquipmentDetailsText(text, hints = []) {
-    const source = String(text || "").replace(/\s+/g, " ");
-    const number = (pattern) => {
-      const match = source.match(pattern);
-      return match ? Number(match[1]) : null;
-    };
-    const quality = number(QUALITY_PATTERN);
-    const damage = number(/Damage\s*:?\s*[^\d%]{0,24}([\d.]+)/i);
-    const accuracy = number(/Accuracy\s*:?\s*[^\d%]{0,24}([\d.]+)/i);
-    const armor = number(/Armou?r\s*:?\s*[^\d%]{0,24}([\d.]+)/i);
-    if (!Number.isFinite(quality) && !Number.isFinite(damage) && !Number.isFinite(armor)) return null;
-
-    const known = new Map(KNOWN_BONUSES.map((name) => [normalizeBonusName(name), name]));
-    const bonuses = [];
-    const seen = new Set();
-    let rarity = null;
-    const addBonus = (name, value) => {
-      const existing = bonuses.find((bonus) => bonus.title === name);
-      if (existing) {
-        if (value && !existing.value) existing.value = value;
-        return;
-      }
-      bonuses.push({ title: name, value: value || 0 });
-      seen.add(name);
-    };
-    const matchKnown = (raw) => {
-      const normalized = normalizeBonusName(raw);
-      for (const [key, name] of known.entries()) {
-        if (normalized === key || (normalized.includes(key) && key.length >= 5)) return name;
-      }
-      return null;
-    };
-
-    // Text form, as Torn's item panel shows it: "Bonus: 24% Proficience" and
-    // "Quality: 124.26% Yellow". Several bonuses appear as repeated rows or a
-    // comma-separated list.
-    const bonusText = /Bonus(?:es)?\s*:?\s*([^]*?)(?=\s*(?:Bonus(?:es)?\s*:|Quality|Damage|Accuracy|Armou?r|Rate of Fire|Stealth|Caliber|Ammo|Buy|Sell|Value|Circ|$))/gi;
-    let bonusMatch = bonusText.exec(source);
-    while (bonusMatch) {
-      bonusMatch[1].split(/,|\band\b/i).forEach((chunk) => {
-        const valueMatch = chunk.match(/(\d+)\s*%/);
-        const name = matchKnown(chunk.replace(/\d+\s*%/g, ""));
-        if (name) addBonus(name, valueMatch ? Number(valueMatch[1]) : 0);
-      });
-      bonusMatch = bonusText.exec(source);
-    }
-    const rarityText = source.match(/Quality\s*:?\s*[^%]{0,30}%\s*(Yellow|Orange|Red)\b/i);
-    if (rarityText) rarity = rarityText[1].toLowerCase();
-
-    // Icon form: titles, alt text and class names of bonus icons.
-    hints.forEach((hint) => {
-      const raw = String(hint || "");
-      const lowered = raw.toLowerCase();
-      if (!rarity || rarity === "yellow") {
-        if (/\bred\b/.test(lowered)) rarity = "red";
-        else if (/\borange\b/.test(lowered)) rarity = "orange";
-        else if (/\byellow\b/.test(lowered) && !rarity) rarity = "yellow";
-      }
-      const name = matchKnown(raw);
-      if (name) {
-        const valueMatch = raw.match(/(\d+)\s*%/);
-        addBonus(name, valueMatch ? Number(valueMatch[1]) : 0);
-      }
-    });
-    return {
-      quality: Number.isFinite(quality) ? quality : null,
-      damage: Number.isFinite(damage) ? damage : null,
-      accuracy: Number.isFinite(accuracy) ? accuracy : null,
-      armor: Number.isFinite(armor) ? armor : null,
-      bonuses,
-      rarity: bonuses.length ? rarity : null
-    };
-  }
-
-  // Price one owned weapon/armor whose stats are known (expanded details
-  // panel). Comparables come from the same rarity + bonus group of the deep
-  // order book, quality matched within +/-10 (then +/-20, then the whole
-  // group). Ended Auction House sales of the same group are transaction
-  // evidence. The sell price never exceeds the cheapest comparable listing.
-  function priceOwnedEquipment({ snapshot, copy, auctionSales = [], settings = {} }) {
-    if (!snapshot || !copy) return null;
-    const details = { bonuses: copy.bonuses || [], rarity: copy.rarity || null };
-    const groupKey = equipmentGroupKey(details);
-    const plain = !bonusSignature(details) && !details.rarity;
-    const listings = (snapshot.listings || []).filter((row) => row.itemDetails && equipmentGroupKey(row.itemDetails) === groupKey);
-    const quality = Number.isFinite(copy.quality) ? copy.quality : null;
-
-    let comparables = listings;
-    let band = null;
-    if (quality !== null) {
-      for (const width of [10, 20]) {
-        const matched = listings.filter((row) => {
-          const rowQuality = equipmentQuality(row.itemDetails);
-          return Number.isFinite(rowQuality) && Math.abs(rowQuality - quality) <= width;
-        });
-        if (matched.length >= 3) {
-          comparables = matched;
-          band = width;
-          break;
-        }
-      }
-    }
-
-    const compPrices = comparables.map((row) => row.price);
-    const compFloor = compPrices.length ? Math.min(...compPrices) : null;
-    const compMedian = median(compPrices);
-    const groupPrices = listings.map((row) => row.price);
-    const groupFloor = groupPrices.length ? Math.min(...groupPrices) : null;
-    const groupMedian = median(groupPrices);
-    const sales = (auctionSales || [])
-      .filter((sale) => sale?.details && sale.price > 0 && (!sale.itemId || !snapshot.itemId || sale.itemId === snapshot.itemId))
-      .filter((sale) => equipmentGroupKey(sale.details) === groupKey)
-      .map((sale) => sale.price);
-    const salesMedian = median(sales);
-    const averagePrice = asInt(snapshot.averagePrice, 0) || null;
-
-    const candidates = [
-      compMedian,
-      Number.isFinite(salesMedian) ? Math.round(salesMedian * 1.05) : null,
-      plain && averagePrice ? Math.round(averagePrice * 1.05) : null
-    ].filter((value) => Number.isFinite(value) && value > 0);
-    const reference = candidates.length ? Math.min(...candidates) : (compFloor || groupFloor || null);
-    const referenceSource = !candidates.length
-      ? (reference ? "cheapest listing only" : "none")
-      : [Number.isFinite(compMedian) ? "listings" : null, Number.isFinite(salesMedian) ? "AH sales" : null, plain && averagePrice ? "Torn average" : null].filter(Boolean).join(" + ");
-
-    const summary = snapshot.equipmentSummary || summarizeEquipmentListings(snapshot.listings || []);
-    if (!reference) {
-      return {
-        groupKey, groupLabel: describeEquipmentGroup(groupKey), plain, quality, bonuses: details.bonuses, rarity: details.rarity,
-        comparables: { count: 0, floor: null, median: null, band: null }, group: { count: listings.length, floor: groupFloor, median: groupMedian ? Math.round(groupMedian) : null },
-        sales: { count: sales.length, median: null }, averagePrice, reference: null, referenceSource: "none",
-        bazaarSuggested: null, itemMarketSuggested: null, itemMarketNet: null, feeBps: itemMarketFeeBps(settings), bestRoute: null,
-        cheaperAtSuggested: null, bonusFloor: plain ? summary?.bonusFloor || null : null
-      };
-    }
-
-    const haircut = clamp(Number.isFinite(settings.safetyHaircut) ? settings.safetyHaircut : DEFAULTS.safetyHaircut, 0, 0.10);
-    const bazaarDiscount = clamp(Number.isFinite(settings.bazaarDiscount) ? settings.bazaarDiscount : DEFAULTS.bazaarDiscount, 0, 0.5);
-    const undercut = Math.max(0, asInt(settings.itemMarketUndercut ?? DEFAULTS.itemMarketUndercut));
-    const conservative = Math.max(1, Math.floor(reference * (1 - haircut)));
-    const cap = compFloor ? Math.min(conservative, compFloor) : conservative;
-    const bazaarSuggested = Math.max(1, Math.floor(cap * (1 - bazaarDiscount)));
-    const itemMarketSuggested = Math.max(1, cap - undercut);
-    const feeBps = itemMarketFeeBps(settings);
-    const itemMarketNet = grossToNet(itemMarketSuggested, feeBps);
-    const bazaarNet = settings.bazaarEnabled === false ? Number.NEGATIVE_INFINITY : bazaarSuggested;
-
-    return {
-      groupKey,
-      groupLabel: describeEquipmentGroup(groupKey),
-      plain,
-      quality,
-      bonuses: details.bonuses,
-      rarity: details.rarity,
-      comparables: { count: comparables.length, floor: compFloor, median: Number.isFinite(compMedian) ? Math.round(compMedian) : null, band },
-      group: { count: listings.length, floor: groupFloor, median: Number.isFinite(groupMedian) ? Math.round(groupMedian) : null },
-      sales: { count: sales.length, median: Number.isFinite(salesMedian) ? Math.round(salesMedian) : null },
-      averagePrice,
-      reference,
-      referenceSource,
-      conservative,
-      bazaarSuggested,
-      itemMarketSuggested,
-      itemMarketNet,
-      feeBps,
-      bestRoute: bazaarNet >= itemMarketNet ? "Bazaar" : "Item Market",
-      cheaperAtSuggested: listings.filter((row) => row.price < bazaarSuggested).length,
-      bonusFloor: plain ? summary?.bonusFloor || null : null
-    };
-  }
-
   function museumSetFor(itemId) {
     const id = asInt(itemId, 0);
     if (!id) return null;
@@ -603,45 +239,6 @@
       .filter((row) => row.itemId > 0 && row.amount > 0);
   }
 
-  function normalizeItemDetailsRow(row) {
-    if (!row || typeof row !== "object") return null;
-    const stats = row.stats && typeof row.stats === "object" ? row.stats : {};
-    const bonuses = Array.isArray(row.bonuses) ? row.bonuses : [];
-    const quality = Number(stats.quality);
-    return {
-      uid: asInt(row.uid, 0) || null,
-      itemId: asInt(row.id ?? row.item_id, 0) || null,
-      name: row.name ? String(row.name) : "",
-      type: row.type ? String(row.type) : "",
-      subType: row.sub_type == null ? null : String(row.sub_type),
-      quality: Number.isFinite(quality) ? quality : null,
-      damage: Number.isFinite(Number(stats.damage)) ? Number(stats.damage) : null,
-      accuracy: Number.isFinite(Number(stats.accuracy)) ? Number(stats.accuracy) : null,
-      armor: Number.isFinite(Number(stats.armor)) ? Number(stats.armor) : null,
-      bonuses: bonuses.map((bonus) => ({
-        title: String(bonus?.title || "").trim(),
-        value: Number.isFinite(Number(bonus?.value)) ? Number(bonus.value) : null
-      })).filter((bonus) => bonus.title),
-      rarity: row.rarity ? String(row.rarity).toLowerCase() : null
-    };
-  }
-
-  // /torn/{uids}/itemdetails returns an array (current) or, for a single uid,
-  // the deprecated single-object shape until 2027-01-01. Both are accepted.
-  function normalizeItemDetails(payload) {
-    const raw = payload?.itemdetails ?? payload;
-    const rows = Array.isArray(raw) ? raw : (raw && typeof raw === "object" ? [raw] : []);
-    return rows.map(normalizeItemDetailsRow).filter((row) => row && row.uid);
-  }
-
-  function copyLabelFor(copy) {
-    if (!copy) return "";
-    const bonus = (copy.bonuses || []).map((entry) => entry.title).filter(Boolean).join("+");
-    const rarity = copy.rarity ? copy.rarity.toUpperCase() : "";
-    const quality = Number.isFinite(copy.quality) ? `Q ${copy.quality.toFixed(1)}%` : "";
-    return [quality, rarity, bonus || (Number.isFinite(copy.quality) ? "plain" : "")].filter(Boolean).join(" ");
-  }
-
   function normalizeCityShops(payload) {
     const shops = Array.isArray(payload?.cityshops) ? payload.cityshops : [];
     return shops.map((shop) => ({
@@ -832,45 +429,6 @@
     return { count: rows.length, median: Math.round(median(prices)), low: Math.min(...prices), high: Math.max(...prices) };
   }
 
-  function normalizeAuctionListing(payload) {
-    const raw = payload?.auctionhouselisting ?? payload;
-    if (!raw || typeof raw !== "object") return null;
-    const item = raw.item && typeof raw.item === "object" ? raw.item : {};
-    const copy = item.stats || item.bonuses ? normalizeItemDetailsRow({ ...item, uid: item.uid ?? 0 }) : null;
-    return {
-      listingId: asInt(raw.id, 0),
-      itemId: asInt(item.id, 0),
-      name: String(item.name || ""),
-      type: String(item.type || ""),
-      price: asInt(raw.price, 0),
-      bids: asInt(raw.bids, 0),
-      timestamp: asInt(raw.timestamp, 0),
-      copy
-    };
-  }
-
-  // Maximum rational bid for a specific weapon/armor copy: the net proceeds
-  // of reselling that copy at its comparable-based price, less the required
-  // ROI. Uses priceOwnedEquipment() so the same comparables drive sell and
-  // buy sides.
-  function equipmentBidGuidance({ snapshot, copy, auctionSales = [], settings, currentBid = 0 }) {
-    if (!snapshot?.equipment || !copy) return null;
-    const pricing = priceOwnedEquipment({ snapshot, copy, auctionSales, settings });
-    if (!pricing) return null;
-    const bestNet = Math.max(asInt(pricing.bazaarSuggested, 0), asInt(pricing.itemMarketNet, 0));
-    if (bestNet <= 0) return null;
-    const maxBid = Math.max(0, Math.floor(bestNet / (1 + settings.minimumROI)));
-    const bid = Math.max(0, asInt(currentBid, 0));
-    return {
-      maxBid,
-      headroom: maxBid - bid,
-      bestNet,
-      pricing,
-      label: copyLabelFor(copy),
-      state: maxBid - bid > 0 ? (pricing.thinEvidence ? "YELLOW" : "GREEN") : "GREY"
-    };
-  }
-
   // Browse-grid overlay: discount of the displayed cheapest price against
   // Torn's official market value. No order book is fetched for the grid.
   function evaluateBrowseCard({ price, marketPrice, settings }) {
@@ -1007,12 +565,6 @@
     evaluateDirectBuy,
     maxRationalBid,
     estimateInventoryExit,
-    summarizeEquipmentListings,
-    equipmentGroupKey,
-    analyzeEquipmentListings,
-    equipmentSellPricing,
-    parseEquipmentDetailsText,
-    priceOwnedEquipment,
     normalizeAuctionSales,
     museumSetFor,
     museumValuation,
@@ -1029,8 +581,6 @@
     officialExit,
     bestAvailableExit,
     normalizeInventory,
-    normalizeItemDetails,
-    copyLabelFor,
     normalizeCityShops,
     shopSellFloor,
     foreignOffers,
@@ -1041,8 +591,6 @@
     museumByName,
     auctionTimingStats,
     stackableSalesSummary,
-    normalizeAuctionListing,
-    equipmentBidGuidance,
     evaluateBrowseCard,
     normalizePricingRules,
     applyPricingRule,
@@ -1229,8 +777,7 @@
           top20Quantity: listings.slice(0, 20).reduce((sum, row) => sum + row.quantity, 0)
         },
         supportedCommodity: raw.supportedCommodity !== false,
-        equipment: raw.equipment === true,
-        equipmentSummary: raw.equipmentSummary && typeof raw.equipmentSummary === "object" ? raw.equipmentSummary : null
+        equipment: raw.equipment === true
       };
     }
 
@@ -1253,8 +800,7 @@
         medianListingPrice: snapshot.medianListingPrice,
         calculatedMarketAnchor: snapshot.calculatedMarketAnchor,
         supportedCommodity: snapshot.supportedCommodity,
-        equipment: snapshot.equipment === true,
-        equipmentSummary: snapshot.equipmentSummary || null
+        equipment: snapshot.equipment === true
       });
     }
 
@@ -1300,22 +846,6 @@
 
     static saveInventory(items) {
       Store.set(STORAGE_KEYS.inventory, { savedAt: Date.now(), items });
-    }
-
-    static itemDetailsCache() {
-      const raw = Store.get(STORAGE_KEYS.itemDetails, {});
-      return raw && typeof raw === "object" ? raw : {};
-    }
-
-    static saveItemDetails(rows) {
-      const cache = Store.itemDetailsCache();
-      rows.forEach((row) => { if (row?.uid) cache[row.uid] = { ...row, savedAt: Date.now() }; });
-      const keys = Object.keys(cache);
-      if (keys.length > ITEM_DETAILS_MAX_CACHED) {
-        keys.sort((a, b) => asInt(cache[a].savedAt) - asInt(cache[b].savedAt));
-        keys.slice(0, keys.length - ITEM_DETAILS_MAX_CACHED).forEach((key) => { delete cache[key]; });
-      }
-      Store.set(STORAGE_KEYS.itemDetails, cache);
     }
 
     static cityShops() {
@@ -1539,4 +1069,3 @@
           return data;
         })
         .finally(() => this.inFlight.delete(cacheKey));
-

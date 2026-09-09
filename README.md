@@ -31,7 +31,7 @@ The current release adds a repricing workbench with per-item pricing rules and u
 - Torn city shops (shops.php, Big Al's)
 - Panels that need no page at all: Portfolio, City shop runs, Travel plan
 
-The commodity valuation model is intended for fungible/stackable items. Weapons and armor are valued separately through comparable groups (rarity + bonus set, quality matched) and ended Auction House sales; treat that as a floor check rather than a full valuation.
+The valuation model covers fungible/stackable items only. Weapons and armor are not priced; their rows are left untouched.
 
 ## Core features
 
@@ -43,15 +43,14 @@ The commodity valuation model is intended for fungible/stackable items. Weapons 
 - Prefix analysis for cheap Item Market listings
 - Conservative exit-price model with configurable safety haircut
 - ROI, expected profit, capital and confidence calculations
-- Weapon/armor comparables with Auction House sales evidence
 - Your Item Market listings versus the live floor (undercut detection)
 - Repricing workbench: `^` fill and "Fill all" into Torn's price fields on your Item Market manage view and your Bazaar, with persistent per-item pricing rules (undercut floor, hold anchor, never fill, minimum price); saving stays manual
 - Undercut alerts for your own Item Market and Bazaar prices, polled through the official order book
-- Portfolio panel from the official inventory endpoint: sellable value per route, untradable and equipped flags, order-book refinement, and weapon/armor copies priced by uid without opening item details
+- Portfolio panel from the official inventory endpoint: sellable value per route, untradable and equipped flags, order-book refinement (weapons and armor listed but not priced)
 - City shop runs from the official city shop endpoint (stock and price) and inline profit on city shop pages
 - Travel plan from official foreign shop prices, ranked by profit per trip at your capacity
 - Sell-to-shop exit route and museum pieces recognised by name (Meteorite Fragment, Patagonian Fossil, Arrowhead set)
-- Auction House: ended-sales median as evidence and cap for stackable bids, per-copy maximum bid for weapons and armor, and a best end-time window from ended sales
+- Auction House: ended-sales median as evidence and cap for stackable bids, and a best end-time window from ended sales
 - Item Market browse-grid overlay versus Torn's official market value with no per-item requests
 - Watchlist with in-page alerts, polled only while a Torn tab is visible
 - Local price-history observations
@@ -93,7 +92,7 @@ Market Edge works inside Torn PDA. Add the script from the raw GitHub URL or Gre
 
 ### API key access levels
 
-- **Public**: Item Market analysis, Bazaar, Auction House, travel, inventory rows, museum sets, equipment comparables, watchlist, city shop runs, travel plan, browse-grid overlay.
+- **Public**: Item Market analysis, Bazaar, Auction House, travel, inventory rows, museum sets, watchlist, city shop runs, travel plan, browse-grid overlay.
 - **Minimal**: everything above plus the **Portfolio** panel (`/user/inventory`).
 - **Limited**: everything above plus the **Your Item Market listings** panel and workbench (`/user/itemmarket`).
 
@@ -146,7 +145,6 @@ Current settings include:
 - Item Market undercut;
 - anonymous Item Market listings (+10% fee) and the company perk that waives it;
 - museum set route on/off;
-- weapon/armor comparables on/off;
 - minimum confidence for green classifications;
 - maximum tolerated volatility;
 - scan size;
@@ -175,7 +173,7 @@ The engine separates:
 7. Bazaar, Item Market, Auction House and Museum-set net proceeds after fees;
 8. confidence and data freshness.
 
-For weapons and armor the engine instead groups listings by rarity and bonus set, matches quality softly, and caps the comparable median with ended Auction House sales from the last 30 days. Equipment rows on the inventory, the Bazaar add form and the Item Market sell form show the plain and bonus floors from one compact order book per item type. Rows that expose the copy's uid are priced as that exact copy automatically. Otherwise open the item's details: the card that appears prices that exact quality and bonus roll and can fill the form with `^`.
+For weapons and armor the engine instead groups listings by rarity and bonus set, matches quality softly, and caps the comparable median with ended Auction House sales from the last 30 days. Inventory rows show one compact line per stackable item: best exit route, price per unit, owned quantity and the total at that price. Weapons and armor are skipped.
 
 Where no order book has been fetched (portfolio quick pass, shop runs, travel plan, browse grid), the exit comes from Torn's official market value with an extra 2% haircut on top of your safety haircut. Ended Auction House sales are the only official transaction record; on the Auction House they cap the maximum rational bid for stackable items.
 
