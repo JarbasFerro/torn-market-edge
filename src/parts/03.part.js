@@ -292,18 +292,19 @@
     return { snapshot, historyStats: calculateHistoryStats(history) };
   }
 
-  async function loadSnapshot(itemId, { limit = API_LIST_LIMIT, priority = 0, onCached = null, queueGroup = null } = {}) {
+  async function loadSnapshot(itemId, { limit = API_LIST_LIMIT, priority = 0, onCached = null, queueGroup = null, maxAgeMs = 0 } = {}) {
     const persisted = Store.snapshot(itemId);
     const persistedState = snapshotCacheState(persisted);
+    const youngEnough = Boolean(persisted) && maxAgeMs > 0 && Number.isFinite(persistedState.ageMs) && persistedState.ageMs <= maxAgeMs;
     if (persisted && typeof onCached === "function") {
       onCached({
         ...snapshotBundle(persisted),
         cacheState: persistedState,
-        refreshing: limit > API_LIST_LIMIT || persistedState.canChange
+        refreshing: !youngEnough && (limit > API_LIST_LIMIT || persistedState.canChange)
       });
     }
 
-    if (persisted && limit <= API_LIST_LIMIT && !persistedState.canChange) {
+    if (persisted && limit <= API_LIST_LIMIT && (!persistedState.canChange || youngEnough)) {
       return { ...snapshotBundle(persisted), cacheState: persistedState, source: "persistent-cache" };
     }
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.5.5
+// @version      0.5.6
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.5.5",
+    version: "0.5.6",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -53,6 +53,11 @@
   const API_AUCTION_LIMIT = 50;
   const API_COMMENT = "market-edge";
   const SNAPSHOT_FALLBACK_FRESH_MS = 25000;
+  // Sell-side surfaces (inventory, Bazaar add, Item Market sell) reuse a
+  // recent order book instead of refreshing every 30 s: listing prices do
+  // not need that freshness, and refreshes were starving unpriced rows of
+  // the request budget on long lists.
+  const SELL_SIDE_SNAPSHOT_MAX_AGE_MS = 5 * ONE_MINUTE_MS;
   const ITEM_META_TTL_MS = 7 * ONE_DAY_MS;
   const SET_META_TTL_MS = ONE_DAY_MS;
   const POINTS_MARKET_TTL_MS = 5 * ONE_MINUTE_MS;
@@ -63,7 +68,7 @@
   const WATCHLIST_MAX_ITEMS = 25;
   const WATCHLIST_ALERT_COOLDOWN_MS = 10 * ONE_MINUTE_MS;
   const OWN_LISTINGS_MAX = 25;
-  // v0.5.5 surfaces: portfolio, shop runs, travel planner, auction guidance.
+  // v0.5.6 surfaces: portfolio, shop runs, travel planner, auction guidance.
   const INVENTORY_TTL_MS = 60 * ONE_MINUTE_MS;
   const INVENTORY_PAGE_LIMIT = 250;
   const INVENTORY_MAX_PAGES = 8;
@@ -2210,18 +2215,19 @@
     return { snapshot, historyStats: calculateHistoryStats(history) };
   }
 
-  async function loadSnapshot(itemId, { limit = API_LIST_LIMIT, priority = 0, onCached = null, queueGroup = null } = {}) {
+  async function loadSnapshot(itemId, { limit = API_LIST_LIMIT, priority = 0, onCached = null, queueGroup = null, maxAgeMs = 0 } = {}) {
     const persisted = Store.snapshot(itemId);
     const persistedState = snapshotCacheState(persisted);
+    const youngEnough = Boolean(persisted) && maxAgeMs > 0 && Number.isFinite(persistedState.ageMs) && persistedState.ageMs <= maxAgeMs;
     if (persisted && typeof onCached === "function") {
       onCached({
         ...snapshotBundle(persisted),
         cacheState: persistedState,
-        refreshing: limit > API_LIST_LIMIT || persistedState.canChange
+        refreshing: !youngEnough && (limit > API_LIST_LIMIT || persistedState.canChange)
       });
     }
 
-    if (persisted && limit <= API_LIST_LIMIT && !persistedState.canChange) {
+    if (persisted && limit <= API_LIST_LIMIT && (!persistedState.canChange || youngEnough)) {
       return { ...snapshotBundle(persisted), cacheState: persistedState, source: "persistent-cache" };
     }
 
@@ -3461,8 +3467,10 @@
     .me-bazaar-add-controls > .me-inline-analysis { display:flex !important; flex:0 0 100% !important; width:100% !important; max-width:none !important; grid-column:1 / -1 !important; justify-content:flex-end !important; margin:4px 0 1px !important; z-index:10 !important; }
     .me-inline-analysis.me-bazaar-add { pointer-events:auto !important; padding-right:3px !important; }
     div.me-inline-analysis.me-bazaar-add.me-row-line { gap:8px !important; padding:5px 8px !important; align-items:center !important; }
-    .me-bazaar-fill-btn.me-fill-main { height:30px !important; min-width:0 !important; padding:0 12px !important; font:700 12px/1 Arial,sans-serif !important; white-space:nowrap !important; border-radius:6px !important; background:rgba(255,255,255,.12) !important; }
-    .me-bazaar-fill-btn.me-fill-main.me-applied { background:rgba(74,165,100,.28) !important; border-color:rgba(74,165,100,.7) !important; color:#dff5e4 !important; }
+    .me-bazaar-fill-btn.me-fill-main { height:24px !important; min-width:0 !important; padding:0 12px !important; font:700 12px/1 Arial,sans-serif !important; white-space:nowrap !important; border-radius:5px !important; background:rgba(255,255,255,.12) !important; }
+    .me-bazaar-fill-btn.me-fill-clear { height:24px !important; min-width:24px !important; padding:0 7px !important; font:700 14px/1 Arial,sans-serif !important; border-radius:5px !important; color:#f0b3b3 !important; border-color:rgba(189,81,81,.55) !important; background:rgba(189,81,81,.14) !important; }
+    .me-fill-done { display:inline-flex !important; align-items:center !important; justify-content:center !important; height:24px !important; min-width:24px !important; padding:0 6px !important; border-radius:5px !important; color:#dff5e4 !important; background:rgba(74,165,100,.28) !important; border:1px solid rgba(74,165,100,.7) !important; font:700 13px/1 Arial,sans-serif !important; }
+    .me-inline-analysis.me-bazaar-add .me-fill-figures { font-size:12px !important; color:#f2f2f2 !important; }
     .me-inline-analysis.me-bazaar-add .me-inline-secondary { white-space:nowrap !important; }
     .me-row-host { height:auto !important; max-height:none !important; overflow:visible !important; flex-wrap:wrap !important; }
     .me-row-host.me-row-float-host { position:relative !important; }
@@ -3984,6 +3992,30 @@
     return { priceFilled, quantityFilled, qty };
   }
 
+  function clearInputValue(input) {
+    if (!(input instanceof HTMLInputElement)) return false;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    const write = (node) => { if (setter) setter.call(node, ""); else node.value = ""; };
+    write(input);
+    input.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+    input.dispatchEvent(new Event("keyup", { bubbles: true, composed: true }));
+    input.closest(".input-money-group")?.querySelectorAll?.("input[type='hidden']").forEach((twin) => { if (twin !== input) write(twin); });
+    return input.value === "";
+  }
+
+  function clearSellFormRow(visible) {
+    resolveSellFormInputs(visible);
+    if (!visible.priceOnly) {
+      if (visible.quantityCheckbox?.isConnected && visible.quantityCheckbox.checked) visible.quantityCheckbox.click();
+      else if (visible.quantityInput?.isConnected) clearInputValue(visible.quantityInput);
+    }
+    resolveSellFormInputs(visible);
+    const cleared = visible.priceInput?.isConnected ? clearInputValue(visible.priceInput) : false;
+    if (cleared) visible.price = 0;
+    return cleared;
+  }
+
   function renderBazaarAddSuggestion(result) {
     const visible = result.visible;
     const source = result?.sellForm || result?.ownBazaar || {};
@@ -4001,43 +4033,57 @@
     const exact = formatMoney(target, true);
     const qty = Math.max(1, asInt(visible.maxAvailable || visible.quantity, 1));
     const filled = asInt(visible.price, 0) === target;
-    const label = `${filled ? "Filled" : "Fill"} ${visible.priceOnly || qty === 1 ? exact : `${qty.toLocaleString("en-US")} \u00d7 ${exact}`}`;
+    const perUnit = visible.priceOnly || qty === 1 ? exact : `${qty.toLocaleString("en-US")} \u00d7 ${exact}`;
     const totalHtml = qty > 1 && !visible.priceOnly
       ? `<span class="me-inline-secondary">total ${formatMoney(target * qty)}</span>`
       : "";
     const netHtml = result?.sellForm && Number.isFinite(source.net)
       ? `<span class="me-inline-secondary">net ${formatMoney(qty > 1 && !visible.priceOnly ? source.net * qty : source.net)}${source.feeBps ? ` after ${source.feeBps / 100}%` : ""}</span>`
       : "";
-    // No title attributes: mobile webviews pop them up as bubbles over the row.
+    const manualNote = result?.sellForm ? "listing" : "adding to the Bazaar";
+    // Compact controls, figures as plain text beside them. No title
+    // attributes: mobile webviews pop them up as bubbles over the row.
+    const controls = filled
+      ? `<span class="me-fill-done" aria-label="Filled">\u2713</span><button class="me-bazaar-fill-btn me-fill-clear" type="button" aria-label="Clear the quantity and price fields">\u00d7</button>`
+      : `<button class="me-bazaar-fill-btn me-fill-main" type="button" aria-label="Fill ${escapeHtml(perUnit)}; ${escapeHtml(manualNote)} stays manual">Fill</button>`;
     const block = renderInlineHtml(
       visible,
-      `<span class="me-inline-brand">ME</span><button class="me-bazaar-fill-btn me-fill-main${filled ? " me-applied" : ""}" type="button" aria-label="${escapeHtml(label)}; ${escapeHtml(result?.sellForm ? "listing" : "adding to the Bazaar")} stays manual">${escapeHtml(label)}</button>${totalHtml}${netHtml}${stale}`,
+      `<span class="me-inline-brand">ME</span>${controls}<span class="me-inline-primary me-fill-figures">${escapeHtml(perUnit)}</span>${totalHtml}${netHtml}${stale}`,
       filled ? "GREEN" : "GREY",
       "me-bazaar-add"
     );
-    const button = block?.querySelector?.(".me-bazaar-fill-btn");
-    if (!button || !visible.priceInput) return block;
+    if (!block || !visible.priceInput) return block;
 
+    const rerender = () => renderBazaarAddSuggestion(result);
     const apply = () => {
       const outcome = fillSellFormRow(visible, target);
       if (!outcome.priceFilled) {
-        button.textContent = "Price field not found";
+        const button = block.querySelector(".me-fill-main");
+        if (button) button.textContent = "No price field";
         return;
       }
-      button.textContent = `Filled ${visible.priceOnly || outcome.qty === 1 ? exact : `${outcome.qty.toLocaleString("en-US")} \u00d7 ${exact}`}${outcome.quantityFilled || visible.priceOnly ? "" : " (set quantity by hand)"}`;
-      button.classList.add("me-applied");
-      block.classList.add("GREEN");
+      if (block.isConnected) rerender();
       // Torn may replace the row after the write; a rescan puts the strip
       // back in its filled state.
       setTimeout(() => scheduleSignatureCheck(true), 350);
     };
-    // "Fill all" from the menu reuses the same handler without synthesising
-    // a click on any element.
-    button.meFill = apply;
-    button.addEventListener("click", (event) => {
+    const fillButton = block.querySelector(".me-fill-main");
+    if (fillButton) {
+      // "Fill all" from the menu reuses the same handler without
+      // synthesising a click on any element.
+      fillButton.meFill = apply;
+      fillButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        apply();
+      });
+    }
+    block.querySelector(".me-fill-clear")?.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      apply();
+      clearSellFormRow(visible);
+      if (block.isConnected) rerender();
+      setTimeout(() => scheduleSignatureCheck(true), 350);
     });
     return block;
   }
@@ -4662,6 +4708,7 @@
           limit: API_LIST_LIMIT,
           priority,
           queueGroup,
+          maxAgeMs: sellSideSurface ? SELL_SIDE_SNAPSHOT_MAX_AGE_MS : 0,
           onCached: (cached) => {
             if (!visible.card?.isConnected || detectSurface() !== surface) return;
             renderedCached = true;

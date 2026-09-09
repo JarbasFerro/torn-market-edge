@@ -71,6 +71,30 @@
     return { priceFilled, quantityFilled, qty };
   }
 
+  function clearInputValue(input) {
+    if (!(input instanceof HTMLInputElement)) return false;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    const write = (node) => { if (setter) setter.call(node, ""); else node.value = ""; };
+    write(input);
+    input.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+    input.dispatchEvent(new Event("keyup", { bubbles: true, composed: true }));
+    input.closest(".input-money-group")?.querySelectorAll?.("input[type='hidden']").forEach((twin) => { if (twin !== input) write(twin); });
+    return input.value === "";
+  }
+
+  function clearSellFormRow(visible) {
+    resolveSellFormInputs(visible);
+    if (!visible.priceOnly) {
+      if (visible.quantityCheckbox?.isConnected && visible.quantityCheckbox.checked) visible.quantityCheckbox.click();
+      else if (visible.quantityInput?.isConnected) clearInputValue(visible.quantityInput);
+    }
+    resolveSellFormInputs(visible);
+    const cleared = visible.priceInput?.isConnected ? clearInputValue(visible.priceInput) : false;
+    if (cleared) visible.price = 0;
+    return cleared;
+  }
+
   function renderBazaarAddSuggestion(result) {
     const visible = result.visible;
     const source = result?.sellForm || result?.ownBazaar || {};
@@ -88,43 +112,57 @@
     const exact = formatMoney(target, true);
     const qty = Math.max(1, asInt(visible.maxAvailable || visible.quantity, 1));
     const filled = asInt(visible.price, 0) === target;
-    const label = `${filled ? "Filled" : "Fill"} ${visible.priceOnly || qty === 1 ? exact : `${qty.toLocaleString("en-US")} \u00d7 ${exact}`}`;
+    const perUnit = visible.priceOnly || qty === 1 ? exact : `${qty.toLocaleString("en-US")} \u00d7 ${exact}`;
     const totalHtml = qty > 1 && !visible.priceOnly
       ? `<span class="me-inline-secondary">total ${formatMoney(target * qty)}</span>`
       : "";
     const netHtml = result?.sellForm && Number.isFinite(source.net)
       ? `<span class="me-inline-secondary">net ${formatMoney(qty > 1 && !visible.priceOnly ? source.net * qty : source.net)}${source.feeBps ? ` after ${source.feeBps / 100}%` : ""}</span>`
       : "";
-    // No title attributes: mobile webviews pop them up as bubbles over the row.
+    const manualNote = result?.sellForm ? "listing" : "adding to the Bazaar";
+    // Compact controls, figures as plain text beside them. No title
+    // attributes: mobile webviews pop them up as bubbles over the row.
+    const controls = filled
+      ? `<span class="me-fill-done" aria-label="Filled">\u2713</span><button class="me-bazaar-fill-btn me-fill-clear" type="button" aria-label="Clear the quantity and price fields">\u00d7</button>`
+      : `<button class="me-bazaar-fill-btn me-fill-main" type="button" aria-label="Fill ${escapeHtml(perUnit)}; ${escapeHtml(manualNote)} stays manual">Fill</button>`;
     const block = renderInlineHtml(
       visible,
-      `<span class="me-inline-brand">ME</span><button class="me-bazaar-fill-btn me-fill-main${filled ? " me-applied" : ""}" type="button" aria-label="${escapeHtml(label)}; ${escapeHtml(result?.sellForm ? "listing" : "adding to the Bazaar")} stays manual">${escapeHtml(label)}</button>${totalHtml}${netHtml}${stale}`,
+      `<span class="me-inline-brand">ME</span>${controls}<span class="me-inline-primary me-fill-figures">${escapeHtml(perUnit)}</span>${totalHtml}${netHtml}${stale}`,
       filled ? "GREEN" : "GREY",
       "me-bazaar-add"
     );
-    const button = block?.querySelector?.(".me-bazaar-fill-btn");
-    if (!button || !visible.priceInput) return block;
+    if (!block || !visible.priceInput) return block;
 
+    const rerender = () => renderBazaarAddSuggestion(result);
     const apply = () => {
       const outcome = fillSellFormRow(visible, target);
       if (!outcome.priceFilled) {
-        button.textContent = "Price field not found";
+        const button = block.querySelector(".me-fill-main");
+        if (button) button.textContent = "No price field";
         return;
       }
-      button.textContent = `Filled ${visible.priceOnly || outcome.qty === 1 ? exact : `${outcome.qty.toLocaleString("en-US")} \u00d7 ${exact}`}${outcome.quantityFilled || visible.priceOnly ? "" : " (set quantity by hand)"}`;
-      button.classList.add("me-applied");
-      block.classList.add("GREEN");
+      if (block.isConnected) rerender();
       // Torn may replace the row after the write; a rescan puts the strip
       // back in its filled state.
       setTimeout(() => scheduleSignatureCheck(true), 350);
     };
-    // "Fill all" from the menu reuses the same handler without synthesising
-    // a click on any element.
-    button.meFill = apply;
-    button.addEventListener("click", (event) => {
+    const fillButton = block.querySelector(".me-fill-main");
+    if (fillButton) {
+      // "Fill all" from the menu reuses the same handler without
+      // synthesising a click on any element.
+      fillButton.meFill = apply;
+      fillButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        apply();
+      });
+    }
+    block.querySelector(".me-fill-clear")?.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      apply();
+      clearSellFormRow(visible);
+      if (block.isConnected) rerender();
+      setTimeout(() => scheduleSignatureCheck(true), 350);
     });
     return block;
   }

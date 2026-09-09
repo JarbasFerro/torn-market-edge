@@ -294,14 +294,18 @@ run("Item Market sell form (add listing) rows get an Item Market price with net 
   const xanax = blocks.find((block) => block.dataset.meItemId === "206");
   const rifle = blocks.find((block) => block.dataset.meItemId === "1");
   assert.ok(xanax && rifle, "both rows annotated");
-  assert.match(xanax.textContent, /Fill 12 \u00d7 \$789,999/, "one explicit button with quantity and exact price");
+  assert.equal(xanax.querySelector(".me-fill-main").textContent, "Fill", "small button; figures are plain text beside it");
+  assert.match(xanax.querySelector(".me-fill-figures").textContent, /^12 \u00d7 \$789,999$/);
   assert.match(xanax.textContent, /net \$/);
   assert.equal(xanax.querySelector("[title]"), null, "no tooltip attributes on the strip");
   assert.equal(xanax.parentElement, xanax.closest(".sellRow___t7"), "strip is a child of the row itself");
   const button = xanax.querySelector(".me-bazaar-fill-btn");
   assert.ok(button);
   button.click();
-  assert.match(button.textContent, /^Filled 12 \u00d7 \$789,999$/, "button turns into a confirmation");
+  const filledStrip = env.document.querySelector(".me-inline-analysis[data-me-item-id='206']");
+  assert.ok(filledStrip.querySelector(".me-fill-done"), "tick shown after the fill");
+  assert.ok(filledStrip.querySelector(".me-fill-clear"), "clear control offered after the fill");
+  assert.ok(filledStrip.classList.contains("GREEN"));
   const priceInput = env.document.querySelector(".sellRow___t7 input.price___m5");
   assert.equal(priceInput.value, "789999");
   assert.equal(env.document.querySelector(".sellRow___t7 input.quantity___q1").value, "12", "quantity filled with everything owned");
@@ -560,5 +564,26 @@ run("Sell-form fill survives Torn replacing the row's fields after the first wri
   assert.ok(!oldPrice.isConnected, "the original price field was replaced by Torn");
   const newPrice = row.querySelector(".priceInputWrapper___k1 input:not([type='hidden'])");
   assert.equal(newPrice.value, "789999", "price written into the fresh field");
-  assert.match(row.querySelector(".me-bazaar-fill-btn").textContent, /^Filled/);
+  assert.ok(row.querySelector(".me-fill-done"), "filled state after the replacement");
+  // Clear empties both fields and restores the Fill control.
+  row.querySelector(".me-fill-clear").click();
+  assert.equal(row.querySelector(".priceInputWrapper___k1 input:not([type='hidden'])").value, "");
+  assert.equal(qtyInput.value, "");
+  assert.equal(row.querySelector(".me-fill-main").textContent, "Fill");
+});
+
+run("Sell-side surfaces reuse a recent order book instead of refreshing it every scan", async (t) => {
+  const env = boot(fixture("inventory-torn.html"), "https://www.torn.com/item.php#drugs-items");
+  t.after(env.close);
+  env.document.querySelectorAll("#primary-items, #primary-items *").forEach((node) => { node.getBoundingClientRect = () => ({ width: 0, height: 0, top: 0, bottom: 0, left: 0, right: 0, x: 0, y: 0 }); });
+  await env.ME.scanVisibleSurface("inventory", { force: true });
+  const before = env.requests.filter((url) => url.includes("/market/206/itemmarket")).length;
+  assert.equal(before, 1);
+  // Pretend Torn's 30 s cache window has passed; a rescan must not refetch.
+  const key = "marketEdge.snapshot.v3.206";
+  const stored = env.ME.Store.get(key, null);
+  env.ME.Store.set(key, { ...stored, cacheTimestamp: stored.cacheTimestamp - 120, timestampObserved: stored.timestampObserved - 120 });
+  env.ME.api.memoryCache.clear();
+  await env.ME.scanVisibleSurface("inventory", { force: true });
+  assert.equal(env.requests.filter((url) => url.includes("/market/206/itemmarket")).length, 1, "snapshot younger than five minutes is reused");
 });

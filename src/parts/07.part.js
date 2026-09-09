@@ -48,6 +48,7 @@
           limit: API_LIST_LIMIT,
           priority,
           queueGroup,
+          maxAgeMs: sellSideSurface ? SELL_SIDE_SNAPSHOT_MAX_AGE_MS : 0,
           onCached: (cached) => {
             if (!visible.card?.isConnected || detectSurface() !== surface) return;
             renderedCached = true;

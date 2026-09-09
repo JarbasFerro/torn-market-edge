@@ -6,6 +6,16 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-09-09
+
+### Fixed
+
+- **Lower rows on long sell forms never got a price.** A device report showed the request budget exhausted (70 per minute) with rows queued: every scan re-fetched each priced row as soon as Torn's 30-second cache expired. Inventory, Bazaar add and Item Market sell rows now reuse an order book for five minutes, so the budget goes to rows that have nothing yet.
+
+### Changed
+
+- **Sell-form strip.** The button is a small `Fill`; the quantity and exact price (`32 × $5,994`), the total and the net are plain text beside it. After a fill the strip shows a green tick and an `×` that clears the quantity and price fields (and unticks a single-copy checkbox), returning the strip to its unfilled state.
+
 ## [0.5.5] - 2026-09-09
 
 ### Changed

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.5.5
+// @version      0.5.6
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.5.5",
+    version: "0.5.6",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -53,6 +53,11 @@
   const API_AUCTION_LIMIT = 50;
   const API_COMMENT = "market-edge";
   const SNAPSHOT_FALLBACK_FRESH_MS = 25000;
+  // Sell-side surfaces (inventory, Bazaar add, Item Market sell) reuse a
+  // recent order book instead of refreshing every 30 s: listing prices do
+  // not need that freshness, and refreshes were starving unpriced rows of
+  // the request budget on long lists.
+  const SELL_SIDE_SNAPSHOT_MAX_AGE_MS = 5 * ONE_MINUTE_MS;
   const ITEM_META_TTL_MS = 7 * ONE_DAY_MS;
   const SET_META_TTL_MS = ONE_DAY_MS;
   const POINTS_MARKET_TTL_MS = 5 * ONE_MINUTE_MS;
@@ -63,7 +68,7 @@
   const WATCHLIST_MAX_ITEMS = 25;
   const WATCHLIST_ALERT_COOLDOWN_MS = 10 * ONE_MINUTE_MS;
   const OWN_LISTINGS_MAX = 25;
-  // v0.5.5 surfaces: portfolio, shop runs, travel planner, auction guidance.
+  // v0.5.6 surfaces: portfolio, shop runs, travel planner, auction guidance.
   const INVENTORY_TTL_MS = 60 * ONE_MINUTE_MS;
   const INVENTORY_PAGE_LIMIT = 250;
   const INVENTORY_MAX_PAGES = 8;
