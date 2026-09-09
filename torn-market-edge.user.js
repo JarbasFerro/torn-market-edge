@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.5.3
+// @version      0.5.4
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.5.3",
+    version: "0.5.4",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -63,7 +63,7 @@
   const WATCHLIST_MAX_ITEMS = 25;
   const WATCHLIST_ALERT_COOLDOWN_MS = 10 * ONE_MINUTE_MS;
   const OWN_LISTINGS_MAX = 25;
-  // v0.5.3 surfaces: portfolio, shop runs, travel planner, auction guidance.
+  // v0.5.4 surfaces: portfolio, shop runs, travel planner, auction guidance.
   const INVENTORY_TTL_MS = 60 * ONE_MINUTE_MS;
   const INVENTORY_PAGE_LIMIT = 250;
   const INVENTORY_MAX_PAGES = 8;
@@ -2467,10 +2467,13 @@
     // unreliable on a real device): never the equipped/loadout region, and
     // only rows inside Torn's item lists.
     const equippedAncestor = card.closest(
-      ".equipped-items-wrap,[class*='equipped'],[class*='loadout'],[class*='paperdoll'],[class*='paper-doll'],[class*='characterEquipment'],[class*='character-equipment']"
+      ".equipped-items-wrap,[class*='equipped-items'],[class*='equippedItems'],[class*='loadout'],[class*='paperdoll'],[class*='paper-doll'],[class*='characterEquipment'],[class*='character-equipment']"
     );
     if (equippedAncestor) return false;
-    if (card.closest(".items-cont, [class*='itemsCont'], [class*='items-cont'], [class*='inventoryList'], [class*='inventory-list'], .category-wrap, #category-wrap, .items-wrap")) return true;
+    // Action entries inside a row (equip, trash, send) are list items with
+    // data-item too; they are never rows.
+    if (card.matches("[data-action]") || card.closest("ul.actions-wrap, .actions-wrap, .actions")) return false;
+    if (card.closest("ul.items-cont, .items-cont, [class*='inventoryList'], [class*='inventory-list'], .category-wrap, #category-wrap, .items-wrap")) return true;
     // Unknown container: fall back to "after the heading" when one exists.
     if (marker) {
       if (marker.contains(card)) return true;
@@ -2482,7 +2485,7 @@
 
   function itemIdentitySelector() {
     return [
-      "li[data-item]",
+      "li[data-item]:not([data-action])",
       "[data-itemid]",
       "[data-item-id]",
       "[item]",
@@ -2511,7 +2514,7 @@
     if (!start) return null;
     // Fast path: Torn's inventory rows are list items carrying data-item.
     // No text or layout reads beyond one bounding box.
-    const direct = start.closest?.("li[data-item]");
+    const direct = start.closest?.("li[data-item]:not([data-action])");
     if (direct && !direct.classList.contains("show-item-info") && directItemIdsWithin(direct).size === 1) {
       const rect = direct.getBoundingClientRect();
       if (rect.width > 0 && rect.height > 0) return direct;
@@ -2632,9 +2635,11 @@
       // Torn keeps every visited category list in the DOM; only the expanded
       // one is on screen. Skipping hidden lists here saves a layout read per
       // row on long inventories.
+      // Exact list classes only: Torn's page wrapper is "main-items-cont-wrap"
+      // and a substring match would sweep in every tab's rows at once.
       const allRoots = Array.from(document.querySelectorAll(
-        ".items-cont, [class*='itemsCont'], [class*='items-cont'], [class*='inventoryList'], [class*='inventory-list']"
-      )).filter((root) => !root.closest("#market-edge-root,.equipped-items-wrap,[class*='equipped']"));
+        "ul.items-cont, .items-cont, [class*='inventoryList'], [class*='inventory-list']"
+      )).filter((root) => !root.closest("#market-edge-root,.equipped-items-wrap,[class*='equipped-items'],[class*='equippedItems']"));
       // Prefer lists that are on screen (one rect per list); if that leaves
       // nothing, fall back to every list and let the per-row rect checks
       // decide.
@@ -2658,8 +2663,13 @@
     const ordered = Array.from(candidates)
       .map((node) => {
         const rect = node.getBoundingClientRect?.();
+        // Nodes without a box (collapsed tabs, lazy placeholders) must never
+        // outrank visible rows: they would otherwise all sort as "top of
+        // viewport" and crowd the real rows out of the scan limit.
+        if (rect && (rect.width <= 0 || rect.height <= 0)) return null;
         return { node, priority: rect ? viewportPriority({ card: node }) : 0 };
       })
+      .filter(Boolean)
       .sort((a, b) => b.priority - a.priority)
       .slice(0, limit * 2)
       .map((entry) => entry.node);
@@ -3442,7 +3452,7 @@
     .me-inline-analysis.RED .me-inline-status { color:#e27a7a !important; }
     .me-inline-metric { white-space:nowrap !important; font-variant-numeric:tabular-nums !important; }
     .me-inline-analysis.me-loading { opacity:.65 !important; font-weight:400 !important; }
-    .me-inline-analysis.me-hidden { display:none !important; }
+    .me-inline-analysis.me-hidden, div.me-inline-analysis.me-row-line.me-hidden { display:none !important; visibility:hidden !important; height:0 !important; min-height:0 !important; padding:0 !important; border:0 !important; }
     .me-bazaar-add-row { height:auto !important; min-height:72px !important; overflow:visible !important; }
     .me-bazaar-add-controls { flex-wrap:wrap !important; overflow:visible !important; }
     .me-bazaar-add-controls > .me-inline-analysis { display:flex !important; flex:0 0 100% !important; width:100% !important; max-width:none !important; grid-column:1 / -1 !important; justify-content:flex-end !important; margin:4px 0 1px !important; z-index:10 !important; }
@@ -3822,11 +3832,14 @@
     ui.status = null;
   }
 
-  function inlineHostFor(visible) {
+  function inlineHostFor(visible, { hidden = false } = {}) {
     if (visible?.rowLine) {
       const host = visible.inlineAnchor?.isConnected ? visible.inlineAnchor : visible.card;
       if (host?.isConnected) {
-        visible.card?.classList?.add("me-row-host");
+        // Hidden markers (unpriced rows) must not change the row's layout,
+        // even after a loading placeholder tagged the row.
+        if (hidden) visible.card?.classList?.remove("me-row-host", "me-row-float-host");
+        else visible.card?.classList?.add("me-row-host");
         return { mode: "append", node: host };
       }
     }
@@ -3845,18 +3858,19 @@
   }
 
   function renderInlineHtml(visible, html, state = "GREY", extraClass = "") {
-    const host = inlineHostFor(visible);
+    const hidden = extraClass.includes("me-hidden");
+    const host = inlineHostFor(visible, { hidden });
     if (!host) return null;
     visible.card?.querySelectorAll?.(".me-inline-analysis").forEach((node) => node.remove());
     // Inventory rows get a block-level div as the row's last child; other
     // surfaces keep the inline span.
-    const block = document.createElement(visible?.rowLine ? "div" : "span");
-    block.className = `me-inline-analysis ${state} ${extraClass}${visible?.rowLine ? " me-row-line" : ""}`.trim();
+    const block = document.createElement(visible?.rowLine && !hidden ? "div" : "span");
+    block.className = `me-inline-analysis ${state} ${extraClass}${visible?.rowLine && !hidden ? " me-row-line" : ""}`.trim();
     block.dataset.meItemId = String(visible.itemId);
     block.dataset.meComplete = extraClass.includes("me-loading") ? "0" : "1";
     block.innerHTML = html;
     host.node.appendChild(block);
-    if (visible?.rowLine && !extraClass.includes("me-hidden")) ensureRowLineVisible(block);
+    if (visible?.rowLine && !hidden) ensureRowLineVisible(block);
     return block;
   }
 
@@ -5162,7 +5176,7 @@
     overlays.slice(0, 80).forEach((overlay) => {
       // Rows of other (collapsed) category tabs stay in the DOM; they are
       // expected to have no box and say nothing about the visible tab.
-      const list = overlay.closest(".items-cont, [class*='items-cont']");
+      const list = overlay.closest("ul.items-cont, .items-cont");
       if (list && (list.getAttribute("aria-expanded") === "false" || /display\s*:\s*none/i.test(list.getAttribute("style") || ""))) {
         hiddenTab += 1;
         return;
@@ -5236,15 +5250,15 @@
   function inventoryDetectionTrace() {
     const lines = ["--- inventory detection trace"];
     try {
-      const lists = Array.from(document.querySelectorAll(".items-cont, [class*='itemsCont'], [class*='items-cont'], [class*='inventoryList'], [class*='inventory-list']"));
+      const lists = Array.from(document.querySelectorAll("ul.items-cont, .items-cont, [class*='inventoryList'], [class*='inventory-list']"));
       lines.push(`item lists: ${lists.length}`);
       lists.slice(0, 12).forEach((list, index) => {
         const box = list.getBoundingClientRect();
         const attrs = Array.from(list.attributes || []).filter((attr) => attr.name !== "class").map((attr) => `${attr.name}=${String(attr.value).slice(0, 24)}`).join(" ");
-        lines.push(`  list ${index + 1}: ${list.tagName.toLowerCase()}${list.id ? `#${list.id}` : ""} class="${String(list.className).slice(0, 60)}" ${attrs} | li[data-item]: ${list.querySelectorAll("li[data-item]").length}, children: ${list.childElementCount}, box ${Math.round(box.width)}x${Math.round(box.height)} top ${Math.round(box.top)}, equipped-ancestor: ${Boolean(list.closest(".equipped-items-wrap,[class*='equipped']"))}`);
+        lines.push(`  list ${index + 1}: ${list.tagName.toLowerCase()}${list.id ? `#${list.id}` : ""} class="${String(list.className).slice(0, 60)}" ${attrs} | li[data-item]: ${list.querySelectorAll("li[data-item]").length}, children: ${list.childElementCount}, box ${Math.round(box.width)}x${Math.round(box.height)} top ${Math.round(box.top)}, equipped-ancestor: ${Boolean(list.closest(".equipped-items-wrap,[class*='equipped-items'],[class*='equippedItems']"))}`);
       });
       const shown = lists.filter((list) => { const box = list.getBoundingClientRect(); return box.height > 0 && box.width > 0; });
-      const sample = (shown[0] || lists[0])?.querySelectorAll("li[data-item]") || [];
+      const sample = (shown[0] || lists[0])?.querySelectorAll("li[data-item]:not([data-action])") || [];
       Array.from(sample).slice(0, 3).forEach((li, index) => {
         const box = li.getBoundingClientRect();
         const ids = Array.from(directItemIdsWithin(li));

@@ -549,10 +549,13 @@
     // unreliable on a real device): never the equipped/loadout region, and
     // only rows inside Torn's item lists.
     const equippedAncestor = card.closest(
-      ".equipped-items-wrap,[class*='equipped'],[class*='loadout'],[class*='paperdoll'],[class*='paper-doll'],[class*='characterEquipment'],[class*='character-equipment']"
+      ".equipped-items-wrap,[class*='equipped-items'],[class*='equippedItems'],[class*='loadout'],[class*='paperdoll'],[class*='paper-doll'],[class*='characterEquipment'],[class*='character-equipment']"
     );
     if (equippedAncestor) return false;
-    if (card.closest(".items-cont, [class*='itemsCont'], [class*='items-cont'], [class*='inventoryList'], [class*='inventory-list'], .category-wrap, #category-wrap, .items-wrap")) return true;
+    // Action entries inside a row (equip, trash, send) are list items with
+    // data-item too; they are never rows.
+    if (card.matches("[data-action]") || card.closest("ul.actions-wrap, .actions-wrap, .actions")) return false;
+    if (card.closest("ul.items-cont, .items-cont, [class*='inventoryList'], [class*='inventory-list'], .category-wrap, #category-wrap, .items-wrap")) return true;
     // Unknown container: fall back to "after the heading" when one exists.
     if (marker) {
       if (marker.contains(card)) return true;
@@ -564,7 +567,7 @@
 
   function itemIdentitySelector() {
     return [
-      "li[data-item]",
+      "li[data-item]:not([data-action])",
       "[data-itemid]",
       "[data-item-id]",
       "[item]",

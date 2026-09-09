@@ -513,3 +513,28 @@ run("Inventory rows are found through li[data-item] before lazy thumbnails load,
   const report = env.ME.buildPageDiagnostics();
   assert.match(report, /2\/2 visible on this tab/);
 });
+
+run("Torn's real inventory markup: wrapper is not a list, action entries are not rows, hidden tab rows never crowd out the visible tab, unpriced rows leave no bar", async (t) => {
+  const env = boot(fixture("inventory-torn.html"), "https://www.torn.com/item.php#drugs-items");
+  t.after(env.close);
+  // Hidden tab has no box, exactly like the device report.
+  env.document.querySelectorAll("#primary-items, #primary-items *").forEach((node) => { node.getBoundingClientRect = () => ({ width: 0, height: 0, top: 0, bottom: 0, left: 0, right: 0, x: 0, y: 0 }); });
+  const rows = env.ME.collectVisibleItems({ requireMoney: false });
+  assert.equal(JSON.stringify(rows.map((row) => row.itemId).sort()), "[1,206]", "only the visible tab's real rows");
+  assert.ok(rows.every((row) => !row.card.hasAttribute("data-action")), "action entries are never rows");
+  await env.ME.scanVisibleSurface("inventory", { force: true });
+  const xanax = env.document.querySelector("#drugs-items li[data-item='206'] > .me-inline-analysis");
+  assert.ok(xanax, "the row itself carries the line");
+  assert.match(xanax.textContent, /BZ \$/);
+  assert.match(xanax.textContent, /x10/);
+  assert.equal(env.document.querySelectorAll("#drugs-items .actions-wrap .me-inline-analysis").length, 0, "nothing rendered into action entries");
+  const rifle = env.document.querySelector("#drugs-items li[data-item='1'] > .me-inline-analysis");
+  assert.ok(rifle.classList.contains("me-hidden"));
+  assert.equal(rifle.tagName, "SPAN", "unpriced rows get an inline hidden marker, not a block bar");
+  assert.ok(!rifle.classList.contains("me-row-line"));
+  assert.ok(!rifle.parentElement.classList.contains("me-row-host"), "unpriced rows keep their layout untouched");
+  assert.equal(env.document.querySelectorAll("#primary-items .me-inline-analysis").length, 0, "hidden tab untouched");
+  const report = env.ME.buildPageDiagnostics();
+  assert.match(report, /rows collected: 2/);
+  assert.match(report, /1\/1 visible on this tab/);
+});

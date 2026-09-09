@@ -6,7 +6,7 @@
     if (!start) return null;
     // Fast path: Torn's inventory rows are list items carrying data-item.
     // No text or layout reads beyond one bounding box.
-    const direct = start.closest?.("li[data-item]");
+    const direct = start.closest?.("li[data-item]:not([data-action])");
     if (direct && !direct.classList.contains("show-item-info") && directItemIdsWithin(direct).size === 1) {
       const rect = direct.getBoundingClientRect();
       if (rect.width > 0 && rect.height > 0) return direct;
@@ -127,9 +127,11 @@
       // Torn keeps every visited category list in the DOM; only the expanded
       // one is on screen. Skipping hidden lists here saves a layout read per
       // row on long inventories.
+      // Exact list classes only: Torn's page wrapper is "main-items-cont-wrap"
+      // and a substring match would sweep in every tab's rows at once.
       const allRoots = Array.from(document.querySelectorAll(
-        ".items-cont, [class*='itemsCont'], [class*='items-cont'], [class*='inventoryList'], [class*='inventory-list']"
-      )).filter((root) => !root.closest("#market-edge-root,.equipped-items-wrap,[class*='equipped']"));
+        "ul.items-cont, .items-cont, [class*='inventoryList'], [class*='inventory-list']"
+      )).filter((root) => !root.closest("#market-edge-root,.equipped-items-wrap,[class*='equipped-items'],[class*='equippedItems']"));
       // Prefer lists that are on screen (one rect per list); if that leaves
       // nothing, fall back to every list and let the per-row rect checks
       // decide.
@@ -153,8 +155,13 @@
     const ordered = Array.from(candidates)
       .map((node) => {
         const rect = node.getBoundingClientRect?.();
+        // Nodes without a box (collapsed tabs, lazy placeholders) must never
+        // outrank visible rows: they would otherwise all sort as "top of
+        // viewport" and crowd the real rows out of the scan limit.
+        if (rect && (rect.width <= 0 || rect.height <= 0)) return null;
         return { node, priority: rect ? viewportPriority({ card: node }) : 0 };
       })
+      .filter(Boolean)
       .sort((a, b) => b.priority - a.priority)
       .slice(0, limit * 2)
       .map((entry) => entry.node);

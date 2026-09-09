@@ -6,6 +6,17 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-09-09
+
+### Fixed
+
+Diagnosed from a real-device detection trace of Torn's inventory page.
+
+- **Tabs that stayed unpriced until a refresh (root cause).** Torn's page wrapper carries the class `main-items-cont-wrap`; a substring selector treated it as an item list, so every visited tab's rows were candidates at once. Rows of collapsed tabs have no box and sorted as "top of the viewport", crowding the visible rows out of the scan limit. Item lists are now matched exactly (`ul.items-cont`) and nodes without a box are discarded before ranking.
+- **Action entries treated as rows.** Each row's `Use`, `Send`, `Equip` and `Trash` entries are also `li[data-item]`; they are excluded by their `data-action` attribute and their `actions-wrap` container.
+- **"unequipped" matched the equipped-region exclusion.** The exclusion now targets `equipped-items` containers only.
+- **Empty dark bars under weapons and armor.** The invisible marker for unpriced rows lost a CSS specificity contest with the row-line style; unpriced rows now get an inline hidden marker with no layout changes to the row.
+
 ## [0.5.3] - 2026-09-09
 
 ### Fixed

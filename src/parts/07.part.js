@@ -606,7 +606,7 @@
     overlays.slice(0, 80).forEach((overlay) => {
       // Rows of other (collapsed) category tabs stay in the DOM; they are
       // expected to have no box and say nothing about the visible tab.
-      const list = overlay.closest(".items-cont, [class*='items-cont']");
+      const list = overlay.closest("ul.items-cont, .items-cont");
       if (list && (list.getAttribute("aria-expanded") === "false" || /display\s*:\s*none/i.test(list.getAttribute("style") || ""))) {
         hiddenTab += 1;
         return;
@@ -680,15 +680,15 @@
   function inventoryDetectionTrace() {
     const lines = ["--- inventory detection trace"];
     try {
-      const lists = Array.from(document.querySelectorAll(".items-cont, [class*='itemsCont'], [class*='items-cont'], [class*='inventoryList'], [class*='inventory-list']"));
+      const lists = Array.from(document.querySelectorAll("ul.items-cont, .items-cont, [class*='inventoryList'], [class*='inventory-list']"));
       lines.push(`item lists: ${lists.length}`);
       lists.slice(0, 12).forEach((list, index) => {
         const box = list.getBoundingClientRect();
         const attrs = Array.from(list.attributes || []).filter((attr) => attr.name !== "class").map((attr) => `${attr.name}=${String(attr.value).slice(0, 24)}`).join(" ");
-        lines.push(`  list ${index + 1}: ${list.tagName.toLowerCase()}${list.id ? `#${list.id}` : ""} class="${String(list.className).slice(0, 60)}" ${attrs} | li[data-item]: ${list.querySelectorAll("li[data-item]").length}, children: ${list.childElementCount}, box ${Math.round(box.width)}x${Math.round(box.height)} top ${Math.round(box.top)}, equipped-ancestor: ${Boolean(list.closest(".equipped-items-wrap,[class*='equipped']"))}`);
+        lines.push(`  list ${index + 1}: ${list.tagName.toLowerCase()}${list.id ? `#${list.id}` : ""} class="${String(list.className).slice(0, 60)}" ${attrs} | li[data-item]: ${list.querySelectorAll("li[data-item]").length}, children: ${list.childElementCount}, box ${Math.round(box.width)}x${Math.round(box.height)} top ${Math.round(box.top)}, equipped-ancestor: ${Boolean(list.closest(".equipped-items-wrap,[class*='equipped-items'],[class*='equippedItems']"))}`);
       });
       const shown = lists.filter((list) => { const box = list.getBoundingClientRect(); return box.height > 0 && box.width > 0; });
-      const sample = (shown[0] || lists[0])?.querySelectorAll("li[data-item]") || [];
+      const sample = (shown[0] || lists[0])?.querySelectorAll("li[data-item]:not([data-action])") || [];
       Array.from(sample).slice(0, 3).forEach((li, index) => {
         const box = li.getBoundingClientRect();
         const ids = Array.from(directItemIdsWithin(li));

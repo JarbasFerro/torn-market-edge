@@ -50,7 +50,7 @@
     .me-inline-analysis.RED .me-inline-status { color:#e27a7a !important; }
     .me-inline-metric { white-space:nowrap !important; font-variant-numeric:tabular-nums !important; }
     .me-inline-analysis.me-loading { opacity:.65 !important; font-weight:400 !important; }
-    .me-inline-analysis.me-hidden { display:none !important; }
+    .me-inline-analysis.me-hidden, div.me-inline-analysis.me-row-line.me-hidden { display:none !important; visibility:hidden !important; height:0 !important; min-height:0 !important; padding:0 !important; border:0 !important; }
     .me-bazaar-add-row { height:auto !important; min-height:72px !important; overflow:visible !important; }
     .me-bazaar-add-controls { flex-wrap:wrap !important; overflow:visible !important; }
     .me-bazaar-add-controls > .me-inline-analysis { display:flex !important; flex:0 0 100% !important; width:100% !important; max-width:none !important; grid-column:1 / -1 !important; justify-content:flex-end !important; margin:4px 0 1px !important; z-index:10 !important; }
@@ -430,11 +430,14 @@
     ui.status = null;
   }
 
-  function inlineHostFor(visible) {
+  function inlineHostFor(visible, { hidden = false } = {}) {
     if (visible?.rowLine) {
       const host = visible.inlineAnchor?.isConnected ? visible.inlineAnchor : visible.card;
       if (host?.isConnected) {
-        visible.card?.classList?.add("me-row-host");
+        // Hidden markers (unpriced rows) must not change the row's layout,
+        // even after a loading placeholder tagged the row.
+        if (hidden) visible.card?.classList?.remove("me-row-host", "me-row-float-host");
+        else visible.card?.classList?.add("me-row-host");
         return { mode: "append", node: host };
       }
     }
@@ -453,18 +456,19 @@
   }
 
   function renderInlineHtml(visible, html, state = "GREY", extraClass = "") {
-    const host = inlineHostFor(visible);
+    const hidden = extraClass.includes("me-hidden");
+    const host = inlineHostFor(visible, { hidden });
     if (!host) return null;
     visible.card?.querySelectorAll?.(".me-inline-analysis").forEach((node) => node.remove());
     // Inventory rows get a block-level div as the row's last child; other
     // surfaces keep the inline span.
-    const block = document.createElement(visible?.rowLine ? "div" : "span");
-    block.className = `me-inline-analysis ${state} ${extraClass}${visible?.rowLine ? " me-row-line" : ""}`.trim();
+    const block = document.createElement(visible?.rowLine && !hidden ? "div" : "span");
+    block.className = `me-inline-analysis ${state} ${extraClass}${visible?.rowLine && !hidden ? " me-row-line" : ""}`.trim();
     block.dataset.meItemId = String(visible.itemId);
     block.dataset.meComplete = extraClass.includes("me-loading") ? "0" : "1";
     block.innerHTML = html;
     host.node.appendChild(block);
-    if (visible?.rowLine && !extraClass.includes("me-hidden")) ensureRowLineVisible(block);
+    if (visible?.rowLine && !hidden) ensureRowLineVisible(block);
     return block;
   }
 
