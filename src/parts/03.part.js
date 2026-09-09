@@ -564,6 +564,7 @@
 
   function itemIdentitySelector() {
     return [
+      "li[data-item]",
       "[data-itemid]",
       "[data-item-id]",
       "[item]",

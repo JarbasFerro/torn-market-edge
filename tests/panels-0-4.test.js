@@ -58,6 +58,7 @@ function itemMeta(id) {
   if (n === 206) return { id: 206, name: "Xanax", type: "Drug", is_tradable: true, value: { market_price: 840000, shops: [{ country: "Japan", shop: "Black Market", buy_price: 700000, sell_price: null }] } };
   if (n === 1) return { id: 1, name: "Fixture Rifle", type: "Weapon", is_tradable: true, value: { market_price: 1000000, shops: [] } };
   if (n === 300) return { id: 300, name: "Bag of Chocolate Kisses", type: "Candy", is_tradable: true, value: { market_price: 1200, shops: [{ country: "Torn", shop: "Sally's Sweet Shop", buy_price: 250, sell_price: 100 }] } };
+  if (n === 1509) return { id: 1509, name: "Angle Grinder", type: "Tool", is_tradable: true, value: { market_price: 5000, shops: [] } };
   if (n === 9001) return { id: 9001, name: "Patagonian Fossil", type: "Other", is_tradable: true, value: { market_price: 500000, shops: [{ country: "Argentina", shop: "Black Market", buy_price: 400000, sell_price: null }] } };
   return { id: n, name: `Item ${n}`, type: "Plushie", is_tradable: true, value: { market_price: 100000, shops: [] } };
 }
@@ -65,6 +66,7 @@ function itemMeta(id) {
 function responder(url) {
   if (url.includes("/market/206/itemmarket")) return xanaxBook();
   if (url.includes("/market/1/itemmarket")) return rifleBook();
+  if (url.includes("/market/1509/itemmarket")) return { itemmarket: { item: { id: 1509, name: "Angle Grinder", type: "Tool", average_price: 5000 }, listings: [{ price: 4800, amount: 30 }, { price: 4900, amount: 50 }, { price: 5000, amount: 90 }], cache_timestamp: NOW - 5, cache_delay: 30 } };
   if (url.includes("/market/300/itemmarket")) return { itemmarket: { item: { id: 300, name: "Bag of Chocolate Kisses", type: "Candy", average_price: 1200 }, listings: [{ price: 1100, amount: 500 }, { price: 1150, amount: 800 }, { price: 1200, amount: 900 }], cache_timestamp: NOW - 5, cache_delay: 30 } };
   if (url.includes("/market/1/auctionhouse")) {
     return { auctionhouse: [
@@ -492,4 +494,22 @@ run("Inventory rows are accepted structurally, regardless of where a heading sit
   env.document.querySelector("#category-wrap").appendChild(heading);
   const rows = env.ME.collectVisibleItems({ requireMoney: false });
   assert.equal(JSON.stringify(rows.map((row) => row.itemId).sort()), "[1,206]");
+});
+
+run("Inventory rows are found through li[data-item] before lazy thumbnails load, and collapsed tabs are skipped", async (t) => {
+  const env = boot(fixture("inventory-lazy.html"), "https://www.torn.com/item.php");
+  t.after(env.close);
+  const rows = env.ME.collectVisibleItems({ requireMoney: false });
+  assert.equal(JSON.stringify(rows.map((row) => row.itemId).sort()), "[1509,206]", "rows keyed by data-item; the collapsed tab is ignored without a layout read");
+  assert.equal(rows.find((row) => row.itemId === 206).name, "Xanax", "name from the row's name node, not the '1 ' sort prefix");
+  assert.equal(rows.find((row) => row.itemId === 206).quantity, 10);
+  await env.ME.scanVisibleSurface("inventory", { force: true });
+  const xanax = env.document.querySelector("li[data-item='206'] .me-inline-analysis");
+  assert.match(xanax.textContent, /BZ \$/);
+  assert.match(xanax.textContent, /x10/);
+  const grinder = env.document.querySelector("li[data-item='1509'] .me-inline-analysis");
+  assert.match(grinder.textContent, /BZ \$/);
+  assert.equal(env.document.querySelector("li[data-item='258'] .me-inline-analysis"), null, "nothing rendered into the collapsed tab");
+  const report = env.ME.buildPageDiagnostics();
+  assert.match(report, /2\/2 visible on this tab/);
 });

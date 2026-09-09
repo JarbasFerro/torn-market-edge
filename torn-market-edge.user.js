@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.5.1
+// @version      0.5.2
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.5.1",
+    version: "0.5.2",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -63,7 +63,7 @@
   const WATCHLIST_MAX_ITEMS = 25;
   const WATCHLIST_ALERT_COOLDOWN_MS = 10 * ONE_MINUTE_MS;
   const OWN_LISTINGS_MAX = 25;
-  // v0.5.1 surfaces: portfolio, shop runs, travel planner, auction guidance.
+  // v0.5.2 surfaces: portfolio, shop runs, travel planner, auction guidance.
   const INVENTORY_TTL_MS = 60 * ONE_MINUTE_MS;
   const INVENTORY_PAGE_LIMIT = 250;
   const INVENTORY_MAX_PAGES = 8;
@@ -2482,6 +2482,7 @@
 
   function itemIdentitySelector() {
     return [
+      "li[data-item]",
       "[data-itemid]",
       "[data-item-id]",
       "[item]",
@@ -2628,9 +2629,13 @@
     // Prefer Torn's actual inventory-list containers when available. This
     // prevents equipped items from ever entering the candidate set.
     if (detectSurface() === "inventory") {
+      // Torn keeps every visited category list in the DOM; only the expanded
+      // one is on screen. Skipping hidden lists here saves a layout read per
+      // row on long inventories.
       const roots = Array.from(document.querySelectorAll(
         ".items-cont, [class*='itemsCont'], [class*='items-cont'], [class*='inventoryList'], [class*='inventory-list']"
-      )).filter((root) => !root.closest("#market-edge-root,.equipped-items-wrap,[class*='equipped']"));
+      )).filter((root) => !root.closest("#market-edge-root,.equipped-items-wrap,[class*='equipped']"))
+        .filter((root) => root.getAttribute("aria-expanded") !== "false" && !/display\s*:\s*none/i.test(root.getAttribute("style") || ""));
       if (roots.length) {
         roots.forEach((root) => root.querySelectorAll(selector).forEach((node) => candidates.add(node)));
       } else {
@@ -2657,18 +2662,24 @@
       // A bare image (for example the large picture inside an expanded
       // details block) is not a row: it would hijack the item entry and
       // swallow the annotation.
-      if (!card || card === node || card.tagName === "IMG" || !(card.textContent || "").trim()) continue;
+      // A bare image is not a row; a row that is its own identity node
+      // (li[data-item]) is fine.
+      if (!card || card.tagName === "IMG" || (card === node && node.tagName === "IMG") || !(card.textContent || "").trim()) continue;
       if (!isInventoryListCandidate(card, inventoryMarker)) continue;
       const rect = card?.getBoundingClientRect?.();
       if (rect && (rect.width <= 0 || rect.height <= 0)) continue;
-      const text = card?.innerText || "";
+      const inventoryRow = detectSurface() === "inventory";
+      // innerText forces layout; inventory rows are read layout-free.
+      const text = inventoryRow ? (card?.textContent || "") : (card?.innerText || "");
       const priceElement = card?.querySelector?.('[data-testid="price"]');
       const price = requireMoney ? priceForSurfaceCard(detectSurface(), card, priceElement) : null;
       if (requireMoney && !price) continue;
-      // Torn's inventory rows carry the quantity as data-qty and the item
-      // name as data-sort; both beat text parsing.
+      // Torn's inventory rows carry the quantity as data-qty; the name comes
+      // from the row's name node, then data-sort minus its sort prefix.
       const quantity = asInt(card?.dataset?.qty, 0) || parseQuantity(text);
-      const name = String(card?.dataset?.sort || "").trim() || elementItemName(card, node);
+      const nameNode = inventoryRow ? card?.querySelector?.(".name-wrap .name, .name") : null;
+      const sortName = String(card?.dataset?.sort || "").replace(/^\d+\s+/, "").trim();
+      const name = String(nameNode?.textContent || "").replace(/\s+/g, " ").replace(/^(?:x|\u00d7)\s*[\d,]+\s+/i, "").replace(/\s+(?:x|\u00d7)\s*[\d,]+$/i, "").trim() || sortName || elementItemName(card, node);
       const equipped = String(card?.dataset?.equipped || "") === "true";
       // Key by row element, not item id: equipment copies share an item id
       // but each occupies its own row and gets its own annotation. Several
@@ -2676,9 +2687,7 @@
       const existing = byId.get(card);
       const score = Math.min(text.length, 900);
       if (!existing || score < existing.domTextLength) {
-        // Inventory rows get their own line inside Torn's title block: the
-        // name span is ellipsised on phones and would clip an inline badge.
-        const inventoryRow = detectSurface() === "inventory";
+        // Inventory rows get their own block line on the row itself.
         byId.set(card, {
           itemId,
           name,
@@ -5137,8 +5146,16 @@
     let zero = 0;
     let clipped = 0;
     let offscreen = 0;
+    let hiddenTab = 0;
     const samples = [];
     overlays.slice(0, 80).forEach((overlay) => {
+      // Rows of other (collapsed) category tabs stay in the DOM; they are
+      // expected to have no box and say nothing about the visible tab.
+      const list = overlay.closest(".items-cont, [class*='items-cont']");
+      if (list && (list.getAttribute("aria-expanded") === "false" || /display\s*:\s*none/i.test(list.getAttribute("style") || ""))) {
+        hiddenTab += 1;
+        return;
+      }
       const rect = overlay.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) {
         zero += 1;
@@ -5173,8 +5190,8 @@
       }
       visible += 1;
     });
-    const checked = Math.min(overlays.length, 80);
-    return `overlay visibility: ${visible}/${checked} visible, ${clipped} clipped, ${zero} zero-size, ${offscreen} off-screen horizontally${samples.length ? ` (${samples.join("; ")})` : ""}`;
+    const checked = Math.min(overlays.length, 80) - hiddenTab;
+    return `overlay visibility: ${visible}/${checked} visible on this tab, ${clipped} clipped, ${zero} zero-size, ${offscreen} off-screen horizontally, ${hiddenTab} in collapsed tabs${samples.length ? ` (${samples.join("; ")})` : ""}`;
   }
 
   function runtimeReportLines() {

@@ -600,8 +600,16 @@
     let zero = 0;
     let clipped = 0;
     let offscreen = 0;
+    let hiddenTab = 0;
     const samples = [];
     overlays.slice(0, 80).forEach((overlay) => {
+      // Rows of other (collapsed) category tabs stay in the DOM; they are
+      // expected to have no box and say nothing about the visible tab.
+      const list = overlay.closest(".items-cont, [class*='items-cont']");
+      if (list && (list.getAttribute("aria-expanded") === "false" || /display\s*:\s*none/i.test(list.getAttribute("style") || ""))) {
+        hiddenTab += 1;
+        return;
+      }
       const rect = overlay.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) {
         zero += 1;
@@ -636,8 +644,8 @@
       }
       visible += 1;
     });
-    const checked = Math.min(overlays.length, 80);
-    return `overlay visibility: ${visible}/${checked} visible, ${clipped} clipped, ${zero} zero-size, ${offscreen} off-screen horizontally${samples.length ? ` (${samples.join("; ")})` : ""}`;
+    const checked = Math.min(overlays.length, 80) - hiddenTab;
+    return `overlay visibility: ${visible}/${checked} visible on this tab, ${clipped} clipped, ${zero} zero-size, ${offscreen} off-screen horizontally, ${hiddenTab} in collapsed tabs${samples.length ? ` (${samples.join("; ")})` : ""}`;
   }
 
   function runtimeReportLines() {

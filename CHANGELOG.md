@@ -6,6 +6,14 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-09-09
+
+### Fixed
+
+- **Some inventory tabs stayed unpriced until a refresh.** Rows were only recognised through their thumbnail image, which Torn loads lazily; a tab whose images arrived late had no detectable rows and, since attribute changes are no longer observed, was never rescanned. Rows are now keyed on Torn's `li[data-item]` attribute, present as soon as the tab renders.
+- **Scans took half a second on long tabs.** Collapsed category lists (Torn keeps every visited tab in the DOM) are skipped before any layout read, and inventory rows are read without `innerText`. Row names come from the row's name node instead of the sort key (no more "1 Angle Grinder").
+- The overlay visibility audit no longer counts rows of collapsed tabs as zero-size; it reports them separately.
+
 ## [0.5.1] - 2026-09-09
 
 ### Fixed
