@@ -545,23 +545,21 @@
   function isInventoryListCandidate(card, marker) {
     if (detectSurface() !== "inventory") return true;
     if (!card || card.closest("#market-edge-root")) return false;
-
-    // The "Your Items" heading is the strongest boundary. Anything before it
-    // belongs to the equipped paper-doll/loadout and must never be scanned.
+    // Structural rules only (the heading's position in the DOM proved
+    // unreliable on a real device): never the equipped/loadout region, and
+    // only rows inside Torn's item lists.
+    const equippedAncestor = card.closest(
+      ".equipped-items-wrap,[class*='equipped'],[class*='loadout'],[class*='paperdoll'],[class*='paper-doll'],[class*='characterEquipment'],[class*='character-equipment']"
+    );
+    if (equippedAncestor) return false;
+    if (card.closest(".items-cont, [class*='itemsCont'], [class*='items-cont'], [class*='inventoryList'], [class*='inventory-list'], .category-wrap, #category-wrap, .items-wrap")) return true;
+    // Unknown container: fall back to "after the heading" when one exists.
     if (marker) {
       if (marker.contains(card)) return true;
       const relation = marker.compareDocumentPosition(card);
       return Boolean(relation & Node.DOCUMENT_POSITION_FOLLOWING);
     }
-
-    // Without the heading: the equipped/loadout region is excluded first
-    // (Torn's .equipped-items-wrap), then cards inside known inventory list
-    // containers (ul.items-cont) are accepted.
-    const equippedAncestor = card.closest(
-      ".equipped-items-wrap,[class*='equipped'],[class*='loadout'],[class*='paperdoll'],[class*='paper-doll'],[class*='characterEquipment'],[class*='character-equipment']"
-    );
-    if (equippedAncestor) return false;
-    return Boolean(card.closest(".items-cont, [class*='itemsCont'], [class*='items-cont'], [class*='inventoryList'], [class*='inventory-list'], .category-wrap, #category-wrap"));
+    return false;
   }
 
   function itemIdentitySelector() {

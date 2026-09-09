@@ -182,7 +182,7 @@
           quantity,
           equipped,
           card,
-          inlineAnchor: inventoryRow ? (card.querySelector(":scope > .title-wrap, .title-wrap") || card) : findItemTextHost(card, name),
+          inlineAnchor: inventoryRow ? card : findItemTextHost(card, name),
           inlineMode: inventoryRow ? "row-line" : "inline",
           rowLine: inventoryRow,
           domTextLength: score

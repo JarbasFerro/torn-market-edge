@@ -55,9 +55,9 @@
     .me-bazaar-add-controls { flex-wrap:wrap !important; overflow:visible !important; }
     .me-bazaar-add-controls > .me-inline-analysis { display:flex !important; flex:0 0 100% !important; width:100% !important; max-width:none !important; grid-column:1 / -1 !important; justify-content:flex-end !important; margin:4px 0 1px !important; z-index:10 !important; }
     .me-inline-analysis.me-bazaar-add { pointer-events:auto !important; padding-right:3px !important; }
-    .me-row-host { height:auto !important; max-height:none !important; overflow:visible !important; }
-    .me-row-host > .title-wrap, .me-row-host .title-wrap { height:auto !important; max-height:none !important; overflow:visible !important; flex-wrap:wrap !important; }
-    .me-inline-analysis.me-row-line { display:flex !important; flex:0 0 100% !important; width:100% !important; max-width:none !important; clear:both !important; margin:2px 0 0 !important; justify-content:flex-start !important; white-space:normal !important; flex-wrap:wrap !important; position:relative !important; z-index:5 !important; }
+    .me-row-host { position:relative !important; height:auto !important; max-height:none !important; overflow:visible !important; flex-wrap:wrap !important; }
+    div.me-inline-analysis.me-row-line { display:flex !important; flex:0 0 100% !important; width:100% !important; max-width:none !important; height:auto !important; min-height:16px !important; clear:both !important; margin:0 !important; padding:2px 8px !important; border:0 !important; border-top:1px solid rgba(255,255,255,.08) !important; border-radius:0 !important; background:rgba(0,0,0,.28) !important; justify-content:flex-start !important; white-space:normal !important; flex-wrap:wrap !important; position:relative !important; z-index:5 !important; line-height:1.3 !important; visibility:visible !important; opacity:1 !important; }
+    div.me-inline-analysis.me-row-line.me-row-float { position:absolute !important; left:0 !important; right:0 !important; bottom:0 !important; width:auto !important; z-index:9 !important; pointer-events:none !important; }
     .me-bazaar-fill-btn { display:inline-flex !important; align-items:center !important; justify-content:center !important; min-width:25px !important; height:22px !important; margin:0 0 0 2px !important; padding:0 7px !important; border:1px solid rgba(255,255,255,.24) !important; border-radius:4px !important; background:rgba(255,255,255,.08) !important; color:#eee !important; font:800 13px/1 Arial,sans-serif !important; cursor:pointer !important; pointer-events:auto !important; touch-action:manipulation !important; }
     .me-bazaar-fill-btn:hover, .me-bazaar-fill-btn:focus { background:rgba(255,255,255,.16) !important; border-color:rgba(255,255,255,.4) !important; outline:none !important; }
     .me-inline-analysis.me-bazaar-add.me-applied { border-color:rgba(74,165,100,.65) !important; }
@@ -455,13 +455,31 @@
     const host = inlineHostFor(visible);
     if (!host) return null;
     visible.card?.querySelectorAll?.(".me-inline-analysis").forEach((node) => node.remove());
-    const block = document.createElement("span");
+    // Inventory rows get a block-level div as the row's last child; other
+    // surfaces keep the inline span.
+    const block = document.createElement(visible?.rowLine ? "div" : "span");
     block.className = `me-inline-analysis ${state} ${extraClass}${visible?.rowLine ? " me-row-line" : ""}`.trim();
     block.dataset.meItemId = String(visible.itemId);
     block.dataset.meComplete = extraClass.includes("me-loading") ? "0" : "1";
     block.innerHTML = html;
     host.node.appendChild(block);
+    if (visible?.rowLine && !extraClass.includes("me-hidden")) ensureRowLineVisible(block);
     return block;
+  }
+
+  // Torn's row markup differs between builds and devices; measure the line
+  // after insertion and, when its box collapsed to nothing, float it over the
+  // bottom edge of the row instead.
+  function ensureRowLineVisible(block) {
+    try {
+      let rect = block.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) return true;
+      block.classList.add("me-row-float");
+      rect = block.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    } catch {
+      return false;
+    }
   }
 
   function renderInlineLoading(visible) {

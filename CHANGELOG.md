@@ -6,6 +6,13 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-09
+
+### Fixed
+
+- **Inventory lines invisible on Torn PDA (real-device report: 54 overlays, all zero-size).** Torn's inventory row title block is a jQuery UI accordion header that collapses foreign children. The line is now a block-level element appended to the item row itself, outside that header, with its own background. After insertion it is measured; if Torn's CSS still gives it no box, it floats over the bottom edge of the row instead.
+- **Inventory rows rejected at random.** Row acceptance depended on the "Your items" heading being before the rows in the DOM, which is not always the case; a real-device report showed zero rows collected on a tab that had 30 annotated moments earlier. Rows are now accepted structurally (inside Torn's item lists, never inside the equipped block); the heading is only a fallback.
+
 ## [0.5.0] - 2026-09-09
 
 ### Removed
