@@ -127,10 +127,18 @@
       // Torn keeps every visited category list in the DOM; only the expanded
       // one is on screen. Skipping hidden lists here saves a layout read per
       // row on long inventories.
-      const roots = Array.from(document.querySelectorAll(
+      const allRoots = Array.from(document.querySelectorAll(
         ".items-cont, [class*='itemsCont'], [class*='items-cont'], [class*='inventoryList'], [class*='inventory-list']"
-      )).filter((root) => !root.closest("#market-edge-root,.equipped-items-wrap,[class*='equipped']"))
-        .filter((root) => root.getAttribute("aria-expanded") !== "false" && !/display\s*:\s*none/i.test(root.getAttribute("style") || ""));
+      )).filter((root) => !root.closest("#market-edge-root,.equipped-items-wrap,[class*='equipped']"));
+      // Prefer lists that are on screen (one rect per list); if that leaves
+      // nothing, fall back to every list and let the per-row rect checks
+      // decide.
+      const shownRoots = allRoots.filter((root) => {
+        if (/display\s*:\s*none/i.test(root.getAttribute("style") || "")) return false;
+        const box = root.getBoundingClientRect();
+        return box.height > 0 && box.width > 0;
+      });
+      const roots = shownRoots.length ? shownRoots : allRoots;
       if (roots.length) {
         roots.forEach((root) => root.querySelectorAll(selector).forEach((node) => candidates.add(node)));
       } else {

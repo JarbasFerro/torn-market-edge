@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.5.2
+// @version      0.5.3
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.5.2",
+    version: "0.5.3",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -63,7 +63,7 @@
   const WATCHLIST_MAX_ITEMS = 25;
   const WATCHLIST_ALERT_COOLDOWN_MS = 10 * ONE_MINUTE_MS;
   const OWN_LISTINGS_MAX = 25;
-  // v0.5.2 surfaces: portfolio, shop runs, travel planner, auction guidance.
+  // v0.5.3 surfaces: portfolio, shop runs, travel planner, auction guidance.
   const INVENTORY_TTL_MS = 60 * ONE_MINUTE_MS;
   const INVENTORY_PAGE_LIMIT = 250;
   const INVENTORY_MAX_PAGES = 8;
@@ -2632,10 +2632,18 @@
       // Torn keeps every visited category list in the DOM; only the expanded
       // one is on screen. Skipping hidden lists here saves a layout read per
       // row on long inventories.
-      const roots = Array.from(document.querySelectorAll(
+      const allRoots = Array.from(document.querySelectorAll(
         ".items-cont, [class*='itemsCont'], [class*='items-cont'], [class*='inventoryList'], [class*='inventory-list']"
-      )).filter((root) => !root.closest("#market-edge-root,.equipped-items-wrap,[class*='equipped']"))
-        .filter((root) => root.getAttribute("aria-expanded") !== "false" && !/display\s*:\s*none/i.test(root.getAttribute("style") || ""));
+      )).filter((root) => !root.closest("#market-edge-root,.equipped-items-wrap,[class*='equipped']"));
+      // Prefer lists that are on screen (one rect per list); if that leaves
+      // nothing, fall back to every list and let the per-row rect checks
+      // decide.
+      const shownRoots = allRoots.filter((root) => {
+        if (/display\s*:\s*none/i.test(root.getAttribute("style") || "")) return false;
+        const box = root.getBoundingClientRect();
+        return box.height > 0 && box.width > 0;
+      });
+      const roots = shownRoots.length ? shownRoots : allRoots;
       if (roots.length) {
         roots.forEach((root) => root.querySelectorAll(selector).forEach((node) => candidates.add(node)));
       } else {
@@ -3439,7 +3447,8 @@
     .me-bazaar-add-controls { flex-wrap:wrap !important; overflow:visible !important; }
     .me-bazaar-add-controls > .me-inline-analysis { display:flex !important; flex:0 0 100% !important; width:100% !important; max-width:none !important; grid-column:1 / -1 !important; justify-content:flex-end !important; margin:4px 0 1px !important; z-index:10 !important; }
     .me-inline-analysis.me-bazaar-add { pointer-events:auto !important; padding-right:3px !important; }
-    .me-row-host { position:relative !important; height:auto !important; max-height:none !important; overflow:visible !important; flex-wrap:wrap !important; }
+    .me-row-host { height:auto !important; max-height:none !important; overflow:visible !important; flex-wrap:wrap !important; }
+    .me-row-host.me-row-float-host { position:relative !important; }
     div.me-inline-analysis.me-row-line { display:flex !important; flex:0 0 100% !important; width:100% !important; max-width:none !important; height:auto !important; min-height:16px !important; clear:both !important; margin:0 !important; padding:2px 8px !important; border:0 !important; border-top:1px solid rgba(255,255,255,.08) !important; border-radius:0 !important; background:rgba(0,0,0,.28) !important; justify-content:flex-start !important; white-space:normal !important; flex-wrap:wrap !important; position:relative !important; z-index:5 !important; line-height:1.3 !important; visibility:visible !important; opacity:1 !important; }
     div.me-inline-analysis.me-row-line.me-row-float { position:absolute !important; left:0 !important; right:0 !important; bottom:0 !important; width:auto !important; z-index:9 !important; pointer-events:none !important; }
     .me-bazaar-fill-btn { display:inline-flex !important; align-items:center !important; justify-content:center !important; min-width:25px !important; height:22px !important; margin:0 0 0 2px !important; padding:0 7px !important; border:1px solid rgba(255,255,255,.24) !important; border-radius:4px !important; background:rgba(255,255,255,.08) !important; color:#eee !important; font:800 13px/1 Arial,sans-serif !important; cursor:pointer !important; pointer-events:auto !important; touch-action:manipulation !important; }
@@ -3859,6 +3868,7 @@
       let rect = block.getBoundingClientRect();
       if (rect.width > 0 && rect.height > 0) return true;
       block.classList.add("me-row-float");
+      block.parentElement?.classList?.add("me-row-float-host");
       rect = block.getBoundingClientRect();
       return rect.width > 0 && rect.height > 0;
     } catch {
@@ -4637,6 +4647,7 @@
     });
 
     await Promise.allSettled(tasks);
+    if (surface === "inventory") restoreScrollAfterTabSwitch();
     const annotated = items.filter((visible) => visible.card?.querySelector?.(`.me-inline-analysis[data-me-item-id="${visible.itemId}"]`)?.dataset?.meComplete === "1").length;
     recordRuntime("scan", `${surface}: ${annotated}/${items.length} rows`, { surface, rows: items.length, annotated, ms: Date.now() - scanStartedAt });
   }
@@ -5219,6 +5230,35 @@
     return lines;
   }
 
+  // Why does (or doesn't) the inventory collector see rows on this tab?
+  // Lists every item list with its attributes and the collector's verdict on
+  // the first rows of the lists that are on screen.
+  function inventoryDetectionTrace() {
+    const lines = ["--- inventory detection trace"];
+    try {
+      const lists = Array.from(document.querySelectorAll(".items-cont, [class*='itemsCont'], [class*='items-cont'], [class*='inventoryList'], [class*='inventory-list']"));
+      lines.push(`item lists: ${lists.length}`);
+      lists.slice(0, 12).forEach((list, index) => {
+        const box = list.getBoundingClientRect();
+        const attrs = Array.from(list.attributes || []).filter((attr) => attr.name !== "class").map((attr) => `${attr.name}=${String(attr.value).slice(0, 24)}`).join(" ");
+        lines.push(`  list ${index + 1}: ${list.tagName.toLowerCase()}${list.id ? `#${list.id}` : ""} class="${String(list.className).slice(0, 60)}" ${attrs} | li[data-item]: ${list.querySelectorAll("li[data-item]").length}, children: ${list.childElementCount}, box ${Math.round(box.width)}x${Math.round(box.height)} top ${Math.round(box.top)}, equipped-ancestor: ${Boolean(list.closest(".equipped-items-wrap,[class*='equipped']"))}`);
+      });
+      const shown = lists.filter((list) => { const box = list.getBoundingClientRect(); return box.height > 0 && box.width > 0; });
+      const sample = (shown[0] || lists[0])?.querySelectorAll("li[data-item]") || [];
+      Array.from(sample).slice(0, 3).forEach((li, index) => {
+        const box = li.getBoundingClientRect();
+        const ids = Array.from(directItemIdsWithin(li));
+        const row = findInventoryRow(li);
+        lines.push(`  row ${index + 1}: ${describeNode(li)} box ${Math.round(box.width)}x${Math.round(box.height)} | ids ${JSON.stringify(ids)} | findInventoryRow: ${row ? (row === li ? "self" : describeNode(row)) : "none"} | candidate: ${isInventoryListCandidate(row || li, inventoryListMarker())} | text ${(li.textContent || "").replace(/\s+/g, " ").trim().length} chars`);
+      });
+      const marker = inventoryListMarker();
+      lines.push(`  heading marker: ${marker ? describeNode(marker) : "none"}`);
+    } catch (error) {
+      lines.push(`  trace failed: ${error.message}`);
+    }
+    return lines;
+  }
+
   function buildPageDiagnostics() {
     const surface = detectSurface();
     const lines = [`Market Edge ${APP.version} page structure`, `surface: ${surface}`, `path: ${location.pathname}${location.hash ? ` hash: ${location.hash.slice(0, 60)}` : ""}`, `pda: ${ENV.isPda}`, ""];
@@ -5231,6 +5271,7 @@
       lines.push(`api key present: ${Boolean(Store.apiKey())}`);
       const rows = surface === "bazaar" ? collectBazaarAddItems() : (surface === "imsell" ? collectSellFormRows() : collectVisibleItems({ requireMoney: surface !== "inventory" }));
       lines.push("", `rows collected: ${rows.length}`);
+      if (surface === "inventory") lines.push(...inventoryDetectionTrace());
       rows.slice(0, 3).forEach((item, index) => {
         lines.push(`--- row ${index + 1}: item ${item.itemId} "${item.name}" qty ${item.quantity}`);
         lines.push(ancestorChain(item.card, 6));
@@ -5757,6 +5798,27 @@
       // Your active Item Market listings (#/viewListing): inline fills on the
       // rows plus the API-backed listings panel.
       if (surface === "imsell" && ownListingsRouteActive() && Store.apiKey()) setTimeout(() => { if (detectSurface() === "imsell") renderOwnListingsPanel(); }, 400);
+    }
+  }
+
+  // Torn's inventory tabs are hash routes; if the page ends up at the top
+  // right after a tab switch while the player was scrolled down, put the
+  // scroll position back (only within the inventory, only shortly after).
+  let scrollGuard = { at: 0, y: 0 };
+  window.addEventListener("hashchange", () => {
+    if (detectSurface() !== "inventory") return;
+    scrollGuard = { at: Date.now(), y: window.scrollY || 0 };
+  }, true);
+
+  function restoreScrollAfterTabSwitch() {
+    if (!scrollGuard.at || Date.now() - scrollGuard.at > 1500 || scrollGuard.y < 150) return;
+    if ((window.scrollY || 0) > 40) return;
+    const maxY = Math.max(0, (document.documentElement.scrollHeight || 0) - (window.innerHeight || 0));
+    if (maxY < scrollGuard.y * 0.5) return;
+    try {
+      window.scrollTo(0, Math.min(scrollGuard.y, maxY));
+    } catch {
+      // ignore
     }
   }
 

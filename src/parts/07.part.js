@@ -91,6 +91,7 @@
     });
 
     await Promise.allSettled(tasks);
+    if (surface === "inventory") restoreScrollAfterTabSwitch();
     const annotated = items.filter((visible) => visible.card?.querySelector?.(`.me-inline-analysis[data-me-item-id="${visible.itemId}"]`)?.dataset?.meComplete === "1").length;
     recordRuntime("scan", `${surface}: ${annotated}/${items.length} rows`, { surface, rows: items.length, annotated, ms: Date.now() - scanStartedAt });
   }
@@ -673,6 +674,35 @@
     return lines;
   }
 
+  // Why does (or doesn't) the inventory collector see rows on this tab?
+  // Lists every item list with its attributes and the collector's verdict on
+  // the first rows of the lists that are on screen.
+  function inventoryDetectionTrace() {
+    const lines = ["--- inventory detection trace"];
+    try {
+      const lists = Array.from(document.querySelectorAll(".items-cont, [class*='itemsCont'], [class*='items-cont'], [class*='inventoryList'], [class*='inventory-list']"));
+      lines.push(`item lists: ${lists.length}`);
+      lists.slice(0, 12).forEach((list, index) => {
+        const box = list.getBoundingClientRect();
+        const attrs = Array.from(list.attributes || []).filter((attr) => attr.name !== "class").map((attr) => `${attr.name}=${String(attr.value).slice(0, 24)}`).join(" ");
+        lines.push(`  list ${index + 1}: ${list.tagName.toLowerCase()}${list.id ? `#${list.id}` : ""} class="${String(list.className).slice(0, 60)}" ${attrs} | li[data-item]: ${list.querySelectorAll("li[data-item]").length}, children: ${list.childElementCount}, box ${Math.round(box.width)}x${Math.round(box.height)} top ${Math.round(box.top)}, equipped-ancestor: ${Boolean(list.closest(".equipped-items-wrap,[class*='equipped']"))}`);
+      });
+      const shown = lists.filter((list) => { const box = list.getBoundingClientRect(); return box.height > 0 && box.width > 0; });
+      const sample = (shown[0] || lists[0])?.querySelectorAll("li[data-item]") || [];
+      Array.from(sample).slice(0, 3).forEach((li, index) => {
+        const box = li.getBoundingClientRect();
+        const ids = Array.from(directItemIdsWithin(li));
+        const row = findInventoryRow(li);
+        lines.push(`  row ${index + 1}: ${describeNode(li)} box ${Math.round(box.width)}x${Math.round(box.height)} | ids ${JSON.stringify(ids)} | findInventoryRow: ${row ? (row === li ? "self" : describeNode(row)) : "none"} | candidate: ${isInventoryListCandidate(row || li, inventoryListMarker())} | text ${(li.textContent || "").replace(/\s+/g, " ").trim().length} chars`);
+      });
+      const marker = inventoryListMarker();
+      lines.push(`  heading marker: ${marker ? describeNode(marker) : "none"}`);
+    } catch (error) {
+      lines.push(`  trace failed: ${error.message}`);
+    }
+    return lines;
+  }
+
   function buildPageDiagnostics() {
     const surface = detectSurface();
     const lines = [`Market Edge ${APP.version} page structure`, `surface: ${surface}`, `path: ${location.pathname}${location.hash ? ` hash: ${location.hash.slice(0, 60)}` : ""}`, `pda: ${ENV.isPda}`, ""];
@@ -685,6 +715,7 @@
       lines.push(`api key present: ${Boolean(Store.apiKey())}`);
       const rows = surface === "bazaar" ? collectBazaarAddItems() : (surface === "imsell" ? collectSellFormRows() : collectVisibleItems({ requireMoney: surface !== "inventory" }));
       lines.push("", `rows collected: ${rows.length}`);
+      if (surface === "inventory") lines.push(...inventoryDetectionTrace());
       rows.slice(0, 3).forEach((item, index) => {
         lines.push(`--- row ${index + 1}: item ${item.itemId} "${item.name}" qty ${item.quantity}`);
         lines.push(ancestorChain(item.card, 6));
@@ -1211,6 +1242,27 @@
       // Your active Item Market listings (#/viewListing): inline fills on the
       // rows plus the API-backed listings panel.
       if (surface === "imsell" && ownListingsRouteActive() && Store.apiKey()) setTimeout(() => { if (detectSurface() === "imsell") renderOwnListingsPanel(); }, 400);
+    }
+  }
+
+  // Torn's inventory tabs are hash routes; if the page ends up at the top
+  // right after a tab switch while the player was scrolled down, put the
+  // scroll position back (only within the inventory, only shortly after).
+  let scrollGuard = { at: 0, y: 0 };
+  window.addEventListener("hashchange", () => {
+    if (detectSurface() !== "inventory") return;
+    scrollGuard = { at: Date.now(), y: window.scrollY || 0 };
+  }, true);
+
+  function restoreScrollAfterTabSwitch() {
+    if (!scrollGuard.at || Date.now() - scrollGuard.at > 1500 || scrollGuard.y < 150) return;
+    if ((window.scrollY || 0) > 40) return;
+    const maxY = Math.max(0, (document.documentElement.scrollHeight || 0) - (window.innerHeight || 0));
+    if (maxY < scrollGuard.y * 0.5) return;
+    try {
+      window.scrollTo(0, Math.min(scrollGuard.y, maxY));
+    } catch {
+      // ignore
     }
   }
 

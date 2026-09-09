@@ -6,6 +6,18 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-09-09
+
+### Fixed
+
+- Inventory lists are no longer excluded on `aria-expanded="false"`; only lists hidden by style or with no box are skipped, and if that leaves nothing every list is considered.
+- After an inventory tab switch, a scroll position that jumped to the top is restored (inventory only, within 1.5 s, only when the player was scrolled down).
+- Row hosts no longer receive `position: relative` unless the floated fallback line is used.
+
+### Added
+
+- The page structure report includes an inventory detection trace: every item list with its attributes, box and row count, plus the collector's verdict on the first rows of the visible list.
+
 ## [0.5.2] - 2026-09-09
 
 ### Fixed
