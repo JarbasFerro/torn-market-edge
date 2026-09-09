@@ -194,7 +194,8 @@
 
         ${settingsSectionHtml("Panels and travel", "portfolio, shops, travel, browse", `
           <div class="me-form-grid">
-            ${f("travelCapacity", "Travel capacity (0 = per-item figures only)", { min: 0, max: 1000, step: 1 })}
+            <label for="me-set-travelType">Travel type (sets flight time for $/hour abroad)</label><select id="me-set-travelType" data-setting="travelType">${Object.entries(TRAVEL_TYPE_LABELS).map(([value, label]) => `<option value="${value}" ${value === (current.travelType || "standard") ? "selected" : ""}>${label}</option>`).join("")}</select>
+            ${f("travelCapacity", "Travel capacity when the page does not show it (0 = per-item only)", { min: 0, max: 1000, step: 1 })}
             ${f("shopRunQuantity", "City shop run quantity (units)", { min: 1, max: 10000, step: 1 })}
             ${f("portfolioRefineRequests", "Portfolio refine budget (requests per press)", { min: 1, max: 60, step: 1 })}
             ${f("auctionEvidenceEnabled", "Use ended Auction House sales as evidence", { type: "checkbox" })}

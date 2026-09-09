@@ -352,6 +352,35 @@
     };
   }
 
+  function flightMinutes(country, travelType = "standard") {
+    const base = FOREIGN_FLIGHT_MINUTES[country];
+    if (!base) return null;
+    const factor = TRAVEL_TYPE_FACTORS[travelType] || 1;
+    return Math.round(base * factor);
+  }
+
+  // Abroad shop row: what one trip of this item earns per hour of flying.
+  // Units are bounded by the capacity left on this trip, the shop's stock
+  // and the cash on hand; profit per unit is the Bazaar resale price (no
+  // fee) minus the shop price; time is the round trip.
+  function evaluateAbroadRow({ buyPrice, stock, capacityLeft, money = null, resalePrice, oneWayMinutes }) {
+    const price = asInt(buyPrice, 0);
+    const resale = asInt(resalePrice, 0);
+    if (!price || !resale) return null;
+    const limits = [];
+    let units = Math.max(0, asInt(capacityLeft, 0));
+    limits.push({ by: "capacity", units });
+    if (stock !== null && stock !== undefined) limits.push({ by: "stock", units: Math.max(0, asInt(stock, 0)) });
+    if (Number.isFinite(money) && money !== null) limits.push({ by: "cash", units: Math.floor(Math.max(0, money) / price) });
+    units = limits.reduce((min, limit) => Math.min(min, limit.units), units);
+    const limitedBy = limits.filter((limit) => limit.units === units).map((limit) => limit.by);
+    const profitPerUnit = resale - price;
+    const perTrip = profitPerUnit * units;
+    const roundTripMinutes = Number.isFinite(oneWayMinutes) && oneWayMinutes > 0 ? oneWayMinutes * 2 : null;
+    const perHour = roundTripMinutes ? Math.round(perTrip / (roundTripMinutes / 60)) : null;
+    return { units, profitPerUnit, perTrip, perHour, roundTripMinutes, limitedBy, cashNeeded: price * units, resalePrice: resale, buyPrice: price };
+  }
+
   function rankTravelPlan(evaluations, { perCountry = 3 } = {}) {
     const byCountry = new Map();
     (evaluations || []).forEach((row) => {
@@ -589,6 +618,8 @@
     evaluateBuyAtPrice,
     evaluateShopRun,
     evaluateForeignOffer,
+    evaluateAbroadRow,
+    flightMinutes,
     rankTravelPlan,
     museumByName,
     auctionTimingStats,

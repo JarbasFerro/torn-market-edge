@@ -6,6 +6,15 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-09
+
+### Changed
+
+- **Abroad shops answer "how much per hour".** A device report from the United Kingdom shop showed the row strips wedged into the image column: Torn renders each row as a CSS grid inside a list item, so a strip appended to the grid became a grid cell. The abroad page now has its own collector. The strip is a full-width line below the row grid and reads, for example, `+$13.2k/h | +$1.25k each | 28 units = +$35.0k/trip | sell $6.25k`: resale in your Bazaar (fee-free) minus the shop price, times the units you can carry this trip, divided by the round-trip flight time. Units are bounded by the free capacity Torn prints on the page ("purchased 0 / 28 items"), the shop's stock and your cash. The `?` panel shows the arithmetic, what limited the units, and the flight assumption.
+- **Ranked summary above the shop.** "Best buys in United Kingdom" lists the five best rows by $/hour with units, profit per trip and the rate, plus the free slots and the flight time each way. The best row is green on the list.
+- **Travel type setting** (standard, airstrip, private jet, business class) sets the flight time used for the hourly rate; the flight table covers all eleven countries. The travel capacity setting is now only a fallback for pages that do not print the capacity.
+- The abroad page is recognised by Torn's body flag, its stock tables or the purchase message, and rows fall back to "any list row with an item image and a quantity field" if Torn renames its CSS modules. Unknown stock counts as unlimited rather than zero.
+
 ## [0.6.0] - 2026-09-09
 
 Performance and UI/UX release, from a research pass over Torn's API (swagger v6.13.4: no market-relevant change), the Torn PDA source, the top Greasy Fork market scripts and their feedback pages, and an audit of this script.

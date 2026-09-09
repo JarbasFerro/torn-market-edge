@@ -807,6 +807,139 @@
     }), clamp(settings.scanMaxVisibleItems, 1, 50));
   }
 
+  // ---------------------------------------------------------------------------
+  // Abroad shop (page.php?sid=travel while in a foreign country). Torn renders
+  // each shop as [class*='stockTableWrapper___'] > li, each li holding one
+  // div[class*='row___'] CSS grid (image, name, type, cost, stock, amount,
+  // buy). The strip must be a sibling of that grid, never a child: a child
+  // becomes a grid cell and lands in the image column.
+  // ---------------------------------------------------------------------------
+
+  const ABROAD_TABLE_SELECTOR = "[class*='stockTableWrapper___']";
+
+  function abroadInfoMessage() {
+    return (document.querySelector(".info-msg-cont .msg, .info-msg .msg, [class*='infoMsg']")?.textContent || "").replace(/\s+/g, " ");
+  }
+
+  // The abroad page is recognised by Torn's body flag, by its stock tables
+  // or by the "purchased X / Y items" message, so a renamed CSS module does
+  // not silently hand the rows back to the generic path.
+  function abroadPagePresent() {
+    if (detectSurface() !== "travel") return false;
+    if (String(document.body?.dataset?.abroad || "") === "true") return true;
+    if (document.querySelector(ABROAD_TABLE_SELECTOR)) return true;
+    return /purchased\s+[\d,]+\s*\/\s*[\d,]+\s+items?/i.test(abroadInfoMessage());
+  }
+
+  function abroadShopRoot() {
+    if (!abroadPagePresent()) return null;
+    const travelRoot = document.querySelector("#travel-root");
+    if (travelRoot) return travelRoot;
+    const table = document.querySelector(ABROAD_TABLE_SELECTOR);
+    if (table) return table.parentElement || table;
+    return document.querySelector(".content-wrapper, #mainContainer") || document.body;
+  }
+
+  function abroadCountryName() {
+    const slug = String(document.body?.dataset?.country || "").toLowerCase();
+    if (COUNTRY_SLUGS[slug]) return COUNTRY_SLUGS[slug];
+    const heading = Array.from(document.querySelectorAll("h4, h3, h2, [class*='title'], [class*='heading'], strong")).map((node) => (node.textContent || "").trim()).find((text) => FOREIGN_FLIGHT_MINUTES[text]);
+    if (heading) return heading;
+    const message = (document.querySelector(".info-msg-cont .msg, .info-msg .msg, [class*='infoMsg']")?.textContent || "");
+    return Object.keys(FOREIGN_FLIGHT_MINUTES).find((name) => message.includes(name)) || "";
+  }
+
+  // "You are in United Kingdom and have $2,887,289. You have purchased 0 / 28
+  // items so far." gives cash, items bought and the trip capacity.
+  function abroadContext() {
+    const message = abroadInfoMessage();
+    const capacityMatch = message.match(/purchased\s+([\d,]+)\s*\/\s*([\d,]+)/i);
+    const moneyMatch = message.match(/have\s+\$([\d,]+)/i);
+    const bought = capacityMatch ? asInt(capacityMatch[1].replace(/,/g, ""), 0) : 0;
+    const capacity = capacityMatch ? asInt(capacityMatch[2].replace(/,/g, ""), 0) : Math.max(0, asInt(settings.travelCapacity, 0));
+    const money = moneyMatch ? asInt(moneyMatch[1].replace(/,/g, ""), 0) : null;
+    const country = abroadCountryName();
+    return {
+      country,
+      capacity,
+      bought,
+      capacityLeft: Math.max(0, capacity - bought),
+      capacityFromPage: Boolean(capacityMatch),
+      money,
+      travelType: TRAVEL_TYPE_FACTORS[settings.travelType] ? settings.travelType : "standard",
+      oneWayMinutes: flightMinutes(country, settings.travelType)
+    };
+  }
+
+  function abroadCellText(row, kind) {
+    const cells = Array.from(row.children || []);
+    for (const cell of cells) {
+      const text = (cell.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+      if (kind === "cost" && (text.startsWith("cost") || text.startsWith("$"))) return cell.textContent || "";
+      if (kind === "stock" && text.startsWith("stock")) return cell.textContent || "";
+    }
+    // Desktop: no inline labels; fall back to the header order.
+    const header = row.closest("[class*='stockTableWrapper___']")?.querySelector("[class*='itemsHeader___']");
+    if (header) {
+      const names = Array.from(header.children).map((node) => (node.textContent || "").trim().toLowerCase());
+      const index = names.indexOf(kind);
+      if (index >= 0 && cells[index]) return cells[index].textContent || "";
+    }
+    return "";
+  }
+
+  function abroadRowGrid(li) {
+    return li.querySelector("div[class*='row___']")
+      || Array.from(li.children).find((child) => child.querySelector?.("img[src*='/items/'], img[srcset*='/items/']"))
+      || li;
+  }
+
+  function collectAbroadShopRows() {
+    const root = abroadShopRoot();
+    if (!root) return [];
+    const limit = clamp(settings.scanMaxVisibleItems, 1, 50);
+    let rows = Array.from(root.querySelectorAll(`${ABROAD_TABLE_SELECTOR} > li`)).filter((li) => li.querySelector("div[class*='row___']"));
+    if (!rows.length) {
+      // Unknown class names: any list row with an item image and a quantity
+      // field is a shop row.
+      rows = Array.from(root.querySelectorAll("li")).filter((li) => (
+        !li.closest("#market-edge-root") &&
+        li.querySelector("input[placeholder*='qty' i], input[name*='amount' i], input[name*='qty' i]") &&
+        li.querySelector("img[src*='/items/'], img[srcset*='/items/']") &&
+        !li.querySelector("li")
+      ));
+    }
+    const ranked = rankCandidates(rows, limit * 2);
+    const items = [];
+    for (const li of ranked) {
+      const grid = abroadRowGrid(li);
+      const image = grid?.querySelector("[class*='imageCell___'] img, img[src*='/items/'], img[srcset*='/items/']");
+      const itemId = itemIdFromElement(image || li);
+      if (!itemId) continue;
+      const priceNode = grid.querySelector("[class*='displayPrice__'], [class*='neededSpace___']");
+      const price = parseMoney(priceNode?.textContent || abroadCellText(grid, "cost") || spacedText(grid));
+      if (!price) continue;
+      const stockText = String(abroadCellText(grid, "stock")).replace(/[^\d]/g, "");
+      // Unknown stock (renamed cells) is treated as unlimited, never as zero.
+      const stock = stockText ? asInt(stockText, 0) : null;
+      const name = (grid.querySelector("[class*='itemName___']")?.textContent || image?.getAttribute("alt") || "").replace(/\s+/g, " ").trim() || elementItemName(li, image || li);
+      items.push({
+        itemId,
+        name,
+        price,
+        quantity: 1,
+        stock,
+        card: li,
+        abroad: true,
+        inlineAnchor: li,
+        inlineMode: "row-line",
+        rowLine: true,
+        domTextLength: Math.min((li.textContent || "").length, 600)
+      });
+    }
+    return finishCollect(items, limit);
+  }
+
   function collectAuctionItems() {
     const rows = [];
     document.querySelectorAll("div.items-list-wrap > ul.items-list > li").forEach((li) => {
@@ -1027,6 +1160,20 @@
     .me-why-line { display:block !important; }
     .me-key-cta { display:inline-flex !important; align-items:center !important; min-height:var(--me-tap) !important; margin:-4px 0 !important; padding:0 10px !important; border:1px solid var(--me-btn-border) !important; border-radius:6px !important; background:var(--me-btn) !important; color:var(--me-fg) !important; font:700 var(--me-fs-meta)/1 Arial, sans-serif !important; cursor:pointer !important; pointer-events:auto !important; }
 
+    div.me-inline-analysis.me-row-line.me-abroad { justify-content:flex-start !important; }
+    div.me-inline-analysis.me-row-line.me-abroad .me-abroad-rate { font-size:13px !important; }
+    .me-abroad-summary { margin:6px 0 8px !important; padding:8px 10px !important; border:1px solid var(--me-strip-border) !important; border-radius:6px !important; background:var(--me-strip) !important; color:var(--me-fg) !important; font:500 var(--me-fs-meta)/1.4 Arial, sans-serif !important; font-variant-numeric:tabular-nums !important; }
+    .me-abroad-summary .me-abroad-title { display:flex !important; align-items:center !important; gap:6px !important; font-weight:700 !important; font-size:var(--me-fs) !important; }
+    .me-abroad-summary .me-abroad-title .me-inline-brand { margin-right:2px !important; }
+    .me-abroad-summary .me-abroad-meta { color:var(--me-muted) !important; font-size:var(--me-fs-small) !important; margin-top:2px !important; }
+    .me-abroad-summary ol { margin:6px 0 0 !important; padding:0 !important; list-style:none !important; }
+    .me-abroad-summary li { display:flex !important; gap:8px !important; align-items:baseline !important; padding:3px 0 !important; border-top:1px solid var(--me-strip-border) !important; }
+    .me-abroad-summary li .me-abroad-rank { color:var(--me-faint) !important; min-width:14px !important; }
+    .me-abroad-summary li .me-abroad-name { flex:1 !important; overflow:hidden !important; text-overflow:ellipsis !important; white-space:nowrap !important; font-weight:700 !important; }
+    .me-abroad-summary li .me-abroad-rate { font-weight:800 !important; color:var(--me-good) !important; white-space:nowrap !important; }
+    .me-abroad-summary li .me-abroad-detail { color:var(--me-muted) !important; white-space:nowrap !important; }
+    .me-abroad-summary .me-abroad-warn { color:var(--me-warn) !important; }
+    .me-abroad-summary .me-abroad-settings { display:inline-flex !important; align-items:center !important; min-height:var(--me-tap) !important; margin:-6px 0 !important; padding:0 8px !important; border:0 !important; background:transparent !important; color:var(--me-muted) !important; font:600 var(--me-fs-small)/1 Arial, sans-serif !important; cursor:pointer !important; text-decoration:underline !important; }
     .me-bazaar-add-row { height:auto !important; min-height:72px !important; overflow:visible !important; }
     .me-bazaar-add-controls { flex-wrap:wrap !important; overflow:visible !important; }
     .me-bazaar-add-controls > .me-inline-analysis { display:flex !important; flex:0 0 100% !important; width:100% !important; max-width:none !important; grid-column:1 / -1 !important; justify-content:flex-end !important; margin:4px 0 1px !important; z-index:10 !important; }

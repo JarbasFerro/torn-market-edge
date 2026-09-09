@@ -16,6 +16,8 @@ try {
 }
 
 const SOURCE = fs.readFileSync(path.join(__dirname, "..", "torn-market-edge.user.js"), "utf8");
+// Pure evaluators are exported to the Node global by the same file.
+require(path.join(__dirname, "..", "torn-market-edge.user.js"));
 
 function fixture(name) {
   return fs.readFileSync(path.join(__dirname, "fixtures", name), "utf8");
@@ -193,4 +195,98 @@ test("v0.6.0 guards remain present in the assembled userscript", () => {
   assert.match(SOURCE, /API_MEMORY_CACHE_MAX = 300/, "bounded API memory cache");
   assert.match(SOURCE, /STORE_MAX_ITEM_RECORDS = 400/, "bounded persisted item records");
   assert.doesNotMatch(SOURCE, /[“”‘’]/, "no curly quotes: Torn PDA rewrites them in script source");
+});
+
+// ---------------------------------------------------------------------------
+// v0.6.1: abroad shop rows priced in dollars per hour of flying
+// ---------------------------------------------------------------------------
+
+test("abroad row evaluator: units bounded by capacity, stock and cash; rate from the round trip", () => {
+  const ME = globalThis.__MARKET_EDGE_TEST__;
+  const row = ME.evaluateAbroadRow({ buyPrice: 5000, stock: 6711, capacityLeft: 28, money: 2887289, resalePrice: 6250, oneWayMinutes: 159 });
+  assert.equal(row.units, 28);
+  assert.deepEqual(row.limitedBy, ["capacity"]);
+  assert.equal(row.profitPerUnit, 1250);
+  assert.equal(row.perTrip, 35000);
+  assert.equal(row.roundTripMinutes, 318);
+  assert.equal(row.perHour, Math.round(35000 / (318 / 60)));
+  const scarce = ME.evaluateAbroadRow({ buyPrice: 17500, stock: 14, capacityLeft: 28, money: 100000, resalePrice: 20000, oneWayMinutes: 159 });
+  assert.equal(scarce.units, 5, "cash caps the units");
+  assert.deepEqual(scarce.limitedBy, ["cash"]);
+  assert.equal(ME.evaluateAbroadRow({ buyPrice: 100, stock: 10, capacityLeft: 5, resalePrice: 90, oneWayMinutes: 26 }).perTrip, -50, "losses are shown, not hidden");
+  assert.equal(ME.flightMinutes("United Kingdom", "standard"), 159);
+  assert.equal(ME.flightMinutes("United Kingdom", "jet"), 80);
+  assert.equal(ME.flightMinutes("Mexico", "business"), 8);
+  assert.equal(ME.flightMinutes("Nowhere", "standard"), null);
+});
+
+run("Abroad shop rows get a $/hour strip below the row grid and a ranked summary above the shop", async (t) => {
+  const env = boot(fixture("travel-abroad.html"), "https://www.torn.com/page.php?sid=travel", {
+    responses: (url) => {
+      const market = url.match(/\/market\/(\d+)\/itemmarket/);
+      if (market) {
+        const id = Number(market[1]);
+        const lowest = id === 263 ? 6400 : id === 206 ? 800000 : 150;
+        return book(id, `Item ${id}`, lowest);
+      }
+      return defaultResponses(url);
+    },
+  });
+  t.after(env.close);
+  assert.equal(env.ME.detectSurface(), "travel");
+  const context = env.ME.abroadContext();
+  assert.equal(context.country, "United Kingdom");
+  assert.equal(context.capacityLeft, 28, "capacity read from Torn's message");
+  assert.equal(context.money, 2887289);
+  assert.equal(context.oneWayMinutes, 159);
+  const rows = env.ME.collectAbroadShopRows();
+  assert.equal(rows.length, 3);
+  const heather = rows.find((row) => row.itemId === 263);
+  assert.equal(heather.price, 5000);
+  assert.equal(heather.stock, 6711);
+  assert.equal(heather.name, "Heather");
+  await env.ME.scanVisibleSurface("travel", { force: true });
+  const strip = env.document.querySelector(".me-inline-analysis[data-me-item-id='263']");
+  assert.ok(strip, "row annotated");
+  assert.ok(strip.classList.contains("me-row-line") && strip.classList.contains("me-abroad"));
+  assert.equal(strip.parentElement.tagName, "LI", "strip is a sibling of the row grid, not a grid cell");
+  assert.notEqual(strip.parentElement.className.includes("row___"), true);
+  assert.match(strip.textContent, /\/h/, "hourly rate leads the line");
+  assert.match(strip.textContent, /28 units/, "units bounded by the trip capacity");
+  assert.match(strip.textContent, /sell \$/, "Bazaar resale price shown");
+  assert.match(strip.querySelector(".me-why").textContent, /round trip/);
+  const xanax = env.document.querySelector(".me-inline-analysis[data-me-item-id='206']");
+  assert.ok(xanax.classList.contains("GREEN"), "the best $/hour row is green");
+  const summary = env.document.querySelector("#travel-root .me-abroad-summary");
+  assert.ok(summary, "summary rendered above the shop");
+  assert.equal(summary.nextElementSibling.className.includes("stockTableWrapper___"), true, "placed before the first stock table");
+  assert.match(summary.textContent, /Best buys in United Kingdom/);
+  assert.match(summary.textContent, /28 slots free/);
+  assert.match(summary.textContent, /2 h 39 min each way/);
+  const names = Array.from(summary.querySelectorAll(".me-abroad-name")).map((node) => node.textContent);
+  assert.equal(names[0], "Xanax", "ranked by $/hour");
+});
+
+run("Abroad rows are still found when Torn renames its CSS modules; unknown stock never counts as zero", async (t) => {
+  const renamed = fixture("travel-abroad.html")
+    .replace(/stockTableWrapper___k9/g, "tbl").replace(/row___r1/g, "rw").replace(/displayPrice___p1/g, "dp")
+    .replace(/neededSpace___s1/g, "ns").replace(/itemName___n1/g, "nm").replace(/imageCell___i1/g, "im").replace(/itemsHeader___h7/g, "hd")
+    .replace(/<span class="label">stock<\/span>6,711/, "6,711");
+  const env = boot(renamed, "https://www.torn.com/page.php?sid=travel", {
+    responses: (url) => {
+      const market = url.match(/\/market\/(\d+)\/itemmarket/);
+      if (market) return book(Number(market[1]), `Item ${market[1]}`, market[1] === "263" ? 6400 : 150);
+      return defaultResponses(url);
+    },
+  });
+  t.after(env.close);
+  const rows = env.ME.collectAbroadShopRows();
+  assert.equal(rows.length, 3, "fallback: list rows with an item image and a Qty field");
+  const heather = rows.find((row) => row.itemId === 263);
+  assert.equal(heather.price, 5000, "price from the first money figure in the row");
+  assert.equal(heather.stock, null, "stock without its label is unknown, not zero");
+  await env.ME.scanVisibleSurface("travel", { force: true });
+  const strip = env.document.querySelector(".me-inline-analysis[data-me-item-id='263']");
+  assert.match(strip.textContent, /28 units/, "unknown stock does not limit the units");
+  assert.ok(env.document.querySelector(".me-abroad-summary"), "summary still anchored above the rows");
 });

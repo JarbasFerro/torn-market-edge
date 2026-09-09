@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.6.0
+// @version      0.6.1
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.6.0",
+    version: "0.6.1",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -92,6 +92,21 @@
   const FOREIGN_COUNTRIES = Object.freeze([
     "Mexico", "Cayman Islands", "Canada", "Hawaii", "United Kingdom", "Argentina", "Switzerland", "Japan", "China", "UAE", "South Africa"
   ]);
+  // One-way flight time in minutes on a standard flight; the other travel
+  // types are fixed fractions of it (airstrip -30%, private jet -50%,
+  // business class -70%).
+  const FOREIGN_FLIGHT_MINUTES = Object.freeze({
+    "Mexico": 26, "Cayman Islands": 35, "Canada": 41, "Hawaii": 134, "United Kingdom": 159, "Argentina": 167,
+    "Switzerland": 175, "Japan": 225, "China": 242, "UAE": 271, "South Africa": 297
+  });
+  const TRAVEL_TYPE_FACTORS = Object.freeze({ standard: 1, airstrip: 0.7, jet: 0.5, business: 0.3 });
+  const TRAVEL_TYPE_LABELS = Object.freeze({ standard: "Standard flight", airstrip: "Airstrip", jet: "Private jet (WLT)", business: "Business class" });
+  // Torn's body[data-country] slugs on the abroad page.
+  const COUNTRY_SLUGS = Object.freeze({
+    "mexico": "Mexico", "cayman-islands": "Cayman Islands", "cayman": "Cayman Islands", "canada": "Canada", "hawaii": "Hawaii",
+    "united-kingdom": "United Kingdom", "uk": "United Kingdom", "argentina": "Argentina", "switzerland": "Switzerland",
+    "japan": "Japan", "china": "China", "uae": "UAE", "united-arab-emirates": "UAE", "south-africa": "South Africa"
+  });
   const CITY_SHOP_STEPS = Object.freeze({
     bigalgunshop: "Big Al's Gun Shop", bitsnbobs: "Bits 'n' Bobs", candy: "Sally's Sweet Shop", clothes: "TC Clothing",
     cyberforce: "Cyber Force", docks: "Docks", jewelry: "Jewelry Store", nikeh: "Nikeh Sports", pawnshop: "Pawn Shop",
@@ -142,6 +157,7 @@
     historyRetentionDays: 14,
     scanMaxVisibleItems: 30,
     travelCapacity: 0,
+    travelType: "standard",
     shopRunQuantity: 100,
     undercutAlerts: true,
     portfolioRefineRequests: PORTFOLIO_REFINE_DEFAULT,
@@ -1216,6 +1232,35 @@
     };
   }
 
+  function flightMinutes(country, travelType = "standard") {
+    const base = FOREIGN_FLIGHT_MINUTES[country];
+    if (!base) return null;
+    const factor = TRAVEL_TYPE_FACTORS[travelType] || 1;
+    return Math.round(base * factor);
+  }
+
+  // Abroad shop row: what one trip of this item earns per hour of flying.
+  // Units are bounded by the capacity left on this trip, the shop's stock
+  // and the cash on hand; profit per unit is the Bazaar resale price (no
+  // fee) minus the shop price; time is the round trip.
+  function evaluateAbroadRow({ buyPrice, stock, capacityLeft, money = null, resalePrice, oneWayMinutes }) {
+    const price = asInt(buyPrice, 0);
+    const resale = asInt(resalePrice, 0);
+    if (!price || !resale) return null;
+    const limits = [];
+    let units = Math.max(0, asInt(capacityLeft, 0));
+    limits.push({ by: "capacity", units });
+    if (stock !== null && stock !== undefined) limits.push({ by: "stock", units: Math.max(0, asInt(stock, 0)) });
+    if (Number.isFinite(money) && money !== null) limits.push({ by: "cash", units: Math.floor(Math.max(0, money) / price) });
+    units = limits.reduce((min, limit) => Math.min(min, limit.units), units);
+    const limitedBy = limits.filter((limit) => limit.units === units).map((limit) => limit.by);
+    const profitPerUnit = resale - price;
+    const perTrip = profitPerUnit * units;
+    const roundTripMinutes = Number.isFinite(oneWayMinutes) && oneWayMinutes > 0 ? oneWayMinutes * 2 : null;
+    const perHour = roundTripMinutes ? Math.round(perTrip / (roundTripMinutes / 60)) : null;
+    return { units, profitPerUnit, perTrip, perHour, roundTripMinutes, limitedBy, cashNeeded: price * units, resalePrice: resale, buyPrice: price };
+  }
+
   function rankTravelPlan(evaluations, { perCountry = 3 } = {}) {
     const byCountry = new Map();
     (evaluations || []).forEach((row) => {
@@ -1453,6 +1498,8 @@
     evaluateBuyAtPrice,
     evaluateShopRun,
     evaluateForeignOffer,
+    evaluateAbroadRow,
+    flightMinutes,
     rankTravelPlan,
     museumByName,
     auctionTimingStats,
@@ -3580,6 +3627,139 @@
     }), clamp(settings.scanMaxVisibleItems, 1, 50));
   }
 
+  // ---------------------------------------------------------------------------
+  // Abroad shop (page.php?sid=travel while in a foreign country). Torn renders
+  // each shop as [class*='stockTableWrapper___'] > li, each li holding one
+  // div[class*='row___'] CSS grid (image, name, type, cost, stock, amount,
+  // buy). The strip must be a sibling of that grid, never a child: a child
+  // becomes a grid cell and lands in the image column.
+  // ---------------------------------------------------------------------------
+
+  const ABROAD_TABLE_SELECTOR = "[class*='stockTableWrapper___']";
+
+  function abroadInfoMessage() {
+    return (document.querySelector(".info-msg-cont .msg, .info-msg .msg, [class*='infoMsg']")?.textContent || "").replace(/\s+/g, " ");
+  }
+
+  // The abroad page is recognised by Torn's body flag, by its stock tables
+  // or by the "purchased X / Y items" message, so a renamed CSS module does
+  // not silently hand the rows back to the generic path.
+  function abroadPagePresent() {
+    if (detectSurface() !== "travel") return false;
+    if (String(document.body?.dataset?.abroad || "") === "true") return true;
+    if (document.querySelector(ABROAD_TABLE_SELECTOR)) return true;
+    return /purchased\s+[\d,]+\s*\/\s*[\d,]+\s+items?/i.test(abroadInfoMessage());
+  }
+
+  function abroadShopRoot() {
+    if (!abroadPagePresent()) return null;
+    const travelRoot = document.querySelector("#travel-root");
+    if (travelRoot) return travelRoot;
+    const table = document.querySelector(ABROAD_TABLE_SELECTOR);
+    if (table) return table.parentElement || table;
+    return document.querySelector(".content-wrapper, #mainContainer") || document.body;
+  }
+
+  function abroadCountryName() {
+    const slug = String(document.body?.dataset?.country || "").toLowerCase();
+    if (COUNTRY_SLUGS[slug]) return COUNTRY_SLUGS[slug];
+    const heading = Array.from(document.querySelectorAll("h4, h3, h2, [class*='title'], [class*='heading'], strong")).map((node) => (node.textContent || "").trim()).find((text) => FOREIGN_FLIGHT_MINUTES[text]);
+    if (heading) return heading;
+    const message = (document.querySelector(".info-msg-cont .msg, .info-msg .msg, [class*='infoMsg']")?.textContent || "");
+    return Object.keys(FOREIGN_FLIGHT_MINUTES).find((name) => message.includes(name)) || "";
+  }
+
+  // "You are in United Kingdom and have $2,887,289. You have purchased 0 / 28
+  // items so far." gives cash, items bought and the trip capacity.
+  function abroadContext() {
+    const message = abroadInfoMessage();
+    const capacityMatch = message.match(/purchased\s+([\d,]+)\s*\/\s*([\d,]+)/i);
+    const moneyMatch = message.match(/have\s+\$([\d,]+)/i);
+    const bought = capacityMatch ? asInt(capacityMatch[1].replace(/,/g, ""), 0) : 0;
+    const capacity = capacityMatch ? asInt(capacityMatch[2].replace(/,/g, ""), 0) : Math.max(0, asInt(settings.travelCapacity, 0));
+    const money = moneyMatch ? asInt(moneyMatch[1].replace(/,/g, ""), 0) : null;
+    const country = abroadCountryName();
+    return {
+      country,
+      capacity,
+      bought,
+      capacityLeft: Math.max(0, capacity - bought),
+      capacityFromPage: Boolean(capacityMatch),
+      money,
+      travelType: TRAVEL_TYPE_FACTORS[settings.travelType] ? settings.travelType : "standard",
+      oneWayMinutes: flightMinutes(country, settings.travelType)
+    };
+  }
+
+  function abroadCellText(row, kind) {
+    const cells = Array.from(row.children || []);
+    for (const cell of cells) {
+      const text = (cell.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+      if (kind === "cost" && (text.startsWith("cost") || text.startsWith("$"))) return cell.textContent || "";
+      if (kind === "stock" && text.startsWith("stock")) return cell.textContent || "";
+    }
+    // Desktop: no inline labels; fall back to the header order.
+    const header = row.closest("[class*='stockTableWrapper___']")?.querySelector("[class*='itemsHeader___']");
+    if (header) {
+      const names = Array.from(header.children).map((node) => (node.textContent || "").trim().toLowerCase());
+      const index = names.indexOf(kind);
+      if (index >= 0 && cells[index]) return cells[index].textContent || "";
+    }
+    return "";
+  }
+
+  function abroadRowGrid(li) {
+    return li.querySelector("div[class*='row___']")
+      || Array.from(li.children).find((child) => child.querySelector?.("img[src*='/items/'], img[srcset*='/items/']"))
+      || li;
+  }
+
+  function collectAbroadShopRows() {
+    const root = abroadShopRoot();
+    if (!root) return [];
+    const limit = clamp(settings.scanMaxVisibleItems, 1, 50);
+    let rows = Array.from(root.querySelectorAll(`${ABROAD_TABLE_SELECTOR} > li`)).filter((li) => li.querySelector("div[class*='row___']"));
+    if (!rows.length) {
+      // Unknown class names: any list row with an item image and a quantity
+      // field is a shop row.
+      rows = Array.from(root.querySelectorAll("li")).filter((li) => (
+        !li.closest("#market-edge-root") &&
+        li.querySelector("input[placeholder*='qty' i], input[name*='amount' i], input[name*='qty' i]") &&
+        li.querySelector("img[src*='/items/'], img[srcset*='/items/']") &&
+        !li.querySelector("li")
+      ));
+    }
+    const ranked = rankCandidates(rows, limit * 2);
+    const items = [];
+    for (const li of ranked) {
+      const grid = abroadRowGrid(li);
+      const image = grid?.querySelector("[class*='imageCell___'] img, img[src*='/items/'], img[srcset*='/items/']");
+      const itemId = itemIdFromElement(image || li);
+      if (!itemId) continue;
+      const priceNode = grid.querySelector("[class*='displayPrice__'], [class*='neededSpace___']");
+      const price = parseMoney(priceNode?.textContent || abroadCellText(grid, "cost") || spacedText(grid));
+      if (!price) continue;
+      const stockText = String(abroadCellText(grid, "stock")).replace(/[^\d]/g, "");
+      // Unknown stock (renamed cells) is treated as unlimited, never as zero.
+      const stock = stockText ? asInt(stockText, 0) : null;
+      const name = (grid.querySelector("[class*='itemName___']")?.textContent || image?.getAttribute("alt") || "").replace(/\s+/g, " ").trim() || elementItemName(li, image || li);
+      items.push({
+        itemId,
+        name,
+        price,
+        quantity: 1,
+        stock,
+        card: li,
+        abroad: true,
+        inlineAnchor: li,
+        inlineMode: "row-line",
+        rowLine: true,
+        domTextLength: Math.min((li.textContent || "").length, 600)
+      });
+    }
+    return finishCollect(items, limit);
+  }
+
   function collectAuctionItems() {
     const rows = [];
     document.querySelectorAll("div.items-list-wrap > ul.items-list > li").forEach((li) => {
@@ -3800,6 +3980,20 @@
     .me-why-line { display:block !important; }
     .me-key-cta { display:inline-flex !important; align-items:center !important; min-height:var(--me-tap) !important; margin:-4px 0 !important; padding:0 10px !important; border:1px solid var(--me-btn-border) !important; border-radius:6px !important; background:var(--me-btn) !important; color:var(--me-fg) !important; font:700 var(--me-fs-meta)/1 Arial, sans-serif !important; cursor:pointer !important; pointer-events:auto !important; }
 
+    div.me-inline-analysis.me-row-line.me-abroad { justify-content:flex-start !important; }
+    div.me-inline-analysis.me-row-line.me-abroad .me-abroad-rate { font-size:13px !important; }
+    .me-abroad-summary { margin:6px 0 8px !important; padding:8px 10px !important; border:1px solid var(--me-strip-border) !important; border-radius:6px !important; background:var(--me-strip) !important; color:var(--me-fg) !important; font:500 var(--me-fs-meta)/1.4 Arial, sans-serif !important; font-variant-numeric:tabular-nums !important; }
+    .me-abroad-summary .me-abroad-title { display:flex !important; align-items:center !important; gap:6px !important; font-weight:700 !important; font-size:var(--me-fs) !important; }
+    .me-abroad-summary .me-abroad-title .me-inline-brand { margin-right:2px !important; }
+    .me-abroad-summary .me-abroad-meta { color:var(--me-muted) !important; font-size:var(--me-fs-small) !important; margin-top:2px !important; }
+    .me-abroad-summary ol { margin:6px 0 0 !important; padding:0 !important; list-style:none !important; }
+    .me-abroad-summary li { display:flex !important; gap:8px !important; align-items:baseline !important; padding:3px 0 !important; border-top:1px solid var(--me-strip-border) !important; }
+    .me-abroad-summary li .me-abroad-rank { color:var(--me-faint) !important; min-width:14px !important; }
+    .me-abroad-summary li .me-abroad-name { flex:1 !important; overflow:hidden !important; text-overflow:ellipsis !important; white-space:nowrap !important; font-weight:700 !important; }
+    .me-abroad-summary li .me-abroad-rate { font-weight:800 !important; color:var(--me-good) !important; white-space:nowrap !important; }
+    .me-abroad-summary li .me-abroad-detail { color:var(--me-muted) !important; white-space:nowrap !important; }
+    .me-abroad-summary .me-abroad-warn { color:var(--me-warn) !important; }
+    .me-abroad-summary .me-abroad-settings { display:inline-flex !important; align-items:center !important; min-height:var(--me-tap) !important; margin:-6px 0 !important; padding:0 8px !important; border:0 !important; background:transparent !important; color:var(--me-muted) !important; font:600 var(--me-fs-small)/1 Arial, sans-serif !important; cursor:pointer !important; text-decoration:underline !important; }
     .me-bazaar-add-row { height:auto !important; min-height:72px !important; overflow:visible !important; }
     .me-bazaar-add-controls { flex-wrap:wrap !important; overflow:visible !important; }
     .me-bazaar-add-controls > .me-inline-analysis { display:flex !important; flex:0 0 100% !important; width:100% !important; max-width:none !important; grid-column:1 / -1 !important; justify-content:flex-end !important; margin:4px 0 1px !important; z-index:10 !important; }
@@ -4071,7 +4265,8 @@
 
         ${settingsSectionHtml("Panels and travel", "portfolio, shops, travel, browse", `
           <div class="me-form-grid">
-            ${f("travelCapacity", "Travel capacity (0 = per-item figures only)", { min: 0, max: 1000, step: 1 })}
+            <label for="me-set-travelType">Travel type (sets flight time for $/hour abroad)</label><select id="me-set-travelType" data-setting="travelType">${Object.entries(TRAVEL_TYPE_LABELS).map(([value, label]) => `<option value="${value}" ${value === (current.travelType || "standard") ? "selected" : ""}>${label}</option>`).join("")}</select>
+            ${f("travelCapacity", "Travel capacity when the page does not show it (0 = per-item only)", { min: 0, max: 1000, step: 1 })}
             ${f("shopRunQuantity", "City shop run quantity (units)", { min: 1, max: 10000, step: 1 })}
             ${f("portfolioRefineRequests", "Portfolio refine budget (requests per press)", { min: 1, max: 60, step: 1 })}
             ${f("auctionEvidenceEnabled", "Use ended Auction House sales as evidence", { type: "checkbox" })}
@@ -4733,6 +4928,8 @@
       return block;
     }
 
+    if (result.abroad) return renderAbroadRow(result);
+
     const direct = result.direct;
     if (!direct) {
       return renderInlineHtml(visible, `<span class="me-inline-brand">ME</span><span class="me-inline-secondary">PASS</span>${stale}`, "GREY");
@@ -4786,6 +4983,117 @@
       "",
       { why }
     );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Abroad shop: per-row $/hour strip plus a ranked summary above the shop.
+  // ---------------------------------------------------------------------------
+
+  const abroadState = { results: new Map(), generation: 0 };
+
+  function beginAbroadSummary(force) {
+    if (force) abroadState.results.clear();
+    abroadState.generation += 1;
+    // Rows that vanished from the page (shop refresh) drop out.
+    abroadState.results.forEach((entry, itemId) => {
+      if (!entry.card?.isConnected) abroadState.results.delete(itemId);
+    });
+  }
+
+  function formatMinutes(minutes) {
+    const total = Math.max(0, asInt(minutes, 0));
+    const hours = Math.floor(total / 60);
+    const rest = total % 60;
+    if (!hours) return `${rest} min`;
+    return rest ? `${hours} h ${rest} min` : `${hours} h`;
+  }
+
+  function formatRate(perHour) {
+    if (!Number.isFinite(perHour)) return "no flight time";
+    return `${perHour < 0 ? "-" : "+"}${formatMoney(Math.abs(perHour))}/h`;
+  }
+
+  function renderAbroadRow(result) {
+    const visible = result.visible;
+    const data = result.abroad;
+    const stale = staleMarker(result);
+    const context = data.context || {};
+    const evaluation = data.evaluation;
+    if (!evaluation) {
+      abroadState.results.delete(visible.itemId);
+      renderAbroadSummary();
+      return renderInlineHtml(visible, `<span class="me-inline-brand">ME</span><span class="me-inline-secondary">${escapeHtml(data.reason || "price unavailable")}</span>${stale}`, "GREY", "me-abroad", { why: ["No usable Item Market order book for this item, so no resale price.", orderBookAgeLine(result)] });
+    }
+    abroadState.results.set(visible.itemId, { card: visible.card, name: visible.name, evaluation, resaleRoute: data.resaleRoute, stale: Boolean(result.renderMeta?.stale) });
+    const positive = evaluation.perTrip > 0;
+    const best = bestAbroadItemId();
+    const state = !positive ? "GREY" : (best === visible.itemId ? "GREEN" : "YELLOW");
+    const rate = formatRate(evaluation.perHour);
+    const limits = evaluation.limitedBy.join(" and ");
+    const why = [
+      `Resale in your ${data.resaleRoute} at ${formatMoney(data.resalePrice, true)} per unit minus the shop price ${formatMoney(evaluation.buyPrice, true)} = ${formatMoney(evaluation.profitPerUnit, true)} per unit.`,
+      `${evaluation.units} units this trip, limited by ${limits || "capacity"} (${context.capacityLeft} slots free${context.capacityFromPage ? "" : " from your settings"}${visible.stock !== null && visible.stock !== undefined ? `, ${visible.stock} in stock` : ""}${Number.isFinite(context.money) && context.money !== null ? `, ${formatMoney(context.money, true)} cash` : ""}).`,
+      evaluation.roundTripMinutes
+        ? `${formatMoney(evaluation.perTrip, true)} per trip over a ${formatMinutes(evaluation.roundTripMinutes)} round trip (${TRAVEL_TYPE_LABELS[context.travelType] || "Standard flight"} to ${context.country}) = ${rate}.`
+        : "Flight time unknown for this country, so no hourly rate.",
+      `Cash needed: ${formatMoney(evaluation.cashNeeded, true)}.`,
+      orderBookAgeLine(result)
+    ];
+    const block = renderInlineHtml(visible,
+      `<span class="me-inline-brand">ME</span><span class="me-inline-primary me-abroad-rate">${rate}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${evaluation.profitPerUnit >= 0 ? "+" : "-"}${formatMoney(Math.abs(evaluation.profitPerUnit))} each</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${evaluation.units} units = ${evaluation.perTrip >= 0 ? "+" : "-"}${formatMoney(Math.abs(evaluation.perTrip))}/trip</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">sell ${formatMoney(data.resalePrice)}</span>${stale}`,
+      state,
+      "me-abroad",
+      { why }
+    );
+    renderAbroadSummary();
+    return block;
+  }
+
+  function bestAbroadItemId() {
+    let best = null;
+    abroadState.results.forEach((entry, itemId) => {
+      const rate = entry.evaluation?.perHour ?? entry.evaluation?.perTrip;
+      if (!Number.isFinite(rate) || rate <= 0) return;
+      if (!best || rate > best.rate) best = { itemId, rate };
+    });
+    return best?.itemId || null;
+  }
+
+  function renderAbroadSummary() {
+    const root = abroadShopRoot();
+    if (!root) return null;
+    const context = abroadContext();
+    // Anchor: the first stock table, else the list holding the first priced row.
+    const firstRow = abroadState.results.values().next().value?.card || null;
+    const firstTable = root.querySelector(ABROAD_TABLE_SELECTOR) || firstRow?.parentElement || null;
+    if (!firstTable) return null;
+    let box = root.querySelector(".me-abroad-summary");
+    if (!box) {
+      box = document.createElement("div");
+      box.className = "me-abroad-summary";
+      box.setAttribute("role", "region");
+      box.setAttribute("aria-label", "Market Edge: best buys here");
+      firstTable.parentElement.insertBefore(box, firstTable);
+    }
+    if (!box.isConnected) firstTable.parentElement.insertBefore(box, firstTable);
+    const ranked = Array.from(abroadState.results.entries())
+      .map(([itemId, entry]) => ({ itemId, ...entry }))
+      .filter((entry) => entry.evaluation && entry.evaluation.perTrip > 0)
+      .sort((a, b) => (b.evaluation.perHour ?? b.evaluation.perTrip) - (a.evaluation.perHour ?? a.evaluation.perTrip))
+      .slice(0, 5);
+    const priced = abroadState.results.size;
+    const flight = context.oneWayMinutes ? `${formatMinutes(context.oneWayMinutes)} each way, ${TRAVEL_TYPE_LABELS[context.travelType] || "Standard flight"}` : "flight time unknown";
+    const capacity = context.capacityFromPage ? `${context.capacityLeft} slots free` : (context.capacityLeft ? `${context.capacityLeft} slots (settings)` : "capacity unknown");
+    const rows = ranked.map((entry, index) => `<li><span class="me-abroad-rank">${index + 1}.</span><span class="me-abroad-name">${escapeHtml(entry.name)}</span><span class="me-abroad-detail">${entry.evaluation.units} × ${formatMoney(entry.evaluation.profitPerUnit)} = ${formatMoney(entry.evaluation.perTrip)}/trip</span><span class="me-abroad-rate">${formatRate(entry.evaluation.perHour)}</span></li>`).join("");
+    box.innerHTML = `
+      <div class="me-abroad-title"><span class="me-inline-brand">ME</span>Best buys in ${escapeHtml(context.country || "this shop")}${ranked.length ? "" : (priced ? ": nothing profitable at Bazaar prices" : ": pricing...")}</div>
+      <div class="me-abroad-meta">${escapeHtml(capacity)} · ${escapeHtml(flight)} · resale at your Bazaar price, no fee${context.capacityFromPage && !context.oneWayMinutes ? ' · <span class="me-abroad-warn">set the country</span>' : ""} <button class="me-abroad-settings" type="button">travel type</button></div>
+      ${rows ? `<ol>${rows}</ol>` : ""}`;
+    box.querySelector(".me-abroad-settings")?.addEventListener("click", (event) => {
+      event.preventDefault();
+      showSettings();
+    });
+    return box;
   }
 
   // The classification's own pass/fail reasons, in words.
@@ -5083,6 +5391,27 @@
       return { visible, snapshot, historyStats, ownBazaar: { target, delta, estimate, fill, rule, floor: snapshot.lowestPrice, warning }, renderMeta };
     }
 
+    if (surface === "travel" && visible.abroad) {
+      // Abroad shop row: dollars per hour of flying at the Bazaar resale
+      // price (fee-free), bounded by capacity left, stock and cash.
+      const context = abroadContext();
+      const estimate = estimateInventoryExit({ quantity: 1, snapshot, historyStats, settings, museum, shopSell });
+      if (!estimate) return { visible, snapshot, historyStats, abroad: { context, evaluation: null, reason: (snapshot?.listings || []).length ? "price unavailable" : "no listings" }, renderMeta };
+      const routes = estimate.routes;
+      const bazaarRoute = routes.bazaar || null;
+      const resaleRoute = bazaarRoute ? "Bazaar" : routes.bestRoute;
+      const resalePrice = bazaarRoute ? bazaarRoute.suggestedPrice : Math.floor(routes.bestNet);
+      const evaluation = evaluateAbroadRow({
+        buyPrice: visible.price,
+        stock: visible.stock,
+        capacityLeft: context.capacityLeft,
+        money: context.money,
+        resalePrice,
+        oneWayMinutes: context.oneWayMinutes
+      });
+      return { visible, snapshot, historyStats, abroad: { context, evaluation, resaleRoute, resalePrice, estimate }, renderMeta };
+    }
+
     let quantity = visible.quantity;
     if (surface === "travel" && settings.travelCapacity > 0) quantity = Math.min(quantity, settings.travelCapacity);
     if (surface === "travel" && settings.travelCapacity === 0) quantity = 1;
@@ -5233,7 +5562,10 @@
     beginLayoutPass();
     let items = surface === "auction"
       ? collectAuctionItems()
-      : (surface === "imsell" ? collectSellFormRows() : (surface === "bazaar" && ownBazaar ? collectOwnBazaarItems() : collectVisibleItems({ requireMoney })));
+      : (surface === "imsell" ? collectSellFormRows()
+        : (surface === "bazaar" && ownBazaar ? collectOwnBazaarItems()
+          : (surface === "travel" && abroadShopRoot() ? collectAbroadShopRows() : collectVisibleItems({ requireMoney }))));
+    if (surface === "travel" && abroadShopRoot()) beginAbroadSummary(force);
     // Rows off screen or beyond the limit wait for the IntersectionObserver.
     watchDeferredRows(surface);
 
@@ -6745,6 +7077,8 @@
       collectBazaarAddItems,
       collectManagedBazaarItems,
       collectAuctionItems,
+      collectAbroadShopRows,
+      abroadContext,
       parseLiveItemMarketListings,
       findBazaarAddPriceInput,
       findBazaarAddQuantityInput,

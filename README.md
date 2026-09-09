@@ -14,7 +14,7 @@ Torn Market Edge is **decision support, not trading automation**. It never buys,
 
 ## Current status
 
-**v0.6.0**
+**v0.6.1**
 
 The current release is a performance and UI/UX pass: viewport-first scanning with cached layout reads and IntersectionObserver pickup, a bounded store with batched writes (Torn PDA's SQLite storage when available), a fix for PDA's duplicate-request behaviour, one theme-aware visual system that follows Torn's dark mode, rows written in words with a "why this price" toggle, an underprice guard on sell surfaces, and an in-row API key prompt with a grouped, keyboard-complete settings dialog. Torn DOM integration is still validated page by page, so treat new surfaces as beta.
 
@@ -24,7 +24,7 @@ The current release is a performance and UI/UX pass: viewport-first scanning wit
 - Your Bazaar
 - Other players' Bazaars when manually opened
 - Auction House
-- Foreign shops while travelling
+- Foreign shops while abroad: dollars per hour per item at your Bazaar resale price, bounded by free capacity, stock and cash, with a ranked "best buys" summary above the shop
 - Inventory
 - Item Market browse grid (category and search cards)
 - Item Market sell form (add listing)
@@ -49,6 +49,7 @@ The valuation model covers fungible/stackable items only. Weapons and armor are 
 - Portfolio panel from the official inventory endpoint: sellable value per route, untradable and equipped flags, order-book refinement (weapons and armor listed but not priced)
 - City shop runs from the official city shop endpoint (stock and price) and inline profit on city shop pages
 - Travel plan from official foreign shop prices, ranked by profit per trip at your capacity
+- Abroad shop rows: `+$13.2k/h | +$1.25k each | 28 units = +$35.0k/trip | sell $6.25k`, using the capacity Torn prints on the page, the round-trip flight time for your travel type and the Bazaar resale price
 - Sell-to-shop exit route and museum pieces recognised by name (Meteorite Fragment, Patagonian Fossil, Arrowhead set)
 - Auction House: ended-sales median as evidence and cap for stackable bids, and a best end-time window from ended sales
 - Item Market browse-grid overlay versus Torn's official market value with no per-item requests
@@ -152,7 +153,8 @@ Current settings include:
 - minimum confidence for green classifications;
 - maximum tolerated volatility;
 - scan size;
-- travel capacity;
+- travel type (flight time for the abroad $/hour figures);
+- travel capacity (fallback when the page does not print it);
 - city shop run quantity;
 - portfolio refine budget;
 - ended-auction evidence on/off;

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.6.0
+// @version      0.6.1
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.6.0",
+    version: "0.6.1",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -92,6 +92,21 @@
   const FOREIGN_COUNTRIES = Object.freeze([
     "Mexico", "Cayman Islands", "Canada", "Hawaii", "United Kingdom", "Argentina", "Switzerland", "Japan", "China", "UAE", "South Africa"
   ]);
+  // One-way flight time in minutes on a standard flight; the other travel
+  // types are fixed fractions of it (airstrip -30%, private jet -50%,
+  // business class -70%).
+  const FOREIGN_FLIGHT_MINUTES = Object.freeze({
+    "Mexico": 26, "Cayman Islands": 35, "Canada": 41, "Hawaii": 134, "United Kingdom": 159, "Argentina": 167,
+    "Switzerland": 175, "Japan": 225, "China": 242, "UAE": 271, "South Africa": 297
+  });
+  const TRAVEL_TYPE_FACTORS = Object.freeze({ standard: 1, airstrip: 0.7, jet: 0.5, business: 0.3 });
+  const TRAVEL_TYPE_LABELS = Object.freeze({ standard: "Standard flight", airstrip: "Airstrip", jet: "Private jet (WLT)", business: "Business class" });
+  // Torn's body[data-country] slugs on the abroad page.
+  const COUNTRY_SLUGS = Object.freeze({
+    "mexico": "Mexico", "cayman-islands": "Cayman Islands", "cayman": "Cayman Islands", "canada": "Canada", "hawaii": "Hawaii",
+    "united-kingdom": "United Kingdom", "uk": "United Kingdom", "argentina": "Argentina", "switzerland": "Switzerland",
+    "japan": "Japan", "china": "China", "uae": "UAE", "united-arab-emirates": "UAE", "south-africa": "South Africa"
+  });
   const CITY_SHOP_STEPS = Object.freeze({
     bigalgunshop: "Big Al's Gun Shop", bitsnbobs: "Bits 'n' Bobs", candy: "Sally's Sweet Shop", clothes: "TC Clothing",
     cyberforce: "Cyber Force", docks: "Docks", jewelry: "Jewelry Store", nikeh: "Nikeh Sports", pawnshop: "Pawn Shop",
@@ -142,6 +157,7 @@
     historyRetentionDays: 14,
     scanMaxVisibleItems: 30,
     travelCapacity: 0,
+    travelType: "standard",
     shopRunQuantity: 100,
     undercutAlerts: true,
     portfolioRefineRequests: PORTFOLIO_REFINE_DEFAULT,

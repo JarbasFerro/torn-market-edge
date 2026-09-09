@@ -1464,6 +1464,8 @@
       collectBazaarAddItems,
       collectManagedBazaarItems,
       collectAuctionItems,
+      collectAbroadShopRows,
+      abroadContext,
       parseLiveItemMarketListings,
       findBazaarAddPriceInput,
       findBazaarAddQuantityInput,

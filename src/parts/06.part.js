@@ -327,6 +327,8 @@
       return block;
     }
 
+    if (result.abroad) return renderAbroadRow(result);
+
     const direct = result.direct;
     if (!direct) {
       return renderInlineHtml(visible, `<span class="me-inline-brand">ME</span><span class="me-inline-secondary">PASS</span>${stale}`, "GREY");
@@ -380,6 +382,117 @@
       "",
       { why }
     );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Abroad shop: per-row $/hour strip plus a ranked summary above the shop.
+  // ---------------------------------------------------------------------------
+
+  const abroadState = { results: new Map(), generation: 0 };
+
+  function beginAbroadSummary(force) {
+    if (force) abroadState.results.clear();
+    abroadState.generation += 1;
+    // Rows that vanished from the page (shop refresh) drop out.
+    abroadState.results.forEach((entry, itemId) => {
+      if (!entry.card?.isConnected) abroadState.results.delete(itemId);
+    });
+  }
+
+  function formatMinutes(minutes) {
+    const total = Math.max(0, asInt(minutes, 0));
+    const hours = Math.floor(total / 60);
+    const rest = total % 60;
+    if (!hours) return `${rest} min`;
+    return rest ? `${hours} h ${rest} min` : `${hours} h`;
+  }
+
+  function formatRate(perHour) {
+    if (!Number.isFinite(perHour)) return "no flight time";
+    return `${perHour < 0 ? "-" : "+"}${formatMoney(Math.abs(perHour))}/h`;
+  }
+
+  function renderAbroadRow(result) {
+    const visible = result.visible;
+    const data = result.abroad;
+    const stale = staleMarker(result);
+    const context = data.context || {};
+    const evaluation = data.evaluation;
+    if (!evaluation) {
+      abroadState.results.delete(visible.itemId);
+      renderAbroadSummary();
+      return renderInlineHtml(visible, `<span class="me-inline-brand">ME</span><span class="me-inline-secondary">${escapeHtml(data.reason || "price unavailable")}</span>${stale}`, "GREY", "me-abroad", { why: ["No usable Item Market order book for this item, so no resale price.", orderBookAgeLine(result)] });
+    }
+    abroadState.results.set(visible.itemId, { card: visible.card, name: visible.name, evaluation, resaleRoute: data.resaleRoute, stale: Boolean(result.renderMeta?.stale) });
+    const positive = evaluation.perTrip > 0;
+    const best = bestAbroadItemId();
+    const state = !positive ? "GREY" : (best === visible.itemId ? "GREEN" : "YELLOW");
+    const rate = formatRate(evaluation.perHour);
+    const limits = evaluation.limitedBy.join(" and ");
+    const why = [
+      `Resale in your ${data.resaleRoute} at ${formatMoney(data.resalePrice, true)} per unit minus the shop price ${formatMoney(evaluation.buyPrice, true)} = ${formatMoney(evaluation.profitPerUnit, true)} per unit.`,
+      `${evaluation.units} units this trip, limited by ${limits || "capacity"} (${context.capacityLeft} slots free${context.capacityFromPage ? "" : " from your settings"}${visible.stock !== null && visible.stock !== undefined ? `, ${visible.stock} in stock` : ""}${Number.isFinite(context.money) && context.money !== null ? `, ${formatMoney(context.money, true)} cash` : ""}).`,
+      evaluation.roundTripMinutes
+        ? `${formatMoney(evaluation.perTrip, true)} per trip over a ${formatMinutes(evaluation.roundTripMinutes)} round trip (${TRAVEL_TYPE_LABELS[context.travelType] || "Standard flight"} to ${context.country}) = ${rate}.`
+        : "Flight time unknown for this country, so no hourly rate.",
+      `Cash needed: ${formatMoney(evaluation.cashNeeded, true)}.`,
+      orderBookAgeLine(result)
+    ];
+    const block = renderInlineHtml(visible,
+      `<span class="me-inline-brand">ME</span><span class="me-inline-primary me-abroad-rate">${rate}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${evaluation.profitPerUnit >= 0 ? "+" : "-"}${formatMoney(Math.abs(evaluation.profitPerUnit))} each</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${evaluation.units} units = ${evaluation.perTrip >= 0 ? "+" : "-"}${formatMoney(Math.abs(evaluation.perTrip))}/trip</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">sell ${formatMoney(data.resalePrice)}</span>${stale}`,
+      state,
+      "me-abroad",
+      { why }
+    );
+    renderAbroadSummary();
+    return block;
+  }
+
+  function bestAbroadItemId() {
+    let best = null;
+    abroadState.results.forEach((entry, itemId) => {
+      const rate = entry.evaluation?.perHour ?? entry.evaluation?.perTrip;
+      if (!Number.isFinite(rate) || rate <= 0) return;
+      if (!best || rate > best.rate) best = { itemId, rate };
+    });
+    return best?.itemId || null;
+  }
+
+  function renderAbroadSummary() {
+    const root = abroadShopRoot();
+    if (!root) return null;
+    const context = abroadContext();
+    // Anchor: the first stock table, else the list holding the first priced row.
+    const firstRow = abroadState.results.values().next().value?.card || null;
+    const firstTable = root.querySelector(ABROAD_TABLE_SELECTOR) || firstRow?.parentElement || null;
+    if (!firstTable) return null;
+    let box = root.querySelector(".me-abroad-summary");
+    if (!box) {
+      box = document.createElement("div");
+      box.className = "me-abroad-summary";
+      box.setAttribute("role", "region");
+      box.setAttribute("aria-label", "Market Edge: best buys here");
+      firstTable.parentElement.insertBefore(box, firstTable);
+    }
+    if (!box.isConnected) firstTable.parentElement.insertBefore(box, firstTable);
+    const ranked = Array.from(abroadState.results.entries())
+      .map(([itemId, entry]) => ({ itemId, ...entry }))
+      .filter((entry) => entry.evaluation && entry.evaluation.perTrip > 0)
+      .sort((a, b) => (b.evaluation.perHour ?? b.evaluation.perTrip) - (a.evaluation.perHour ?? a.evaluation.perTrip))
+      .slice(0, 5);
+    const priced = abroadState.results.size;
+    const flight = context.oneWayMinutes ? `${formatMinutes(context.oneWayMinutes)} each way, ${TRAVEL_TYPE_LABELS[context.travelType] || "Standard flight"}` : "flight time unknown";
+    const capacity = context.capacityFromPage ? `${context.capacityLeft} slots free` : (context.capacityLeft ? `${context.capacityLeft} slots (settings)` : "capacity unknown");
+    const rows = ranked.map((entry, index) => `<li><span class="me-abroad-rank">${index + 1}.</span><span class="me-abroad-name">${escapeHtml(entry.name)}</span><span class="me-abroad-detail">${entry.evaluation.units} × ${formatMoney(entry.evaluation.profitPerUnit)} = ${formatMoney(entry.evaluation.perTrip)}/trip</span><span class="me-abroad-rate">${formatRate(entry.evaluation.perHour)}</span></li>`).join("");
+    box.innerHTML = `
+      <div class="me-abroad-title"><span class="me-inline-brand">ME</span>Best buys in ${escapeHtml(context.country || "this shop")}${ranked.length ? "" : (priced ? ": nothing profitable at Bazaar prices" : ": pricing...")}</div>
+      <div class="me-abroad-meta">${escapeHtml(capacity)} · ${escapeHtml(flight)} · resale at your Bazaar price, no fee${context.capacityFromPage && !context.oneWayMinutes ? ' · <span class="me-abroad-warn">set the country</span>' : ""} <button class="me-abroad-settings" type="button">travel type</button></div>
+      ${rows ? `<ol>${rows}</ol>` : ""}`;
+    box.querySelector(".me-abroad-settings")?.addEventListener("click", (event) => {
+      event.preventDefault();
+      showSettings();
+    });
+    return box;
   }
 
   // The classification's own pass/fail reasons, in words.
@@ -677,6 +790,27 @@
       return { visible, snapshot, historyStats, ownBazaar: { target, delta, estimate, fill, rule, floor: snapshot.lowestPrice, warning }, renderMeta };
     }
 
+    if (surface === "travel" && visible.abroad) {
+      // Abroad shop row: dollars per hour of flying at the Bazaar resale
+      // price (fee-free), bounded by capacity left, stock and cash.
+      const context = abroadContext();
+      const estimate = estimateInventoryExit({ quantity: 1, snapshot, historyStats, settings, museum, shopSell });
+      if (!estimate) return { visible, snapshot, historyStats, abroad: { context, evaluation: null, reason: (snapshot?.listings || []).length ? "price unavailable" : "no listings" }, renderMeta };
+      const routes = estimate.routes;
+      const bazaarRoute = routes.bazaar || null;
+      const resaleRoute = bazaarRoute ? "Bazaar" : routes.bestRoute;
+      const resalePrice = bazaarRoute ? bazaarRoute.suggestedPrice : Math.floor(routes.bestNet);
+      const evaluation = evaluateAbroadRow({
+        buyPrice: visible.price,
+        stock: visible.stock,
+        capacityLeft: context.capacityLeft,
+        money: context.money,
+        resalePrice,
+        oneWayMinutes: context.oneWayMinutes
+      });
+      return { visible, snapshot, historyStats, abroad: { context, evaluation, resaleRoute, resalePrice, estimate }, renderMeta };
+    }
+
     let quantity = visible.quantity;
     if (surface === "travel" && settings.travelCapacity > 0) quantity = Math.min(quantity, settings.travelCapacity);
     if (surface === "travel" && settings.travelCapacity === 0) quantity = 1;
@@ -827,7 +961,10 @@
     beginLayoutPass();
     let items = surface === "auction"
       ? collectAuctionItems()
-      : (surface === "imsell" ? collectSellFormRows() : (surface === "bazaar" && ownBazaar ? collectOwnBazaarItems() : collectVisibleItems({ requireMoney })));
+      : (surface === "imsell" ? collectSellFormRows()
+        : (surface === "bazaar" && ownBazaar ? collectOwnBazaarItems()
+          : (surface === "travel" && abroadShopRoot() ? collectAbroadShopRows() : collectVisibleItems({ requireMoney }))));
+    if (surface === "travel" && abroadShopRoot()) beginAbroadSummary(force);
     // Rows off screen or beyond the limit wait for the IntersectionObserver.
     watchDeferredRows(surface);
 
