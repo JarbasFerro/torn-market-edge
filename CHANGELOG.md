@@ -6,6 +6,12 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-09-14
+
+### Changed
+
+- **Compact Bazaar and sell-form fill strip.** Compacted the Fill button and its entire row strip on Bazaar add and sell forms (reducing button height from 40px down to 19px, tightening vertical padding and margins, removing the rigid 72px min-height container, and scaling down inline typography/badges). The strip now sits cleanly and unobtrusively below Torn controls without consuming excessive vertical screen space on mobile.
+
 ## [0.6.3] - 2026-09-14
 
 ### Fixed

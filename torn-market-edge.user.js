@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.6.3
+// @version      0.6.4
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.6.3",
+    version: "0.6.4",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -4016,17 +4016,20 @@
     .me-abroad-summary li .me-abroad-detail { color:var(--me-muted) !important; white-space:nowrap !important; }
     .me-abroad-summary .me-abroad-warn { color:var(--me-warn) !important; }
     .me-abroad-summary .me-abroad-settings { display:inline-flex !important; align-items:center !important; min-height:var(--me-tap) !important; margin:-6px 0 !important; padding:0 8px !important; border:0 !important; background:transparent !important; color:var(--me-muted) !important; font:600 var(--me-fs-small)/1 Arial, sans-serif !important; cursor:pointer !important; text-decoration:underline !important; }
-    .me-bazaar-add-row { height:auto !important; min-height:72px !important; overflow:visible !important; }
+    .me-bazaar-add-row { height:auto !important; min-height:0 !important; overflow:visible !important; }
     .me-bazaar-add-controls { flex-wrap:wrap !important; overflow:visible !important; }
-    .me-bazaar-add-controls > .me-inline-analysis { display:flex !important; flex:0 0 100% !important; width:100% !important; max-width:none !important; grid-column:1 / -1 !important; justify-content:flex-end !important; margin:4px 0 1px !important; z-index:10 !important; }
+    .me-bazaar-add-controls > .me-inline-analysis { display:flex !important; flex:0 0 100% !important; width:100% !important; max-width:none !important; grid-column:1 / -1 !important; justify-content:flex-end !important; margin:2px 0 0 !important; z-index:10 !important; }
     .me-inline-analysis.me-bazaar-add { padding-right:4px !important; }
-    div.me-inline-analysis.me-bazaar-add.me-row-line { gap:6px 8px !important; padding:4px 8px !important; align-items:center !important; }
-    .me-bazaar-fill-btn { display:inline-flex !important; align-items:center !important; justify-content:center !important; min-width:var(--me-tap) !important; min-height:var(--me-tap) !important; margin:-4px 0 !important; padding:0 12px !important; border:1px solid var(--me-btn-border) !important; border-radius:6px !important; background:var(--me-btn) !important; color:var(--me-fg) !important; font:700 var(--me-fs)/1 Arial, sans-serif !important; cursor:pointer !important; pointer-events:auto !important; touch-action:manipulation !important; white-space:nowrap !important; }
+    div.me-inline-analysis.me-bazaar-add.me-row-line { gap:4px 6px !important; padding:1px 6px !important; align-items:center !important; min-height:20px !important; font-size:var(--me-fs-meta) !important; }
+    div.me-inline-analysis.me-bazaar-add.me-row-line.me-has-why { padding-right:20px !important; }
+    div.me-inline-analysis.me-bazaar-add.me-row-line > .me-why-toggle { min-width:18px !important; max-width:18px !important; padding:0 !important; font-size:10px !important; }
+    .me-bazaar-fill-btn { display:inline-flex !important; align-items:center !important; justify-content:center !important; min-width:0 !important; min-height:19px !important; height:19px !important; margin:0 !important; padding:0 7px !important; border:1px solid var(--me-btn-border) !important; border-radius:3px !important; background:var(--me-btn) !important; color:var(--me-fg) !important; font:700 11px/1 Arial, sans-serif !important; cursor:pointer !important; pointer-events:auto !important; touch-action:manipulation !important; white-space:nowrap !important; }
     .me-bazaar-fill-btn:hover, .me-bazaar-fill-btn:focus-visible { background:var(--me-btn-hover) !important; outline:none !important; }
-    .me-bazaar-fill-btn.me-fill-clear { min-width:var(--me-tap) !important; padding:0 8px !important; font-size:15px !important; color:var(--me-bad) !important; border-color:var(--me-bad) !important; background:var(--me-bad-bg) !important; }
-    .me-fill-done { display:inline-flex !important; align-items:center !important; justify-content:center !important; min-width:28px !important; min-height:28px !important; padding:0 6px !important; border-radius:6px !important; color:var(--me-good) !important; background:var(--me-good-bg) !important; border:1px solid var(--me-good) !important; font:700 13px/1 Arial, sans-serif !important; }
-    .me-inline-analysis.me-bazaar-add .me-fill-figures { font-size:var(--me-fs) !important; color:var(--me-fg) !important; }
-    .me-inline-analysis.me-bazaar-add .me-inline-secondary { white-space:nowrap !important; }
+    .me-bazaar-fill-btn.me-fill-clear { min-width:19px !important; min-height:19px !important; height:19px !important; padding:0 !important; font-size:12px !important; line-height:17px !important; color:var(--me-bad) !important; border-color:var(--me-bad) !important; background:var(--me-bad-bg) !important; }
+    .me-fill-done { display:inline-flex !important; align-items:center !important; justify-content:center !important; min-width:17px !important; min-height:17px !important; height:17px !important; padding:0 !important; border-radius:3px !important; color:var(--me-good) !important; background:var(--me-good-bg) !important; border:1px solid var(--me-good) !important; font:700 10px/1 Arial, sans-serif !important; }
+    .me-inline-analysis.me-bazaar-add .me-fill-figures { font-size:var(--me-fs-meta) !important; color:var(--me-fg) !important; font-weight:600 !important; }
+    .me-inline-analysis.me-bazaar-add .me-inline-secondary { white-space:nowrap !important; font-size:var(--me-fs-small) !important; }
+    .me-inline-analysis.me-bazaar-add .me-inline-brand { font-size:10px !important; opacity:0.85 !important; margin-right:1px !important; }
     .me-inline-analysis.me-bazaar-add.me-applied { border-color:var(--me-good) !important; }
     .me-row-host { height:auto !important; max-height:none !important; overflow:visible !important; flex-wrap:wrap !important; }
     .me-row-host.me-row-float-host { position:relative !important; }
@@ -4077,7 +4080,7 @@
     .me-workbench-cell { white-space:nowrap; }
     .me-workbench-cell .me-inline-input { width:78px; font-size:var(--me-fs-small); padding:2px 3px; margin-left:3px; }
     .me-workbench-cell .me-rule-mode { width:104px; }
-    .me-workbench-cell .me-listing-fill { padding:2px 8px; margin-left:3px; }
+    .me-workbench-cell .me-listing-fill { padding:2px 8px; margin-left:3px; min-height:20px; height:20px; line-height:1; }
     .me-watch-row { display:flex; align-items:center; gap:6px; font-size:var(--me-fs-meta); padding:2px 0; border-bottom:1px solid var(--me-border); }
     .me-watch-row .me-watch-name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .me-watch-row .me-watch-remove { display:inline-flex; align-items:center; justify-content:center; min-width:var(--me-tap); min-height:var(--me-tap); border:0; background:transparent; cursor:pointer; color:var(--me-bad); font-weight:700; border-radius:6px; }
