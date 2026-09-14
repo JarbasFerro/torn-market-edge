@@ -59,6 +59,11 @@
       return this.request("/user/itemmarket", { cacheMs: 20000, priority });
     }
 
+    async ownBazaar({ priority = 100 } = {}) {
+      // Public access key; Torn applies a 30s server-side cache.
+      return this.request("/user/bazaar", { cacheMs: 25000, priority });
+    }
+
     async inventoryPage({ offset = 0, cat = "", priority = 120 } = {}) {
       // Minimal access key; Torn caches this selection for one hour.
       const category = cat ? `&cat=${encodeURIComponent(cat)}` : "";

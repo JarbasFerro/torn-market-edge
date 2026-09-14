@@ -969,6 +969,11 @@
     watchDeferredRows(surface);
 
     if (!items.length) {
+      if (surface === "bazaar" && ownBazaar && !bazaarAddRouteActive() && !retryIfEmpty) {
+        if (document.querySelector("#bazaarRoot, .bazaar-main-wrap")) {
+          recordSellWatch([], "Bazaar", { prune: true });
+        }
+      }
       if (retryIfEmpty) {
         setTimeout(() => {
           if (detectSurface() === surface && pageVisible()) {

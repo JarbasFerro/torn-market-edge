@@ -1230,7 +1230,7 @@
     .me-launcher { position:fixed; left:10px; bottom:10px; z-index:999997; min-height:var(--me-tap); min-width:var(--me-tap); padding:6px 12px; border-radius:20px; border:1px solid var(--me-border); background:var(--me-bg); color:var(--me-fg); font:800 var(--me-fs-meta)/1 Arial, sans-serif; cursor:pointer; box-shadow:var(--me-shadow); touch-action:manipulation; }
     .me-toast-host { position:fixed; left:10px; bottom:56px; z-index:999999; display:flex; flex-direction:column; gap:6px; max-width:min(380px, calc(100vw - 20px)); }
     .me-toast { background:var(--me-bg); border:1px solid var(--me-good); border-radius:6px; padding:8px 10px; color:var(--me-fg); font:var(--me-fs)/1.4 Arial, sans-serif; box-shadow:var(--me-shadow); }
-    .me-toast a { color:var(--me-good); font-weight:700; }
+    .me-toast a { color:var(--me-good); font-weight:700; }\n    .me-toast .me-toast-remove-sell { display:inline-block; margin-left:6px; border:0; background:transparent; font:inherit; color:var(--me-bad); text-decoration:underline; cursor:pointer; padding:0; }
     .me-toast .me-toast-close { float:right; border:0; background:transparent; font:inherit; display:inline-flex; align-items:center; justify-content:center; min-width:var(--me-tap); min-height:var(--me-tap); margin:-6px -6px 0 8px; cursor:pointer; color:var(--me-muted); font-weight:700; border-radius:6px; }
     .me-toast .me-toast-close:hover { background:var(--me-btn); }
     .me-launcher-menu { border-color:var(--me-border); }

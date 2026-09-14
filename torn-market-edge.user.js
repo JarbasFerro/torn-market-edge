@@ -1007,6 +1007,20 @@
     };
   }
 
+  function normalizeOwnBazaar(payload) {
+    const rows = Array.isArray(payload?.bazaar) ? payload.bazaar : [];
+    return rows
+      .map((row) => ({
+        itemId: asInt(row?.ID ?? row?.id ?? row?.itemId, 0),
+        name: String(row?.name || `Item ${row?.ID || row?.id || ""}`).trim(),
+        price: asInt(row?.price ?? row?.cost, 0),
+        amount: Math.max(1, asInt(row?.quantity ?? row?.amount, 1)),
+        uid: row?.UID ?? row?.uid ?? null,
+        type: String(row?.type || "")
+      }))
+      .filter((row) => row.itemId > 0 && row.price > 0);
+  }
+
   function normalizeOwnListings(payload) {
     const rows = Array.isArray(payload?.itemmarket) ? payload.itemmarket : [];
     return rows
@@ -1483,6 +1497,7 @@
     normalizeWatchlist,
     evaluateWatchItem,
     normalizeOwnListings,
+    normalizeOwnBazaar,
     evaluateOwnListing,
     keyAccessRank,
     keySupports,
@@ -2274,6 +2289,11 @@
     async ownListings({ priority = 150 } = {}) {
       // Requires a Limited access key. Callers translate error code 16.
       return this.request("/user/itemmarket", { cacheMs: 20000, priority });
+    }
+
+    async ownBazaar({ priority = 100 } = {}) {
+      // Public access key; Torn applies a 30s server-side cache.
+      return this.request("/user/bazaar", { cacheMs: 25000, priority });
     }
 
     async inventoryPage({ offset = 0, cat = "", priority = 120 } = {}) {
@@ -4050,7 +4070,7 @@
     .me-launcher { position:fixed; left:10px; bottom:10px; z-index:999997; min-height:var(--me-tap); min-width:var(--me-tap); padding:6px 12px; border-radius:20px; border:1px solid var(--me-border); background:var(--me-bg); color:var(--me-fg); font:800 var(--me-fs-meta)/1 Arial, sans-serif; cursor:pointer; box-shadow:var(--me-shadow); touch-action:manipulation; }
     .me-toast-host { position:fixed; left:10px; bottom:56px; z-index:999999; display:flex; flex-direction:column; gap:6px; max-width:min(380px, calc(100vw - 20px)); }
     .me-toast { background:var(--me-bg); border:1px solid var(--me-good); border-radius:6px; padding:8px 10px; color:var(--me-fg); font:var(--me-fs)/1.4 Arial, sans-serif; box-shadow:var(--me-shadow); }
-    .me-toast a { color:var(--me-good); font-weight:700; }
+    .me-toast a { color:var(--me-good); font-weight:700; }\n    .me-toast .me-toast-remove-sell { display:inline-block; margin-left:6px; border:0; background:transparent; font:inherit; color:var(--me-bad); text-decoration:underline; cursor:pointer; padding:0; }
     .me-toast .me-toast-close { float:right; border:0; background:transparent; font:inherit; display:inline-flex; align-items:center; justify-content:center; min-width:var(--me-tap); min-height:var(--me-tap); margin:-6px -6px 0 8px; cursor:pointer; color:var(--me-muted); font-weight:700; border-radius:6px; }
     .me-toast .me-toast-close:hover { background:var(--me-btn); }
     .me-launcher-menu { border-color:var(--me-border); }
@@ -5572,6 +5592,11 @@
     watchDeferredRows(surface);
 
     if (!items.length) {
+      if (surface === "bazaar" && ownBazaar && !bazaarAddRouteActive() && !retryIfEmpty) {
+        if (document.querySelector("#bazaarRoot, .bazaar-main-wrap")) {
+          recordSellWatch([], "Bazaar", { prune: true });
+        }
+      }
       if (retryIfEmpty) {
         setTimeout(() => {
           if (detectSurface() === surface && pageVisible()) {
@@ -5761,7 +5786,8 @@
   // Sell-side watch bookkeeping: remember the player's own listed prices per
   // venue so the watch loop can warn when the Item Market floor undercuts them.
   function recordSellWatch(entries, venue, { prune = true } = {}) {
-    if (settings.undercutAlerts === false || !Array.isArray(entries) || !entries.length) return;
+    if (settings.undercutAlerts === false || !Array.isArray(entries)) return;
+    if (!entries.length && !prune) return;
     const now = Math.floor(Date.now() / 1000);
     const current = Store.sellWatch();
     const byKey = new Map(current.map((entry) => [`${entry.venue}:${entry.itemId}`, entry]));
@@ -5793,9 +5819,77 @@
     ensureWatchTimer();
   }
 
+  async function syncSellWatchWithApi() {
+    let entries = Store.sellWatch();
+    if (!entries.length || !Store.apiKey()) return entries;
+
+    const hasBazaar = entries.some((entry) => entry.venue === "Bazaar");
+    const hasIm = entries.some((entry) => entry.venue === "IM");
+    let changed = false;
+
+    if (hasBazaar) {
+      try {
+        const payload = await api.ownBazaar({ priority: -70 });
+        const activeBazaar = normalizeOwnBazaar(payload);
+        const activeMap = new Map(activeBazaar.map((item) => [item.itemId, item]));
+        const beforeCount = entries.length;
+        entries = entries.filter((entry) => {
+          if (entry.venue !== "Bazaar") return true;
+          return activeMap.has(entry.itemId);
+        });
+        if (entries.length !== beforeCount) changed = true;
+        entries.forEach((entry) => {
+          if (entry.venue !== "Bazaar") return;
+          const active = activeMap.get(entry.itemId);
+          if (active && (active.price !== entry.price || active.amount !== entry.amount)) {
+            entry.price = active.price;
+            entry.amount = active.amount;
+            changed = true;
+          }
+        });
+      } catch (error) {
+        if (!error?.marketEdgeCanceled) log("Sync own bazaar failed", error.message);
+      }
+    }
+
+    if (hasIm) {
+      try {
+        const payload = await api.ownListings({ priority: -70 });
+        const activeIm = normalizeOwnListings(payload);
+        const activeMap = new Map(activeIm.map((item) => [item.itemId, item]));
+        const beforeCount = entries.length;
+        entries = entries.filter((entry) => {
+          if (entry.venue !== "IM") return true;
+          return activeMap.has(entry.itemId);
+        });
+        if (entries.length !== beforeCount) changed = true;
+        entries.forEach((entry) => {
+          if (entry.venue !== "IM") return;
+          const active = activeMap.get(entry.itemId);
+          if (active && (active.price !== entry.price || active.amount !== entry.amount)) {
+            entry.price = active.price;
+            entry.amount = active.amount;
+            changed = true;
+          }
+        });
+      } catch (error) {
+        if (error?.tornCode !== 16 && !error?.marketEdgeCanceled) {
+          log("Sync own IM listings failed", error.message);
+        }
+      }
+    }
+
+    if (changed) {
+      Store.saveSellWatch(entries);
+      ensureWatchTimer();
+    }
+    return entries;
+  }
+
   async function sellWatchTick() {
     if (settings.undercutAlerts === false) return;
-    const entries = Store.sellWatch();
+    if (!Store.sellWatch().length || !Store.apiKey()) return;
+    const entries = await syncSellWatchWithApi();
     if (!entries.length || !Store.apiKey()) return;
     for (const entry of entries) {
       if (!pageVisible()) break;
@@ -5805,7 +5899,7 @@
         entry.lastCheckedAt = Math.floor(Date.now() / 1000);
         if (outcome.shouldAlert) {
           entry.lastAlertAt = Math.floor(Date.now() / 1000);
-          showToast(`Undercut: <strong>${escapeHtml(entry.name)}</strong> on your ${entry.venue === "IM" ? "Item Market" : "Bazaar"} at ${formatMoney(entry.price)}; the Item Market floor is now ${formatMoney(outcome.floor)} (${outcome.cheaperQuantity.toLocaleString("en-US")} units cheaper). <a href="${itemMarketLink(entry.itemId, entry.name)}">Open market</a>`);
+          showToast(`Undercut: <strong>${escapeHtml(entry.name)}</strong> on your ${entry.venue === "IM" ? "Item Market" : "Bazaar"} at ${formatMoney(entry.price)}; the Item Market floor is now ${formatMoney(outcome.floor)} (${outcome.cheaperQuantity.toLocaleString("en-US")} units cheaper). <a href="${itemMarketLink(entry.itemId, entry.name)}">Open market</a> <button type="button" class="me-toast-remove-sell" data-sell-key="${entry.venue}:${entry.itemId}" title="Dismiss alert and remove listing from watch">Dismiss alert</button>`);
         }
         entry.lastFloor = outcome.floor;
       } catch (error) {
@@ -6562,6 +6656,17 @@
     toast.className = "me-toast";
     toast.innerHTML = `<button class="me-toast-close" type="button" aria-label="Dismiss">×</button>${html}`;
     toast.querySelector(".me-toast-close").addEventListener("click", () => toast.remove());
+    toast.querySelectorAll(".me-toast-remove-sell").forEach((button) => {
+      button.addEventListener("click", () => {
+        const key = String(button.dataset.sellKey || "");
+        if (key) {
+          Store.saveSellWatch(Store.sellWatch().filter((entry) => `${entry.venue}:${entry.itemId}` !== key));
+          ensureWatchTimer();
+          if (ui.currentPanel === "watchlist" && ui.root?.isConnected) renderWatchlistPanel({ refresh: false });
+        }
+        toast.remove();
+      });
+    });
     toastHost.appendChild(toast);
     if (timeoutMs > 0) setTimeout(() => toast.remove(), timeoutMs);
     if (!document.title.startsWith("[ME] ")) document.title = `[ME] ${originalTitle}`;
@@ -6673,7 +6778,10 @@
       ${entries.length ? rows : `<div class="me-note">No watched items. Open an Item Market item and press Watch, or add an item ID in settings.</div>`}
       <div class="me-kicker" style="margin-top:8px">Your listings (undercut alerts${settings.undercutAlerts === false ? " - disabled in settings" : ""})</div>
       ${sellEntries.length ? sellRows : `<div class="me-note">Open "My listings" or your Bazaar to record your listed prices; you are then warned when the Item Market floor drops below them.</div>`}
-      <div class="me-actions"><button class="me-btn me-watch-check" type="button">Check now</button></div>
+      <div class="me-actions">
+        <button class="me-btn me-watch-check" type="button">Check now</button>
+        ${sellEntries.length ? `<button class="me-btn me-sell-clear" type="button" title="Clear all watched listings">Clear listings</button>` : ""}
+      </div>
       ${panelToolbarHtml()}
       <div class="me-note">Polling only happens while a Torn tab is visible, uses the official Item Market API, and respects Torn's cache delay. Alerts are in-page only. Market Edge never buys.</div>
     `, "WATCH");
@@ -6690,6 +6798,11 @@
         Store.saveSellWatch(Store.sellWatch().filter((entry) => `${entry.venue}:${entry.itemId}` !== key));
         renderWatchlistPanel();
       });
+    });
+    ui.body.querySelector(".me-sell-clear")?.addEventListener("click", () => {
+      Store.saveSellWatch([]);
+      ensureWatchTimer();
+      renderWatchlistPanel();
     });
     ui.body.querySelector(".me-watch-check")?.addEventListener("click", async () => {
       await watchTick({ force: true });
@@ -7124,6 +7237,8 @@
       scanBrowseGrid,
       recordSellWatch,
       sellWatchTick,
+      syncSellWatchWithApi,
+      normalizeOwnBazaar,
       fillAllVisiblePrices,
       collectOwnListingRows,
       collectSellFormRows,

@@ -127,6 +127,20 @@
     };
   }
 
+  function normalizeOwnBazaar(payload) {
+    const rows = Array.isArray(payload?.bazaar) ? payload.bazaar : [];
+    return rows
+      .map((row) => ({
+        itemId: asInt(row?.ID ?? row?.id ?? row?.itemId, 0),
+        name: String(row?.name || `Item ${row?.ID || row?.id || ""}`).trim(),
+        price: asInt(row?.price ?? row?.cost, 0),
+        amount: Math.max(1, asInt(row?.quantity ?? row?.amount, 1)),
+        uid: row?.UID ?? row?.uid ?? null,
+        type: String(row?.type || "")
+      }))
+      .filter((row) => row.itemId > 0 && row.price > 0);
+  }
+
   function normalizeOwnListings(payload) {
     const rows = Array.isArray(payload?.itemmarket) ? payload.itemmarket : [];
     return rows
@@ -603,6 +617,7 @@
     normalizeWatchlist,
     evaluateWatchItem,
     normalizeOwnListings,
+    normalizeOwnBazaar,
     evaluateOwnListing,
     keyAccessRank,
     keySupports,
