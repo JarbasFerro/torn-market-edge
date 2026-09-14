@@ -6,6 +6,14 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-09-14
+
+### Fixed
+
+- **Persistent undercut alerts for sold or unlisted items.** When items listed on your Bazaar or Item Market were sold or removed, background watch ticks continued checking the item floor and triggering undercut alerts indefinitely. The watch cycle now queries active listings via Torn API (`/user/bazaar` and `/user/itemmarket`) and automatically prunes unlisted or sold items before evaluating floors.
+- **Empty bazaar and listings pruning.** Fixed a check in `recordSellWatch` that prevented empty listing collections from pruning old watch records when a player sold out or cleared their listings, and visiting an empty bazaar now automatically clears stored bazaar listings.
+- **Dismiss alert and clear listings actions.** Undercut alert toasts now include a direct "Dismiss alert" button to remove the item from watch immediately, and the Watchlist panel includes a "Clear listings" button to wipe watched listings.
+
 ## [0.6.2] - 2026-09-09
 
 ### Fixed
