@@ -428,6 +428,22 @@
         return { mode: "append", node: controls };
       }
     }
+    // Item Market browse cards: Torn sizes the grid cells itself and clips
+    // the name with an ellipsis, so anything placed in the card's flow either
+    // vanishes into "..." or pushes the price over the next row. The chip is
+    // laid over the card's top-left corner instead and never takes up space.
+    if (visible?.browseChip) {
+      const card = visible.card;
+      if (!card?.isConnected) return null;
+      if (!hidden && !card.classList.contains("me-browse-host")) {
+        let position = "";
+        try { position = getComputedStyle(card).position; } catch { position = ""; }
+        // Only a static card needs to become the containing block; Torn may
+        // position cells absolutely and that must be left untouched.
+        if (!position || position === "static") card.classList.add("me-browse-host");
+      }
+      return { mode: "append", node: card };
+    }
     const anchor = visible?.inlineAnchor;
     if (anchor?.isConnected) return { mode: "append", node: anchor };
     if (visible?.card?.isConnected) return { mode: "append", node: visible.card };
@@ -468,9 +484,12 @@
     block.className = `me-inline-analysis ${state} ${extraClass}${visible?.rowLine && !hidden ? " me-row-line" : ""}`.trim();
     block.dataset.meItemId = String(visible.itemId);
     block.dataset.meComplete = extraClass.includes("me-loading") ? "0" : "1";
-    block.innerHTML = hidden ? html : `${html}${whyHtml(why)}`;
+    // Browse chips are tap-through overlays: no "why" toggle on them.
+    const chip = Boolean(visible?.browseChip);
+    if (chip) block.classList.add("me-browse-chip");
+    block.innerHTML = hidden || chip ? html : `${html}${whyHtml(why)}`;
     host.node.appendChild(block);
-    if (!hidden) bindWhy(block);
+    if (!hidden && !chip) bindWhy(block);
     if (visible?.rowLine && !hidden) ensureRowLineVisible(block);
     return block;
   }

@@ -214,10 +214,17 @@ run("Item Market browse grid is annotated against the official market value with
   for (let i = 0; i < 40 && env.document.querySelectorAll(".me-inline-analysis").length < 3; i += 1) await tick();
   const blocks = Array.from(env.document.querySelectorAll(".me-inline-analysis"));
   const byItem = Object.fromEntries(blocks.map((block) => [block.dataset.meItemId, block]));
-  assert.match(byItem["206"].textContent, /-4\.8% vs value/);
+  assert.match(byItem["206"].textContent, /-4\.8%/);
   assert.match(byItem["206"].textContent, /CONSIDER/);
-  assert.match(byItem["258"].textContent, /\+20\.0% vs value/);
+  assert.match(byItem["206"].getAttribute("aria-label"), /-4\.8% vs value, CONSIDER/);
+  assert.match(byItem["258"].textContent, /\+20\.0%/);
   assert.match(byItem["258"].textContent, /PASS/);
+  // Torn clips card names with an ellipsis and sizes the grid cells itself:
+  // the chip overlays the card instead of entering the name/price flow.
+  assert.ok(byItem["206"].classList.contains("me-browse-chip"), "browse result is an overlay chip");
+  assert.equal(byItem["206"].parentElement.className.includes("item___"), true, "chip hangs off the card, not the name");
+  assert.ok(!byItem["206"].querySelector(".me-why-toggle"), "no why toggle on tap-through chips");
+  assert.ok(byItem["206"].parentElement.classList.contains("me-browse-host"), "static card becomes the containing block");
   assert.ok(byItem["1"].classList.contains("me-hidden"), "equipment cards are left alone");
   assert.ok(!env.requests.some((url) => url.includes("/itemmarket?")), "no per-item order book on the grid");
   assert.equal(env.requests.filter((url) => /\/torn\/[\d,]+\/items/.test(url)).length, 1, "one metadata batch");

@@ -6,6 +6,12 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-10-24
+
+### Fixed
+
+- **Item Market browse grid broke Torn's layout.** Torn's browse cards now clip the item name with an ellipsis and size the grid cells themselves. The browse strip was appended inside the name, so it showed only as "Credit Card ..." and its wrapped height pushed each card's price over the next row. The result is now a small overlay chip (percentage vs value and verdict) laid over the card's top-left corner. It takes up no space in the card, lets taps through to Torn, and only makes the card its containing block when Torn left it statically positioned.
+
 ## [0.6.4] - 2026-09-14
 
 ### Changed

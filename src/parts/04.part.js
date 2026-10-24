@@ -1149,6 +1149,9 @@
     .me-inline-warning { color:var(--me-warn) !important; font-weight:700 !important; }
     .me-inline-metric { white-space:nowrap !important; font-variant-numeric:tabular-nums !important; }
     .me-inline-analysis.me-loading { opacity:.65 !important; font-weight:400 !important; }
+    .me-browse-host { position:relative !important; }
+    .me-inline-analysis.me-browse-chip { position:absolute !important; top:2px !important; left:2px !important; right:auto !important; bottom:auto !important; z-index:3 !important; display:inline-flex !important; flex-wrap:nowrap !important; gap:3px !important; max-width:calc(100% - 4px) !important; margin:0 !important; padding:1px 4px !important; overflow:hidden !important; white-space:nowrap !important; text-overflow:ellipsis !important; font:700 10px/1.2 Arial, sans-serif !important; pointer-events:none !important; opacity:.95 !important; }
+    .me-inline-analysis.me-browse-chip .me-inline-status { font-size:9px !important; letter-spacing:.02em !important; }
     .me-inline-analysis.me-hidden, div.me-inline-analysis.me-row-line.me-hidden { display:none !important; visibility:hidden !important; height:0 !important; min-height:0 !important; padding:0 !important; border:0 !important; }
     .me-inline-analysis.me-bazaar-add, .me-inline-analysis.me-has-cta { pointer-events:auto !important; }
 

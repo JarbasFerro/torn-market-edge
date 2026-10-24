@@ -115,6 +115,7 @@
     try {
       const items = collectVisibleItems({ requireMoney: true }).filter((visible) => {
         if (!visible.card?.isConnected) return false;
+        visible.browseChip = true;
         const existing = visible.card.querySelector?.(`.me-inline-analysis[data-me-item-id="${visible.itemId}"]`);
         if (force && existing) existing.remove();
         return force || existing?.dataset?.meComplete !== "1";

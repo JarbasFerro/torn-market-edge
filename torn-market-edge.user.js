@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.6.4
+// @version      0.6.5
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.6.4",
+    version: "0.6.5",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -3989,6 +3989,9 @@
     .me-inline-warning { color:var(--me-warn) !important; font-weight:700 !important; }
     .me-inline-metric { white-space:nowrap !important; font-variant-numeric:tabular-nums !important; }
     .me-inline-analysis.me-loading { opacity:.65 !important; font-weight:400 !important; }
+    .me-browse-host { position:relative !important; }
+    .me-inline-analysis.me-browse-chip { position:absolute !important; top:2px !important; left:2px !important; right:auto !important; bottom:auto !important; z-index:3 !important; display:inline-flex !important; flex-wrap:nowrap !important; gap:3px !important; max-width:calc(100% - 4px) !important; margin:0 !important; padding:1px 4px !important; overflow:hidden !important; white-space:nowrap !important; text-overflow:ellipsis !important; font:700 10px/1.2 Arial, sans-serif !important; pointer-events:none !important; opacity:.95 !important; }
+    .me-inline-analysis.me-browse-chip .me-inline-status { font-size:9px !important; letter-spacing:.02em !important; }
     .me-inline-analysis.me-hidden, div.me-inline-analysis.me-row-line.me-hidden { display:none !important; visibility:hidden !important; height:0 !important; min-height:0 !important; padding:0 !important; border:0 !important; }
     .me-inline-analysis.me-bazaar-add, .me-inline-analysis.me-has-cta { pointer-events:auto !important; }
 
@@ -4524,6 +4527,22 @@
         return { mode: "append", node: controls };
       }
     }
+    // Item Market browse cards: Torn sizes the grid cells itself and clips
+    // the name with an ellipsis, so anything placed in the card's flow either
+    // vanishes into "..." or pushes the price over the next row. The chip is
+    // laid over the card's top-left corner instead and never takes up space.
+    if (visible?.browseChip) {
+      const card = visible.card;
+      if (!card?.isConnected) return null;
+      if (!hidden && !card.classList.contains("me-browse-host")) {
+        let position = "";
+        try { position = getComputedStyle(card).position; } catch { position = ""; }
+        // Only a static card needs to become the containing block; Torn may
+        // position cells absolutely and that must be left untouched.
+        if (!position || position === "static") card.classList.add("me-browse-host");
+      }
+      return { mode: "append", node: card };
+    }
     const anchor = visible?.inlineAnchor;
     if (anchor?.isConnected) return { mode: "append", node: anchor };
     if (visible?.card?.isConnected) return { mode: "append", node: visible.card };
@@ -4564,9 +4583,12 @@
     block.className = `me-inline-analysis ${state} ${extraClass}${visible?.rowLine && !hidden ? " me-row-line" : ""}`.trim();
     block.dataset.meItemId = String(visible.itemId);
     block.dataset.meComplete = extraClass.includes("me-loading") ? "0" : "1";
-    block.innerHTML = hidden ? html : `${html}${whyHtml(why)}`;
+    // Browse chips are tap-through overlays: no "why" toggle on them.
+    const chip = Boolean(visible?.browseChip);
+    if (chip) block.classList.add("me-browse-chip");
+    block.innerHTML = hidden || chip ? html : `${html}${whyHtml(why)}`;
     host.node.appendChild(block);
-    if (!hidden) bindWhy(block);
+    if (!hidden && !chip) bindWhy(block);
     if (visible?.rowLine && !hidden) ensureRowLineVisible(block);
     return block;
   }
@@ -4869,6 +4891,17 @@
         Number.isFinite(data.profitPerUnit) ? `Estimated net per unit after fees via ${data.bestRoute}: ${formatMoney(data.profitPerUnit, true)}.` : "",
         "Open the item for order-book analysis."
       ];
+      // Browse cards are narrow: the chip carries the percentage and verdict
+      // only; the full sentence is the accessible name.
+      if (visible?.browseChip) {
+        const chip = renderInlineHtml(visible,
+          `<span class="me-inline-primary">${discount}</span><span class="me-inline-status">${data.label}</span>${stale}`,
+          data.state
+        );
+        chip?.setAttribute("role", "note");
+        chip?.setAttribute("aria-label", `Market Edge: ${discount} vs value, ${data.label}`);
+        return chip;
+      }
       return renderInlineHtml(visible,
         `<span class="me-inline-brand">ME</span><span class="me-inline-primary">${discount} vs value</span><span class="me-inline-status">${data.label}</span>${stale}`,
         data.state,
@@ -5758,6 +5791,7 @@
     try {
       const items = collectVisibleItems({ requireMoney: true }).filter((visible) => {
         if (!visible.card?.isConnected) return false;
+        visible.browseChip = true;
         const existing = visible.card.querySelector?.(`.me-inline-analysis[data-me-item-id="${visible.itemId}"]`);
         if (force && existing) existing.remove();
         return force || existing?.dataset?.meComplete !== "1";

@@ -243,6 +243,17 @@
         Number.isFinite(data.profitPerUnit) ? `Estimated net per unit after fees via ${data.bestRoute}: ${formatMoney(data.profitPerUnit, true)}.` : "",
         "Open the item for order-book analysis."
       ];
+      // Browse cards are narrow: the chip carries the percentage and verdict
+      // only; the full sentence is the accessible name.
+      if (visible?.browseChip) {
+        const chip = renderInlineHtml(visible,
+          `<span class="me-inline-primary">${discount}</span><span class="me-inline-status">${data.label}</span>${stale}`,
+          data.state
+        );
+        chip?.setAttribute("role", "note");
+        chip?.setAttribute("aria-label", `Market Edge: ${discount} vs value, ${data.label}`);
+        return chip;
+      }
       return renderInlineHtml(visible,
         `<span class="me-inline-brand">ME</span><span class="me-inline-primary">${discount} vs value</span><span class="me-inline-status">${data.label}</span>${stale}`,
         data.state,
