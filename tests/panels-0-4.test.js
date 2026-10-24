@@ -193,6 +193,22 @@ run("City shop runs panel ranks official shop stock by net profit and scopes to 
   assert.ok(env.requests.some((url) => url.includes("/torn/cityshops")));
 });
 
+run("City shop strip sits under the row's text column, never in the Buy column", async (t) => {
+  const env = boot(fixture("cityshop-react.html"), "https://www.torn.com/shops.php?step=candy");
+  t.after(env.close);
+  // The visually hidden "Buy ..." label is a 1px box in a real browser.
+  env.document.querySelector(".sr-only").getBoundingClientRect = () => ({ width: 1, height: 1, top: 10, bottom: 11, left: 0, right: 1, x: 0, y: 10 });
+  await env.ME.scanVisibleSurface("cityshop", { force: true });
+  for (let i = 0; i < 60 && !env.document.querySelector('.me-inline-analysis[data-me-complete="1"]'); i += 1) await tick();
+  const strip = env.document.querySelector('.me-inline-analysis[data-me-item-id="300"]');
+  assert.ok(strip, "the row is annotated");
+  assert.equal(strip.dataset.meComplete, "1");
+  assert.ok(strip.parentElement.classList.contains("details___d1"), `strip hosted by the text column, got ${strip.parentElement.className}`);
+  assert.ok(!strip.closest(".actions___a1"), "never inside the Buy column");
+  assert.ok(strip.classList.contains("me-inline-block"), "its own line below the stock text");
+  assert.equal(strip.tagName, "DIV");
+});
+
 run("Travel plan ranks countries from official foreign shop prices and uses capacity", async (t) => {
   const env = boot("<div id='mainContainer'></div>", "https://www.torn.com/index.php");
   t.after(env.close);

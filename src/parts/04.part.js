@@ -139,6 +139,11 @@
       if (!(element instanceof HTMLElement)) return;
       if (element.closest(".me-inline-analysis")) return;
       if (element.querySelector("img,[style*='/items/']")) return;
+      // Labels inside Buy/quantity controls ("Buy Bunch of Flowers") name the
+      // item too; they sit in the narrow action column and must not host it.
+      const control = element.closest("button,label,select,[role='button']");
+      if (control && control !== card && card.contains(control)) return;
+      if (element.querySelector("input,button,select,textarea")) return;
       const text = (element.textContent || "").replace(/\s+/g, " ").trim();
       if (!text || text.length > 120) return;
       if (/^(?:RRP|Remove|Price per unit)\s*:/i.test(text)) return;
@@ -147,7 +152,8 @@
       const itemish = nameMatch || /^(?:x|\u00d7)?\s*[\d,]+\s+\S+/i.test(text);
       if (!itemish) return;
       const rect = rectOf(element);
-      if (rect.width <= 0 || rect.height <= 0) return;
+      // Visually hidden screen-reader text is a 1px box: never a host.
+      if (rect.width < 12 || rect.height < 6) return;
       candidates.push({ element, area: rect.width * rect.height, length: text.length });
     });
     candidates.sort((a, b) => a.area - b.area || a.length - b.length);
@@ -1149,6 +1155,7 @@
     .me-inline-warning { color:var(--me-warn) !important; font-weight:700 !important; }
     .me-inline-metric { white-space:nowrap !important; font-variant-numeric:tabular-nums !important; }
     .me-inline-analysis.me-loading { opacity:.65 !important; font-weight:400 !important; }
+    div.me-inline-analysis.me-inline-block { display:flex !important; flex-wrap:wrap !important; width:fit-content !important; max-width:100% !important; margin:4px 0 0 !important; white-space:normal !important; float:none !important; clear:both !important; }
     .me-browse-host { position:relative !important; }
     .me-inline-analysis.me-browse-chip { position:absolute !important; top:2px !important; left:2px !important; right:auto !important; bottom:auto !important; z-index:3 !important; display:inline-flex !important; flex-wrap:nowrap !important; gap:3px !important; max-width:calc(100% - 4px) !important; margin:0 !important; padding:1px 4px !important; overflow:hidden !important; white-space:nowrap !important; text-overflow:ellipsis !important; font:700 10px/1.2 Arial, sans-serif !important; pointer-events:none !important; opacity:.95 !important; }
     .me-inline-analysis.me-browse-chip .me-inline-status { font-size:9px !important; letter-spacing:.02em !important; }

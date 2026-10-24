@@ -6,6 +6,14 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.6.6] - 2026-10-24
+
+### Fixed
+
+- **City shop strip stuck in the Buy column.** Torn's redesigned city shops (for example Bits 'n' Bobs) put a visually hidden "Buy <item>" label inside each Buy button. Being the smallest element naming the item, it was chosen to host the strip, so the strip showed as a clipped "ME +" box under Buy. Elements inside buttons, labels and selects, elements that hold form controls, and 1px screen-reader boxes can no longer host a strip, and action words ("Buy", "MAX") are never taken as the item name.
+- **Strips no longer squeeze into the item name's line.** On city shops, other players' Bazaars, your managed Bazaar and travel rows, the strip is now its own line at the foot of the row's text column (name, price, stock), away from the image and the controls.
+- **Fixed-size cards are never pushed out of shape.** If a strip would make a card that Torn sizes itself overflow, it is laid over the card's top-left corner as a compact chip instead (the same treatment as the Item Market browse grid).
+
 ## [0.6.5] - 2026-10-24
 
 ### Fixed

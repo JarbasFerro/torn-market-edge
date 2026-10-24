@@ -509,7 +509,8 @@
       card?.querySelector?.("[title]")?.getAttribute("title"),
       anchor?.getAttribute?.("aria-label"),
       anchor?.textContent
-    ].filter(Boolean).map((value) => String(value).trim()).filter((value) => value.length >= 2 && value.length <= 80);
+    ].filter(Boolean).map((value) => String(value).replace(/\s+/g, " ").trim())
+      .filter((value) => value.length >= 2 && value.length <= 80 && !/^(?:buy|sell|max|add|remove|purchase|info|view)$/i.test(value));
     return candidates[0] || `Item ${itemIdFromElement(anchor || card) || ""}`.trim();
   }
 

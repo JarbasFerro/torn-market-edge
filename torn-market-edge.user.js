@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.6.5
+// @version      0.6.6
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.6.5",
+    version: "0.6.6",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -2741,7 +2741,8 @@
       card?.querySelector?.("[title]")?.getAttribute("title"),
       anchor?.getAttribute?.("aria-label"),
       anchor?.textContent
-    ].filter(Boolean).map((value) => String(value).trim()).filter((value) => value.length >= 2 && value.length <= 80);
+    ].filter(Boolean).map((value) => String(value).replace(/\s+/g, " ").trim())
+      .filter((value) => value.length >= 2 && value.length <= 80 && !/^(?:buy|sell|max|add|remove|purchase|info|view)$/i.test(value));
     return candidates[0] || `Item ${itemIdFromElement(anchor || card) || ""}`.trim();
   }
 
@@ -2979,6 +2980,11 @@
       if (!(element instanceof HTMLElement)) return;
       if (element.closest(".me-inline-analysis")) return;
       if (element.querySelector("img,[style*='/items/']")) return;
+      // Labels inside Buy/quantity controls ("Buy Bunch of Flowers") name the
+      // item too; they sit in the narrow action column and must not host it.
+      const control = element.closest("button,label,select,[role='button']");
+      if (control && control !== card && card.contains(control)) return;
+      if (element.querySelector("input,button,select,textarea")) return;
       const text = (element.textContent || "").replace(/\s+/g, " ").trim();
       if (!text || text.length > 120) return;
       if (/^(?:RRP|Remove|Price per unit)\s*:/i.test(text)) return;
@@ -2987,7 +2993,8 @@
       const itemish = nameMatch || /^(?:x|\u00d7)?\s*[\d,]+\s+\S+/i.test(text);
       if (!itemish) return;
       const rect = rectOf(element);
-      if (rect.width <= 0 || rect.height <= 0) return;
+      // Visually hidden screen-reader text is a 1px box: never a host.
+      if (rect.width < 12 || rect.height < 6) return;
       candidates.push({ element, area: rect.width * rect.height, length: text.length });
     });
     candidates.sort((a, b) => a.area - b.area || a.length - b.length);
@@ -3989,6 +3996,7 @@
     .me-inline-warning { color:var(--me-warn) !important; font-weight:700 !important; }
     .me-inline-metric { white-space:nowrap !important; font-variant-numeric:tabular-nums !important; }
     .me-inline-analysis.me-loading { opacity:.65 !important; font-weight:400 !important; }
+    div.me-inline-analysis.me-inline-block { display:flex !important; flex-wrap:wrap !important; width:fit-content !important; max-width:100% !important; margin:4px 0 0 !important; white-space:normal !important; float:none !important; clear:both !important; }
     .me-browse-host { position:relative !important; }
     .me-inline-analysis.me-browse-chip { position:absolute !important; top:2px !important; left:2px !important; right:auto !important; bottom:auto !important; z-index:3 !important; display:inline-flex !important; flex-wrap:nowrap !important; gap:3px !important; max-width:calc(100% - 4px) !important; margin:0 !important; padding:1px 4px !important; overflow:hidden !important; white-space:nowrap !important; text-overflow:ellipsis !important; font:700 10px/1.2 Arial, sans-serif !important; pointer-events:none !important; opacity:.95 !important; }
     .me-inline-analysis.me-browse-chip .me-inline-status { font-size:9px !important; letter-spacing:.02em !important; }
@@ -4544,9 +4552,55 @@
       return { mode: "append", node: card };
     }
     const anchor = visible?.inlineAnchor;
-    if (anchor?.isConnected) return { mode: "append", node: anchor };
+    if (anchor?.isConnected) {
+      // A strip squeezed into the name's line wraps or gets clipped on narrow
+      // phones. It goes as its own line at the foot of the text column (name,
+      // price, stock) instead, away from the image and the action controls.
+      const column = textColumnFor(visible.card, anchor);
+      if (column) return { mode: "append", node: column, block: true };
+      return { mode: "append", node: anchor };
+    }
     if (visible?.card?.isConnected) return { mode: "append", node: visible.card };
     return null;
+  }
+
+  // Highest ancestor of the name node, inside the card, that still holds no
+  // image or form control: the row's text column. Null when the name node is
+  // already that column (it is then kept as the inline host).
+  function textColumnFor(card, anchor) {
+    if (!card?.contains?.(anchor) || anchor === card) return null;
+    let node = anchor;
+    while (node.parentElement && node.parentElement !== card) {
+      const parent = node.parentElement;
+      if (parent.querySelector("img,input,select,textarea,[style*='/items/']")) break;
+      node = parent;
+    }
+    if (node === anchor) return null;
+    // Inline phrasing elements cannot carry a block line.
+    if (/^(?:SPAN|A|STRONG|B|EM|I|LABEL)$/.test(node.tagName)) return null;
+    return node;
+  }
+
+  // Torn sizes some rows and tiles itself (fixed height, clipped). When the
+  // strip made such a card overflow, it is laid over the card's corner as a
+  // chip instead, so Torn's own content never gets pushed out of place.
+  function fitInlineBlock(visible, block, before) {
+    const card = visible?.card;
+    if (!card?.isConnected || !block?.isConnected || !before) return;
+    try {
+      const overflowed = card.scrollHeight > card.clientHeight + 1 && before.scrollHeight <= before.clientHeight + 1;
+      const grewFixed = card.clientHeight > 0 && card.clientHeight === before.clientHeight && card.scrollHeight > before.scrollHeight + 1;
+      if (!overflowed && !grewFixed) return;
+      block.querySelector(".me-why-toggle")?.remove();
+      block.querySelector(".me-why")?.remove();
+      block.classList.remove("me-inline-block", "me-has-why");
+      block.classList.add("me-browse-chip");
+      const position = getComputedStyle(card).position;
+      if (!position || position === "static") card.classList.add("me-browse-host");
+      card.appendChild(block);
+    } catch {
+      // Measurement is best-effort; the in-flow strip stays.
+    }
   }
 
   // "Why this price": a small toggle on the strip opens a plain-language
@@ -4579,8 +4633,11 @@
     visible.card?.querySelectorAll?.(".me-inline-analysis").forEach((node) => node.remove());
     // Inventory rows get a block-level div as the row's last child; other
     // surfaces keep the inline span.
-    const block = document.createElement(visible?.rowLine && !hidden ? "div" : "span");
-    block.className = `me-inline-analysis ${state} ${extraClass}${visible?.rowLine && !hidden ? " me-row-line" : ""}`.trim();
+    const asBlock = Boolean(host.block) && !hidden;
+    const block = document.createElement((visible?.rowLine || asBlock) && !hidden ? "div" : "span");
+    block.className = `me-inline-analysis ${state} ${extraClass}${visible?.rowLine && !hidden ? " me-row-line" : ""}${asBlock ? " me-inline-block" : ""}`.trim();
+    const fits = !hidden && !visible?.rowLine && !visible?.bazaarAdd && !visible?.browseChip && visible?.card?.isConnected;
+    const before = fits ? { scrollHeight: visible.card.scrollHeight, clientHeight: visible.card.clientHeight } : null;
     block.dataset.meItemId = String(visible.itemId);
     block.dataset.meComplete = extraClass.includes("me-loading") ? "0" : "1";
     // Browse chips are tap-through overlays: no "why" toggle on them.
@@ -4589,6 +4646,7 @@
     block.innerHTML = hidden || chip ? html : `${html}${whyHtml(why)}`;
     host.node.appendChild(block);
     if (!hidden && !chip) bindWhy(block);
+    if (before) fitInlineBlock(visible, block, before);
     if (visible?.rowLine && !hidden) ensureRowLineVisible(block);
     return block;
   }

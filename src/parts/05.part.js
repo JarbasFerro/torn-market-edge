@@ -445,9 +445,55 @@
       return { mode: "append", node: card };
     }
     const anchor = visible?.inlineAnchor;
-    if (anchor?.isConnected) return { mode: "append", node: anchor };
+    if (anchor?.isConnected) {
+      // A strip squeezed into the name's line wraps or gets clipped on narrow
+      // phones. It goes as its own line at the foot of the text column (name,
+      // price, stock) instead, away from the image and the action controls.
+      const column = textColumnFor(visible.card, anchor);
+      if (column) return { mode: "append", node: column, block: true };
+      return { mode: "append", node: anchor };
+    }
     if (visible?.card?.isConnected) return { mode: "append", node: visible.card };
     return null;
+  }
+
+  // Highest ancestor of the name node, inside the card, that still holds no
+  // image or form control: the row's text column. Null when the name node is
+  // already that column (it is then kept as the inline host).
+  function textColumnFor(card, anchor) {
+    if (!card?.contains?.(anchor) || anchor === card) return null;
+    let node = anchor;
+    while (node.parentElement && node.parentElement !== card) {
+      const parent = node.parentElement;
+      if (parent.querySelector("img,input,select,textarea,[style*='/items/']")) break;
+      node = parent;
+    }
+    if (node === anchor) return null;
+    // Inline phrasing elements cannot carry a block line.
+    if (/^(?:SPAN|A|STRONG|B|EM|I|LABEL)$/.test(node.tagName)) return null;
+    return node;
+  }
+
+  // Torn sizes some rows and tiles itself (fixed height, clipped). When the
+  // strip made such a card overflow, it is laid over the card's corner as a
+  // chip instead, so Torn's own content never gets pushed out of place.
+  function fitInlineBlock(visible, block, before) {
+    const card = visible?.card;
+    if (!card?.isConnected || !block?.isConnected || !before) return;
+    try {
+      const overflowed = card.scrollHeight > card.clientHeight + 1 && before.scrollHeight <= before.clientHeight + 1;
+      const grewFixed = card.clientHeight > 0 && card.clientHeight === before.clientHeight && card.scrollHeight > before.scrollHeight + 1;
+      if (!overflowed && !grewFixed) return;
+      block.querySelector(".me-why-toggle")?.remove();
+      block.querySelector(".me-why")?.remove();
+      block.classList.remove("me-inline-block", "me-has-why");
+      block.classList.add("me-browse-chip");
+      const position = getComputedStyle(card).position;
+      if (!position || position === "static") card.classList.add("me-browse-host");
+      card.appendChild(block);
+    } catch {
+      // Measurement is best-effort; the in-flow strip stays.
+    }
   }
 
   // "Why this price": a small toggle on the strip opens a plain-language
@@ -480,8 +526,11 @@
     visible.card?.querySelectorAll?.(".me-inline-analysis").forEach((node) => node.remove());
     // Inventory rows get a block-level div as the row's last child; other
     // surfaces keep the inline span.
-    const block = document.createElement(visible?.rowLine && !hidden ? "div" : "span");
-    block.className = `me-inline-analysis ${state} ${extraClass}${visible?.rowLine && !hidden ? " me-row-line" : ""}`.trim();
+    const asBlock = Boolean(host.block) && !hidden;
+    const block = document.createElement((visible?.rowLine || asBlock) && !hidden ? "div" : "span");
+    block.className = `me-inline-analysis ${state} ${extraClass}${visible?.rowLine && !hidden ? " me-row-line" : ""}${asBlock ? " me-inline-block" : ""}`.trim();
+    const fits = !hidden && !visible?.rowLine && !visible?.bazaarAdd && !visible?.browseChip && visible?.card?.isConnected;
+    const before = fits ? { scrollHeight: visible.card.scrollHeight, clientHeight: visible.card.clientHeight } : null;
     block.dataset.meItemId = String(visible.itemId);
     block.dataset.meComplete = extraClass.includes("me-loading") ? "0" : "1";
     // Browse chips are tap-through overlays: no "why" toggle on them.
@@ -490,6 +539,7 @@
     block.innerHTML = hidden || chip ? html : `${html}${whyHtml(why)}`;
     host.node.appendChild(block);
     if (!hidden && !chip) bindWhy(block);
+    if (before) fitInlineBlock(visible, block, before);
     if (visible?.rowLine && !hidden) ensureRowLineVisible(block);
     return block;
   }
