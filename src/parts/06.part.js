@@ -95,6 +95,53 @@
     return cleared;
   }
 
+  // Values a row held before Market Edge wrote into it, so each fill can be
+  // undone exactly (a price the player typed comes back, an empty row goes
+  // back to empty). Keyed by surface and item: Torn re-renders rows after a
+  // write, so the strip's own closure does not outlive the fill.
+  const fillUndo = new Map();
+
+  function fillUndoKey(visible) {
+    return `${visible.sellForm ? "imsell" : "bazaar"}|${visible.itemId}`;
+  }
+
+  function captureSellFormRow(visible) {
+    resolveSellFormInputs(visible);
+    return {
+      price: parseIntegerField(visible.priceInput?.value),
+      quantity: visible.priceOnly ? null : parseIntegerField(visible.quantityInput?.value),
+      checked: visible.quantityCheckbox ? Boolean(visible.quantityCheckbox.checked) : null
+    };
+  }
+
+  function restoreSellFormRow(visible, previous) {
+    resolveSellFormInputs(visible);
+    if (!visible.priceOnly) {
+      if (visible.quantityCheckbox?.isConnected && previous.checked !== null) {
+        if (Boolean(visible.quantityCheckbox.checked) !== previous.checked) visible.quantityCheckbox.click();
+      } else if (visible.quantityInput?.isConnected) {
+        if (previous.quantity) setBazaarInputValue(visible.quantityInput, previous.quantity);
+        else clearInputValue(visible.quantityInput);
+      }
+    }
+    resolveSellFormInputs(visible);
+    if (!visible.priceInput?.isConnected) return false;
+    const restored = previous.price ? setBazaarInputValue(visible.priceInput, previous.price) : clearInputValue(visible.priceInput);
+    visible.price = previous.price || 0;
+    return restored;
+  }
+
+  // Where the suggested price comes from, in a few words.
+  function fillOriginText(result, source) {
+    const snapshot = result.snapshot || {};
+    if (source.fill?.mode === "anchor") return "market anchor";
+    if (snapshot.lowestPrice) {
+      const undercut = Math.max(0, asInt(settings.itemMarketUndercut));
+      return undercut ? `IM floor ${formatMoney(snapshot.lowestPrice, true)} \u2212 ${formatMoney(undercut, true)}` : `IM floor ${formatMoney(snapshot.lowestPrice, true)}`;
+    }
+    return "Torn's daily value";
+  }
+
   function renderBazaarAddSuggestion(result) {
     const visible = result.visible;
     const source = result?.sellForm || result?.ownBazaar || {};
@@ -103,29 +150,32 @@
     if (!Number.isFinite(target) || target <= 0) {
       return renderInlineHtml(
         visible,
-        `<span class="me-inline-brand">ME</span><span class="me-inline-secondary">${escapeHtml(source.reason || "price unavailable")}</span>${stale}`,
+        `<span class="me-fill-text"><span class="me-fill-line2">${escapeHtml(source.reason || "price unavailable")}</span></span>${stale}`,
         "GREY",
-        "me-bazaar-add"
+        "me-bazaar-add me-fill-strip"
       );
     }
 
     const exact = formatMoney(target, true);
     const qty = Math.max(1, asInt(visible.maxAvailable || visible.quantity, 1));
+    const multi = qty > 1 && !visible.priceOnly;
     const filled = asInt(visible.price, 0) === target;
-    const perUnit = visible.priceOnly || qty === 1 ? exact : `${qty.toLocaleString("en-US")} \u00d7 ${exact}`;
-    const totalHtml = qty > 1 && !visible.priceOnly
-      ? `<span class="me-inline-secondary">total ${formatMoney(target * qty)}</span>`
+    const undoKey = fillUndoKey(visible);
+    const canUndo = fillUndo.has(undoKey);
+    const sellForm = Boolean(result?.sellForm);
+    const net = sellForm && Number.isFinite(source.net) ? source.net * (multi ? qty : 1) : (sellForm ? null : target * (multi ? qty : 1));
+    const netText = Number.isFinite(net)
+      ? (sellForm ? `net ${formatMoney(net)}${source.feeBps ? ` after ${source.feeBps / 100}%` : ""}` : `total ${formatMoney(net)}`)
       : "";
-    const netHtml = result?.sellForm && Number.isFinite(source.net)
-      ? `<span class="me-inline-secondary">net ${formatMoney(qty > 1 && !visible.priceOnly ? source.net * qty : source.net)}${source.feeBps ? ` after ${source.feeBps / 100}%` : ""}</span>`
-      : "";
-    const manualNote = result?.sellForm ? "listing" : "adding to the Bazaar";
-    // Compact controls, figures as plain text beside them. No title
-    // attributes: mobile webviews pop them up as bubbles over the row.
+    const secondary = [multi ? `\u00d7 ${qty.toLocaleString("en-US")}` : "", netText].filter(Boolean).join(" \u00b7 ");
+    const manualNote = sellForm ? "listing" : "adding to the Bazaar";
+    // One action, 32px: Fill, or Filled with Undo. No title attributes:
+    // mobile webviews pop them up as bubbles over the row.
+    const undoButton = canUndo ? `<button class="me-bazaar-fill-btn me-fill-clear me-fill-undo" type="button" aria-label="Undo: put back what this row held before the fill">Undo</button>` : "";
     const controls = filled
-      ? `<span class="me-fill-done" aria-label="Filled">\u2713</span><button class="me-bazaar-fill-btn me-fill-clear" type="button" aria-label="Clear the quantity and price fields">\u00d7</button>`
-      : `<button class="me-bazaar-fill-btn me-fill-main" type="button" aria-label="Fill ${escapeHtml(perUnit)}; ${escapeHtml(manualNote)} stays manual">Fill</button>`;
-    const warning = source.warning ? `<span class="me-inline-warning">${escapeHtml(source.warning.split(":")[0])}</span>` : "";
+      ? `<span class="me-fill-done" role="status">\u2713 Filled</span>${undoButton || `<button class="me-bazaar-fill-btn me-fill-clear me-fill-undo" type="button" aria-label="Clear the quantity and price fields">Clear</button>`}`
+      : `<button class="me-bazaar-fill-btn me-fill-main" type="button" aria-label="Fill ${escapeHtml(multi ? `${qty} at ${exact}` : exact)}; ${escapeHtml(manualNote)} stays manual">Fill</button>${undoButton}`;
+    const warning = source.warning ? `<span class="me-inline-warning">${escapeHtml(source.warning.split(":")[0])}</span> \u00b7 ` : "";
     const snapshot = result.snapshot || {};
     const rule = source.rule;
     const ruleLine = rule ? `Your rule for this item: ${rule.mode === "hold" ? "never fill" : rule.mode === "anchor" ? "hold the anchor price" : "undercut the floor"}${rule.minPrice ? `, never below ${formatMoney(rule.minPrice, true)}` : ""}.` : "";
@@ -133,39 +183,59 @@
       snapshot.lowestPrice
         ? `Cheapest Item Market listing ${formatMoney(snapshot.lowestPrice, true)}; suggested price is ${source.fill?.mode === "anchor" ? "the conservative market anchor" : `that floor minus your ${formatMoney(Math.max(0, asInt(settings.itemMarketUndercut)), true)} undercut`}.`
         : "No live Item Market listings; the price comes from Torn's daily value.",
-      result?.sellForm && Number.isFinite(source.net) ? `Net per unit after the ${source.feeBps / 100}% Item Market fee: ${formatMoney(source.net, true)}.` : (result?.ownBazaar ? "Bazaar sales carry no fee." : ""),
+      sellForm && Number.isFinite(source.net) ? `Net per unit after the ${source.feeBps / 100}% Item Market fee: ${formatMoney(source.net, true)}.` : (result?.ownBazaar ? "Bazaar sales carry no fee." : ""),
       snapshot.averagePrice ? `Torn's daily value: ${formatMoney(snapshot.averagePrice, true)}.` : "",
       ruleLine,
       source.warning || "",
       orderBookAgeLine(result),
-      `${result?.sellForm ? "Listing" : "Adding to the Bazaar"} stays manual: Market Edge only fills the fields.`
-    ];
+      `${sellForm ? "Listing" : "Adding to the Bazaar"} stays manual: Market Edge only fills the fields.`
+    ].filter(Boolean);
+    const whyLink = `<button class="me-why-toggle me-why-link" type="button" aria-expanded="false" aria-label="Why this price">why</button>`;
+    const whyPanel = `<span class="me-why" role="region" aria-label="Explanation">${why.map((line) => `<span class="me-why-line">${escapeHtml(line)}</span>`).join("")}</span>`;
     const block = renderInlineHtml(
       visible,
-      `<span class="me-inline-brand">ME</span>${controls}<span class="me-inline-primary me-fill-figures">${escapeHtml(perUnit)}</span>${totalHtml}${netHtml}${warning}${stale}`,
+      `<span class="me-fill-text"><span class="me-fill-line1"><span class="me-inline-primary me-fill-figures">${escapeHtml(exact)}</span>${secondary ? `<span class="me-inline-secondary">${escapeHtml(secondary)}</span>` : ""}${stale}</span><span class="me-fill-line2">${warning}${escapeHtml(fillOriginText(result, source))} \u00b7 ${whyLink}</span></span><span class="me-fill-actions">${controls}</span>${whyPanel}`,
       filled ? "GREEN" : (source.warning ? "YELLOW" : "GREY"),
-      "me-bazaar-add",
-      { why }
+      "me-bazaar-add me-fill-strip"
     );
-    if (!block || !visible.priceInput) return block;
+    if (!block) return block;
+    block.meFillInfo = { target, qty: multi ? qty : 1, net, filled, sellForm, canUndo };
+    scheduleFillBar();
+    if (!visible.priceInput) return block;
 
     const rerender = () => renderBazaarAddSuggestion(result);
-    const apply = () => {
-      const outcome = fillSellFormRow(visible, target);
-      if (!outcome.priceFilled) {
-        const button = block.querySelector(".me-fill-main");
-        if (button) button.textContent = "No price field";
-        return;
-      }
+    const settle = () => {
       if (block.isConnected) rerender();
+      scheduleFillBar();
       // Torn may replace the row after the write; a rescan puts the strip
       // back in its filled state.
       setTimeout(() => scheduleSignatureCheck(true), 350);
     };
+    const apply = () => {
+      const previous = captureSellFormRow(visible);
+      const outcome = fillSellFormRow(visible, target);
+      if (!outcome.priceFilled) {
+        const button = block.querySelector(".me-fill-main");
+        if (button) button.textContent = "No price field";
+        return false;
+      }
+      // Keep the first snapshot when the row is filled again before an undo.
+      if (!fillUndo.has(undoKey)) fillUndo.set(undoKey, previous);
+      settle();
+      return true;
+    };
+    const undo = () => {
+      const previous = fillUndo.get(undoKey);
+      if (previous) restoreSellFormRow(visible, previous);
+      else clearSellFormRow(visible);
+      fillUndo.delete(undoKey);
+      settle();
+      return true;
+    };
+    block.meUndo = canUndo ? undo : null;
     const fillButton = block.querySelector(".me-fill-main");
     if (fillButton) {
-      // "Fill all" from the menu reuses the same handler without
-      // synthesising a click on any element.
+      // "Fill all" reuses the same handler without synthesising a click.
       fillButton.meFill = apply;
       fillButton.addEventListener("click", (event) => {
         event.preventDefault();
@@ -176,11 +246,63 @@
     block.querySelector(".me-fill-clear")?.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      clearSellFormRow(visible);
-      if (block.isConnected) rerender();
-      setTimeout(() => scheduleSignatureCheck(true), 350);
+      undo();
     });
     return block;
+  }
+
+  // "Fill all" bar above the sell form: what the visible rows would net and
+  // one button that fills every row not already at its suggestion
+  // (overwriting typed prices; each row keeps its own Undo).
+  let fillBarTimer = null;
+
+  function scheduleFillBar() {
+    clearTimeout(fillBarTimer);
+    fillBarTimer = setTimeout(renderFillBar, 120);
+  }
+
+  function renderFillBar() {
+    const strips = Array.from(document.querySelectorAll(".me-inline-analysis.me-fill-strip")).filter((node) => node.isConnected && node.meFillInfo);
+    let bar = document.querySelector(".me-fill-bar");
+    if (strips.length < 2) {
+      bar?.remove();
+      return null;
+    }
+    const pending = strips.filter((node) => !node.meFillInfo.filled && node.querySelector(".me-fill-main"));
+    const undoable = strips.filter((node) => typeof node.meUndo === "function");
+    const sellForm = strips.some((node) => node.meFillInfo.sellForm);
+    const total = strips.reduce((sum, node) => sum + (Number.isFinite(node.meFillInfo.net) ? node.meFillInfo.net : 0), 0);
+    // Start above the strip: its own "me-row-line" class would match [class*='row'].
+    const host = strips[0].parentElement;
+    const firstRow = host?.closest(".me-row-host, .me-bazaar-add-row, li, [class*='row'], [class*='Row'], [class*='item___']") || host;
+    const list = firstRow?.parentElement;
+    if (!list?.parentElement) return null;
+    if (!bar || !bar.isConnected) {
+      bar = document.createElement("div");
+      bar.className = "me-fill-bar";
+      bar.setAttribute("role", "region");
+      bar.setAttribute("aria-label", "Market Edge fill all");
+    }
+    if (bar.nextElementSibling !== list) list.parentElement.insertBefore(bar, list);
+    const summary = pending.length
+      ? `<b>${pending.length} to fill</b> of ${strips.length}`
+      : `<span class="me-fill-done">\u2713 All ${strips.length} filled</span>`;
+    const totalText = total > 0 ? ` \u00b7 ${sellForm ? "net" : "total"} ${formatMoney(total)}${sellForm ? " after fees" : ""}` : "";
+    bar.innerHTML = `<span class="me-fill-bar-text">${summary}${totalText}</span><span class="me-fill-actions">${undoable.length ? `<button class="me-bazaar-fill-btn me-fill-bar-undo" type="button">Undo all</button>` : ""}${pending.length ? `<button class="me-bazaar-fill-btn me-fill-bar-fill" type="button">Fill all ${pending.length}</button>` : ""}</span>`;
+    bar.querySelector(".me-fill-bar-fill")?.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      fillAllVisiblePrices();
+    });
+    bar.querySelector(".me-fill-bar-undo")?.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      Array.from(document.querySelectorAll(".me-inline-analysis.me-fill-strip")).forEach((node) => {
+        if (typeof node.meUndo === "function") node.meUndo();
+      });
+      showToast("Rows put back the way they were.", { timeoutMs: 5000 });
+    });
+    return bar;
   }
 
   function renderInlineResult(surface, result, ownBazaar) {

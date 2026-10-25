@@ -1205,6 +1205,23 @@
     .me-inline-analysis.me-bazaar-add .me-inline-secondary { white-space:nowrap !important; font-size:var(--me-fs-small) !important; }
     .me-inline-analysis.me-bazaar-add .me-inline-brand { font-size:10px !important; opacity:0.85 !important; margin-right:1px !important; }
     .me-inline-analysis.me-bazaar-add.me-applied { border-color:var(--me-good) !important; }
+    /* v0.6.8 sell-form strip: price first, origin second, one 32px action. */
+    div.me-inline-analysis.me-bazaar-add.me-fill-strip, .me-bazaar-add-controls > div.me-inline-analysis.me-fill-strip { display:flex !important; flex-wrap:wrap !important; align-items:center !important; justify-content:flex-start !important; gap:2px 8px !important; min-height:40px !important; padding:4px 6px 4px 9px !important; border-left:3px solid var(--me-strip-border) !important; }
+    div.me-inline-analysis.me-bazaar-add.me-fill-strip.me-has-why { padding-right:6px !important; }
+    div.me-inline-analysis.me-fill-strip.GREEN { border-left-color:var(--me-good) !important; }
+    div.me-inline-analysis.me-fill-strip.YELLOW { border-left-color:var(--me-warn) !important; }
+    .me-fill-strip .me-fill-text { flex:1 1 140px !important; min-width:0 !important; display:flex !important; flex-direction:column !important; gap:1px !important; }
+    .me-fill-strip .me-fill-line1 { display:flex !important; flex-wrap:wrap !important; align-items:baseline !important; gap:0 6px !important; }
+    .me-inline-analysis.me-fill-strip .me-fill-figures { font:700 13px/1.25 Arial, sans-serif !important; color:var(--me-fg) !important; }
+    .me-fill-strip .me-fill-line2 { color:var(--me-muted) !important; font:500 var(--me-fs-small)/1.3 Arial, sans-serif !important; white-space:normal !important; }
+    .me-fill-strip .me-why-link, div.me-inline-analysis.me-row-line .me-fill-line2 > .me-why-toggle { position:static !important; display:inline-flex !important; min-width:0 !important; min-height:32px !important; height:auto !important; max-height:none !important; margin:-10px 0 !important; padding:0 4px !important; vertical-align:middle !important; color:var(--me-muted) !important; text-decoration:underline !important; font:600 var(--me-fs-small)/1 Arial, sans-serif !important; border-radius:4px !important; }
+    .me-fill-actions { display:flex !important; align-items:center !important; gap:6px !important; margin-left:auto !important; flex:none !important; }
+    .me-fill-strip .me-bazaar-fill-btn, .me-fill-bar .me-bazaar-fill-btn { min-width:44px !important; min-height:32px !important; height:32px !important; padding:0 12px !important; border-radius:5px !important; font:700 12px/1 Arial, sans-serif !important; }
+    .me-fill-strip .me-bazaar-fill-btn.me-fill-clear, .me-fill-bar .me-fill-bar-undo { color:var(--me-fg) !important; border-color:var(--me-btn-border) !important; background:transparent !important; font-weight:600 !important; }
+    .me-fill-strip .me-fill-done, .me-fill-bar .me-fill-done { min-width:0 !important; min-height:0 !important; height:auto !important; padding:0 !important; border:0 !important; background:transparent !important; color:var(--me-good) !important; font:700 12px/1.2 Arial, sans-serif !important; white-space:nowrap !important; }
+    .me-fill-bar { display:flex !important; flex-wrap:wrap !important; align-items:center !important; gap:6px 10px !important; margin:6px 0 !important; padding:6px 8px 6px 10px !important; border:1px solid var(--me-good) !important; border-radius:6px !important; background:var(--me-good-bg) !important; color:var(--me-fg) !important; font:500 var(--me-fs-meta)/1.35 Arial, sans-serif !important; font-variant-numeric:tabular-nums !important; box-sizing:border-box !important; }
+    .me-fill-bar .me-fill-bar-text { flex:1 1 160px !important; min-width:0 !important; }
+    .me-fill-bar .me-fill-bar-fill { border-color:var(--me-good) !important; }
     .me-row-host { height:auto !important; max-height:none !important; overflow:visible !important; flex-wrap:wrap !important; }
     .me-row-host.me-row-float-host { position:relative !important; }
     div.me-inline-analysis.me-row-line { display:flex !important; flex:0 0 100% !important; width:100% !important; max-width:none !important; height:auto !important; min-height:0 !important; clear:both !important; margin:0 !important; padding:2px 8px !important; border:0 !important; border-top:1px solid var(--me-strip-border) !important; border-radius:0 !important; background:var(--me-strip) !important; justify-content:flex-start !important; white-space:normal !important; flex-wrap:wrap !important; position:relative !important; z-index:5 !important; line-height:1.35 !important; visibility:visible !important; opacity:1 !important; }

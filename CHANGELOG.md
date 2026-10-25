@@ -6,6 +6,17 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.6.8] - 2026-10-25
+
+### Changed
+
+- **One sell strip for the Bazaar add form and the Item Market sell form.** The strip leads with the price to set ("$789,999 × 12 · net $9.01m after 5%"), and a second line says where it comes from ("IM floor $790,000 − $1 · why"). It has a coloured left edge for its state, one 32px action and no "ME" label on every row. The Bazaar's button-like ✓ next to a red × is gone. A filled row now reads "✓ Filled" with an Undo button.
+- **Undo restores the row exactly.** Undo puts back what the row held before Market Edge wrote into it, including a price or quantity you had typed. An empty row goes back to empty. The previous values survive Torn re-rendering the row.
+
+### Added
+
+- **Fill all bar above the sell form.** When two or more rows are priced, a bar above the list shows how many rows still need filling and what they net. "Fill all N" fills every row not already at its suggestion, overwriting typed prices, and "Undo all" puts every row back. Saving still uses Torn's own button.
+
 ## [0.6.7] - 2026-10-25
 
 ### Changed

@@ -316,17 +316,19 @@ run("Item Market sell form (add listing) rows get an Item Market price with net 
   const xanax = blocks.find((block) => block.dataset.meItemId === "206");
   const rifle = blocks.find((block) => block.dataset.meItemId === "1");
   assert.ok(xanax && rifle, "both rows annotated");
-  assert.equal(xanax.querySelector(".me-fill-main").textContent, "Fill", "small button; figures are plain text beside it");
-  assert.match(xanax.querySelector(".me-fill-figures").textContent, /^12 \u00d7 \$789,999$/);
-  assert.match(xanax.textContent, /net \$/);
+  assert.equal(xanax.querySelector(".me-fill-main").textContent, "Fill", "one action; figures are plain text beside it");
+  assert.equal(xanax.querySelector(".me-fill-figures").textContent, "$789,999", "the price to set leads the strip");
+  assert.match(xanax.querySelector(".me-fill-line1").textContent, /\u00d7 12 \u00b7 net \$[\d.]+m after 5%/);
+  assert.match(xanax.querySelector(".me-fill-line2").textContent, /IM floor \$790,000 \u2212 \$1/, "origin of the price is stated");
+  assert.ok(!xanax.querySelector(".me-inline-brand"), "no ME label on every row");
   assert.equal(xanax.querySelector("[title]"), null, "no tooltip attributes on the strip");
   assert.equal(xanax.parentElement, xanax.closest(".sellRow___t7"), "strip is a child of the row itself");
   const button = xanax.querySelector(".me-bazaar-fill-btn");
   assert.ok(button);
   button.click();
   const filledStrip = env.document.querySelector(".me-inline-analysis[data-me-item-id='206']");
-  assert.ok(filledStrip.querySelector(".me-fill-done"), "tick shown after the fill");
-  assert.ok(filledStrip.querySelector(".me-fill-clear"), "clear control offered after the fill");
+  assert.match(filledStrip.querySelector(".me-fill-done").textContent, /Filled/, "filled state spelled out, not a button-like tick");
+  assert.equal(filledStrip.querySelector(".me-fill-clear").textContent, "Undo", "undo offered after the fill");
   assert.ok(filledStrip.classList.contains("GREEN"));
   const priceInput = env.document.querySelector(".sellRow___t7 input.price___m5");
   assert.equal(priceInput.value, "789999");
@@ -592,6 +594,58 @@ run("Sell-form fill survives Torn replacing the row's fields after the first wri
   assert.equal(row.querySelector(".priceInputWrapper___k1 input:not([type='hidden'])").value, "");
   assert.equal(qtyInput.value, "");
   assert.equal(row.querySelector(".me-fill-main").textContent, "Fill");
+});
+
+function twoRowAddListing() {
+  const html = fixture("itemmarket-addlisting.html");
+  const first = html.indexOf('<div class="itemRowWrapper___f6">');
+  const second = html.indexOf('<div class="itemRowWrapper___f6">', first + 1);
+  const kisses = html.slice(first, second)
+    .replace(/206/g, "300").replace(/Xanax/g, "Bag of Chocolate Kisses")
+    .replace("<span>x12</span>", "<span>x40</span>").replace('data-money="12"', 'data-money="40"');
+  return html.slice(0, second) + kisses + html.slice(second);
+}
+
+run("Sell-form Undo puts back a price the player typed, not an empty field", async (t) => {
+  const env = boot(fixture("itemmarket-addlisting.html"), "https://www.torn.com/page.php?sid=ItemMarket#/addListing");
+  t.after(env.close);
+  const row = env.document.querySelector(".itemRowWrapper___f6 .itemRow___g7");
+  const price = () => row.querySelector(".priceInputWrapper___k1 input:not([type='hidden'])");
+  const qty = row.querySelector(".amountInputWrapper___l2 input:not([type='hidden'])");
+  price().value = "800000";
+  qty.value = "3";
+  await env.ME.scanVisibleSurface("imsell", { force: true });
+  row.querySelector(".me-fill-main").click();
+  assert.equal(price().value, "789999", "typed price overwritten by the fill");
+  assert.equal(qty.value, "12");
+  row.querySelector(".me-fill-undo").click();
+  assert.equal(price().value, "800000", "typed price restored");
+  assert.equal(qty.value, "3", "typed quantity restored");
+  assert.equal(row.querySelector(".me-fill-main").textContent, "Fill");
+});
+
+run("Fill all bar fills every row, overwriting typed prices, and Undo all restores each row", async (t) => {
+  const env = boot(twoRowAddListing(), "https://www.torn.com/page.php?sid=ItemMarket#/addListing");
+  t.after(env.close);
+  const rows = Array.from(env.document.querySelectorAll(".itemRowWrapper___f6 .itemRow___g7"));
+  const priceOf = (row) => row.querySelector(".priceInputWrapper___k1 input:not([type='hidden'])");
+  priceOf(rows[1]).value = "5";
+  await env.ME.scanVisibleSurface("imsell", { force: true });
+  for (let i = 0; i < 20 && !env.document.querySelector(".me-fill-bar .me-fill-bar-fill"); i += 1) await tick();
+  const bar = env.document.querySelector(".me-fill-bar");
+  assert.ok(bar, "bar shown above the rows");
+  assert.equal(bar.nextElementSibling, rows[0].parentElement, "bar sits before the first row");
+  assert.match(bar.textContent, /2 to fill of 2/);
+  assert.match(bar.textContent, /net \$[\d.]+m after fees/);
+  bar.querySelector(".me-fill-bar-fill").click();
+  assert.equal(priceOf(rows[0]).value, "789999");
+  assert.notEqual(priceOf(rows[1]).value, "5", "typed price is overwritten");
+  for (let i = 0; i < 20 && !/All 2 filled/.test(env.document.querySelector(".me-fill-bar")?.textContent || ""); i += 1) await tick();
+  const filledBar = env.document.querySelector(".me-fill-bar");
+  assert.match(filledBar.textContent, /All 2 filled/);
+  filledBar.querySelector(".me-fill-bar-undo").click();
+  assert.equal(priceOf(rows[0]).value, "", "empty row back to empty");
+  assert.equal(priceOf(rows[1]).value, "5", "typed price back");
 });
 
 run("Sell-side surfaces reuse a recent order book instead of refreshing it every scan", async (t) => {
