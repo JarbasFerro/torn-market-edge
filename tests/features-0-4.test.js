@@ -113,6 +113,29 @@ test("travel plan ranks countries by profit per hour of round-trip flying, not b
   assert.equal(perItem[0].best.perHour, 30_000);
 });
 
+test("abroad trip plan fills free slots with the most profitable item first, then the next when stock or cash runs out", () => {
+  const rows = [
+    { itemId: 1, name: "Heather", buyPrice: 5_000, profitPerUnit: 28_400, stock: 5_627 },
+    { itemId: 2, name: "Xanax", buyPrice: 17_500, profitPerUnit: 780_000, stock: 14 },
+    { itemId: 3, name: "Ship", buyPrice: 17_000, profitPerUnit: -4_000, stock: 1 },
+    { itemId: 4, name: "Unknown stock", buyPrice: 1_000, profitPerUnit: 1_000, stock: null },
+  ];
+  const plan = ME.planAbroadTrip(rows, { capacityLeft: 28, money: 10_000_000, roundTripMinutes: 120 });
+  assert.deepEqual(plan.picks.map((pick) => `${pick.units} ${pick.name}`), ["14 Xanax", "14 Heather"], "stock caps the first item, the next fills the rest");
+  assert.equal(plan.profit, 14 * 780_000 + 14 * 28_400);
+  assert.equal(plan.cost, 14 * 17_500 + 14 * 5_000);
+  assert.equal(plan.perHour, Math.round(plan.profit / 2));
+  assert.equal(plan.slotsLeft, 0);
+  const poor = ME.planAbroadTrip(rows, { capacityLeft: 28, money: 100_000, roundTripMinutes: 120 });
+  assert.deepEqual(poor.picks.map((pick) => `${pick.units} ${pick.name}`), ["5 Xanax", "2 Heather", "2 Unknown stock"], "cash runs out; the change still buys the next item");
+  assert.equal(poor.cashShort, true);
+  const full = ME.planAbroadTrip(rows, { capacityLeft: 0, money: 1e9 });
+  assert.equal(full.picks.length, 0);
+  assert.equal(full.perHour, null);
+  const open = ME.planAbroadTrip([rows[3]], { capacityLeft: 28 });
+  assert.equal(open.picks[0].units, 28, "unknown stock does not limit");
+});
+
 test("museum pieces are recognised by name: singles pay points, the arrowhead set needs six pieces", () => {
   const fossil = ME.museumByName({ meta: { id: 9001, name: "Patagonian Fossil", marketPrice: 500_000 }, pointValue: 40_000, settings: settings() });
   assert.equal(fossil.points, 20);

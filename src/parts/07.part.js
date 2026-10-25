@@ -1475,8 +1475,9 @@
   // The launcher is a slim tab on the right edge, out of the way of Torn's
   // rows and Torn PDA's bottom bar. It can be dragged up or down; the spot is
   // kept as a share of the viewport height so it survives rotation.
-  const LAUNCHER_DEFAULT_RATIO = 0.42;
-  const LAUNCHER_TOP_MARGIN = 56;
+  const LAUNCHER_DEFAULT_RATIO = 0.55;
+  // Below Torn's header, icon row and money/points bar on phones.
+  const LAUNCHER_TOP_MARGIN = 200;
   const LAUNCHER_BOTTOM_MARGIN = 104;
 
   function clampLauncherTop(top) {

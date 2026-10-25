@@ -1,4 +1,4 @@
-      `<span class="me-inline-brand">ME</span><span class="me-inline-secondary">${escapeHtml(message)}</span><span class="me-inline-status">ERROR</span>`,
+      `<span class="me-inline-secondary">${escapeHtml(message)}</span><span class="me-inline-status">ERROR</span>`,
       "RED"
     );
   }
@@ -311,11 +311,11 @@
     const stale = staleMarker(result);
     if (result.error) return renderInlineError(visible, result.error);
     if (result.untradable) {
-      return renderInlineHtml(visible, `<span class="me-inline-brand">ME</span><span class="me-inline-secondary">untradable</span>`, "GREY", "", { why: ["Torn marks this item as not tradable, so it cannot be sold or listed."] });
+      return renderInlineHtml(visible, `<span class="me-inline-secondary">untradable</span>`, "GREY", "", { why: ["Torn marks this item as not tradable, so it cannot be sold or listed."] });
     }
     if (result.noListings) {
       const mv = result.snapshot?.averagePrice ? `Torn value ${formatMoney(result.snapshot.averagePrice)}` : "no Torn value";
-      return renderInlineHtml(visible, `<span class="me-inline-brand">ME</span><span class="me-inline-secondary">${mv}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">no listings</span>${stale}`, "GREY", "", { why: ["No Item Market listings right now; Torn's daily value is shown instead.", orderBookAgeLine(result)] });
+      return renderInlineHtml(visible, `<span class="me-inline-secondary">${mv}</span><span class="me-inline-sep">\u00b7</span><span class="me-inline-secondary">no listings</span>${stale}`, "GREY", "", { why: ["No Item Market listings right now; Torn's daily value is shown instead.", orderBookAgeLine(result)] });
     }
     if (result.unsupported) {
       // Weapons and armor are not priced: an invisible completed marker keeps
@@ -350,7 +350,7 @@
         orderBookAgeLine(result)
       ];
       return renderInlineHtml(visible,
-        `<span class="me-inline-brand">ME</span><span class="me-inline-primary">${escapeHtml(best.name)} ${formatMoney(best.unit)}</span><span class="me-inline-secondary">each</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${qty.toLocaleString("en-US")} owned</span><span class="me-inline-sep">|</span><span class="me-inline-primary">${formatMoney(total)}</span><span class="me-inline-secondary">total</span>${stale}`,
+        `<span class="me-inline-primary">${escapeHtml(best.name)} ${formatMoney(best.unit)}</span><span class="me-inline-secondary">each</span><span class="me-inline-sep">\u00b7</span><span class="me-inline-secondary">${qty.toLocaleString("en-US")} owned</span><span class="me-inline-sep">\u00b7</span><span class="me-inline-primary">${formatMoney(total)}</span><span class="me-inline-secondary">total</span>${stale}`,
         "GREY",
         "",
         { why }
@@ -378,7 +378,7 @@
         return chip;
       }
       return renderInlineHtml(visible,
-        `<span class="me-inline-brand">ME</span><span class="me-inline-primary">${discount} vs value</span><span class="me-inline-status">${data.label}</span>${stale}`,
+        `<span class="me-inline-primary">${discount} vs value</span><span class="me-inline-status">${data.label}</span>${stale}`,
         data.state,
         "",
         { why }
@@ -390,7 +390,7 @@
       const state = data?.headroom > 0 ? "YELLOW" : "GREY";
       const headroomText = data?.headroom > 0 ? `+${formatMoney(data.headroom)}` : "-";
       const sales = data?.salesSummary;
-      const salesHtml = sales?.count ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary">sold ${formatMoney(sales.median)}</span>` : "";
+      const salesHtml = sales?.count ? `<span class="me-inline-sep">\u00b7</span><span class="me-inline-secondary">sold ${formatMoney(sales.median)}</span>` : "";
       const why = [
         `Highest rational bid ${formatMoney(data?.maxBid, true)}: resale after the 3% fee, haircut and your minimum profit.`,
         data?.headroom > 0 ? `Current bid leaves ${formatMoney(data.headroom, true)} of headroom.` : "The current bid is already at or above that ceiling.",
@@ -398,7 +398,7 @@
         orderBookAgeLine(result)
       ];
       return renderInlineHtml(visible,
-        `<span class="me-inline-brand">ME</span><span class="me-inline-primary">Max bid ${formatMoney(data?.maxBid)}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${headroomText}</span>${salesHtml}<span class="me-inline-status">${data?.headroom > 0 ? "CONSIDER" : "PASS"}</span>${stale}`,
+        `<span class="me-inline-primary">Max bid ${formatMoney(data?.maxBid)}</span><span class="me-inline-sep">\u00b7</span><span class="me-inline-secondary">${headroomText}</span>${salesHtml}<span class="me-inline-status">${data?.headroom > 0 ? "CONSIDER" : "PASS"}</span>${stale}`,
         state,
         "",
         { why }
@@ -415,7 +415,7 @@
       const fillHtml = visible.priceInput && fillPrice
         ? `<button class="me-bazaar-fill-btn me-manage-fill" type="button" aria-label="Fill the price field with ${escapeHtml(formatMoney(fillPrice, true))}${escapeHtml(ruleLabel)}; saving stays manual">Fill ${escapeHtml(formatMoney(fillPrice, true))}</button>`
         : (fill?.reason === "held by rule" ? `<span class="me-inline-secondary">held by rule</span>` : "");
-      const floorHtml = data?.floor ? `<span class="me-inline-sep">|</span><span class="me-inline-secondary">floor ${formatMoney(data.floor)}</span>` : "";
+      const floorHtml = data?.floor ? `<span class="me-inline-sep">\u00b7</span><span class="me-inline-secondary">floor ${formatMoney(data.floor)}</span>` : "";
       const warningHtml = data?.warning ? `<span class="me-inline-warning">${escapeHtml(data.warning.split(":")[0])}</span>` : "";
       const why = [
         `Target ${formatMoney(data?.target, true)} is the conservative Bazaar exit; your price is ${Number.isFinite(data?.delta) ? (data.delta > 0 ? `${formatMoney(data.delta, true)} below it` : `${formatMoney(-data.delta, true)} above it`) : "unknown"}.`,
@@ -425,7 +425,7 @@
         orderBookAgeLine(result)
       ];
       const block = renderInlineHtml(visible,
-        `<span class="me-inline-brand">ME</span><span class="me-inline-primary">Target ${formatMoney(data?.target)}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${deltaText}</span>${floorHtml}${fillHtml}${warningHtml}<span class="me-inline-status">${data?.delta > 0 ? "BELOW TARGET" : "ON TARGET"}</span>${stale}`,
+        `<span class="me-inline-primary">Target ${formatMoney(data?.target)}</span><span class="me-inline-sep">\u00b7</span><span class="me-inline-secondary">${deltaText}</span>${floorHtml}${fillHtml}${warningHtml}<span class="me-inline-status">${data?.delta > 0 ? "BELOW TARGET" : "ON TARGET"}</span>${stale}`,
         data?.warning ? "YELLOW" : state,
         "",
         { why }
@@ -465,7 +465,7 @@
 
     const direct = result.direct;
     if (!direct) {
-      return renderInlineHtml(visible, `<span class="me-inline-brand">ME</span><span class="me-inline-secondary">PASS</span>${stale}`, "GREY");
+      return renderInlineHtml(visible, `<span class="me-inline-secondary">PASS</span>${stale}`, "GREY");
     }
     const state = direct.classification.state;
     const roi = `${direct.roi >= 0 ? "+" : ""}${(direct.roi * 100).toFixed(1)}%`;
@@ -476,7 +476,7 @@
       const perUnit = Math.trunc(direct.expectedProfit / qty);
       const route = direct.routes?.bestRoute || "";
       return renderInlineHtml(visible,
-        `<span class="me-inline-brand">ME</span><span class="me-inline-primary">${perUnit >= 0 ? "+" : ""}${formatMoney(perUnit)} each</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${profit} for ${qty}</span><span class="me-inline-status">${CLASS_META[state].label}</span>${stale}`,
+        `<span class="me-inline-primary">${perUnit >= 0 ? "+" : ""}${formatMoney(perUnit)} each</span><span class="me-inline-sep">\u00b7</span><span class="me-inline-secondary">${profit} for ${qty}</span><span class="me-inline-status">${CLASS_META[state].label}</span>${stale}`,
         state,
         "",
         { why: [
@@ -493,7 +493,7 @@
       const perUnit = Math.trunc(direct.expectedProfit / qty);
       const trip = result.perItemOnly ? `ROI ${roi}` : `${profit} per trip`;
       return renderInlineHtml(visible,
-        `<span class="me-inline-brand">ME</span><span class="me-inline-primary">${perUnit >= 0 ? "+" : ""}${formatMoney(perUnit)} each</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${trip}</span><span class="me-inline-status">${CLASS_META[state].label}</span>${stale}`,
+        `<span class="me-inline-primary">${perUnit >= 0 ? "+" : ""}${formatMoney(perUnit)} each</span><span class="me-inline-sep">\u00b7</span><span class="me-inline-secondary">${trip}</span><span class="me-inline-status">${CLASS_META[state].label}</span>${stale}`,
         state,
         "",
         { why: [
@@ -511,7 +511,7 @@
       orderBookAgeLine(result)
     ];
     return renderInlineHtml(visible,
-      `<span class="me-inline-brand">ME</span><span class="me-inline-primary">${roi} ROI</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${profit} profit</span><span class="me-inline-status">${CLASS_META[state].label}</span>${stale}`,
+      `<span class="me-inline-primary">${roi} ROI</span><span class="me-inline-sep">\u00b7</span><span class="me-inline-secondary">${profit} profit</span><span class="me-inline-status">${CLASS_META[state].label}</span>${stale}`,
       state,
       "",
       { why }
@@ -546,6 +546,10 @@
     return `${perHour < 0 ? "-" : "+"}${formatMoney(Math.abs(perHour))}/h`;
   }
 
+  function unitsText(units) {
+    return `${units.toLocaleString("en-US")} unit${units === 1 ? "" : "s"}`;
+  }
+
   function renderAbroadRow(result) {
     const visible = result.visible;
     const data = result.abroad;
@@ -555,41 +559,41 @@
     if (!evaluation) {
       abroadState.results.delete(visible.itemId);
       renderAbroadSummary();
-      return renderInlineHtml(visible, `<span class="me-inline-brand">ME</span><span class="me-inline-secondary">${escapeHtml(data.reason || "price unavailable")}</span>${stale}`, "GREY", "me-abroad", { why: ["No usable Item Market order book for this item, so no resale price.", orderBookAgeLine(result)] });
+      return renderInlineHtml(visible, `<span class="me-inline-secondary">${escapeHtml(data.reason || "price unavailable")}</span>${stale}`, "GREY", "me-abroad me-muted", { why: ["No usable Item Market order book for this item, so no resale price.", orderBookAgeLine(result)] });
     }
-    abroadState.results.set(visible.itemId, { card: visible.card, name: visible.name, evaluation, resaleRoute: data.resaleRoute, stale: Boolean(result.renderMeta?.stale) });
-    const positive = evaluation.perTrip > 0;
-    const best = bestAbroadItemId();
-    const state = !positive ? "GREY" : (best === visible.itemId ? "GREEN" : "YELLOW");
-    const rate = formatRate(evaluation.perHour);
+    abroadState.results.set(visible.itemId, { card: visible.card, name: visible.name, stock: visible.stock ?? null, evaluation, resaleRoute: data.resaleRoute, stale: Boolean(result.renderMeta?.stale) });
     const limits = evaluation.limitedBy.join(" and ");
     const why = [
       `Resale in your ${data.resaleRoute} at ${formatMoney(data.resalePrice, true)} per unit minus the shop price ${formatMoney(evaluation.buyPrice, true)} = ${formatMoney(evaluation.profitPerUnit, true)} per unit.`,
-      `${evaluation.units} units this trip, limited by ${limits || "capacity"} (${context.capacityLeft} slots free${context.capacityFromPage ? "" : " from your settings"}${visible.stock !== null && visible.stock !== undefined ? `, ${visible.stock} in stock` : ""}${Number.isFinite(context.money) && context.money !== null ? `, ${formatMoney(context.money, true)} cash` : ""}).`,
+      `${unitsText(evaluation.units)} this trip, limited by ${limits || "capacity"} (${context.capacityLeft} slots free${context.capacityFromPage ? "" : " from your settings"}${visible.stock !== null && visible.stock !== undefined ? `, ${visible.stock} in stock` : ""}${Number.isFinite(context.money) && context.money !== null ? `, ${formatMoney(context.money, true)} cash` : ""}).`,
       evaluation.roundTripMinutes
-        ? `${formatMoney(evaluation.perTrip, true)} per trip over a ${formatMinutes(evaluation.roundTripMinutes)} round trip (${TRAVEL_TYPE_LABELS[context.travelType] || "Standard flight"} to ${context.country}) = ${rate}.`
+        ? `${formatMoney(evaluation.perTrip, true)} per trip over a ${formatMinutes(evaluation.roundTripMinutes)} round trip (${TRAVEL_TYPE_LABELS[context.travelType] || "Standard flight"} to ${context.country}) = ${formatRate(evaluation.perHour)}.`
         : "Flight time unknown for this country, so no hourly rate.",
       `Cash needed: ${formatMoney(evaluation.cashNeeded, true)}.`,
       orderBookAgeLine(result)
     ];
-    const block = renderInlineHtml(visible,
-      `<span class="me-inline-brand">ME</span><span class="me-inline-primary me-abroad-rate">${rate}</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${evaluation.profitPerUnit >= 0 ? "+" : "-"}${formatMoney(Math.abs(evaluation.profitPerUnit))} each</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">${evaluation.units} units = ${evaluation.perTrip >= 0 ? "+" : "-"}${formatMoney(Math.abs(evaluation.perTrip))}/trip</span><span class="me-inline-sep">|</span><span class="me-inline-secondary">sell ${formatMoney(data.resalePrice)}</span>${stale}`,
-      state,
-      "me-abroad",
-      { why }
-    );
+    // One line per row: $/hour first. Rows that earn nothing this trip fade
+    // to one word saying why.
+    let html;
+    let state;
+    let extra = "me-abroad";
+    const each = `${evaluation.profitPerUnit >= 0 ? "+" : "\u2212"}${formatMoney(Math.abs(evaluation.profitPerUnit))} each`;
+    if (evaluation.profitPerUnit <= 0) {
+      state = "GREY";
+      extra += " me-muted";
+      html = `<span class="me-inline-primary">Loss</span><span class="me-inline-secondary">${each}</span>`;
+    } else if (evaluation.units <= 0) {
+      state = "GREY";
+      extra += " me-muted";
+      const reason = evaluation.limitedBy.includes("stock") ? "Sold out" : (evaluation.limitedBy.includes("capacity") ? "No slots left" : "Not enough cash");
+      html = `<span class="me-inline-primary">${reason}</span><span class="me-inline-secondary">${each}</span>`;
+    } else {
+      state = "YELLOW";
+      html = `<span class="me-inline-primary me-abroad-rate">${Number.isFinite(evaluation.perHour) ? `${formatMoney(evaluation.perHour)}/h` : "no flight time"}</span><span class="me-inline-secondary">${each} \u00b7 ${unitsText(evaluation.units)}</span>`;
+    }
+    const block = renderInlineHtml(visible, `${html}${stale}`, state, extra, { why });
     renderAbroadSummary();
     return block;
-  }
-
-  function bestAbroadItemId() {
-    let best = null;
-    abroadState.results.forEach((entry, itemId) => {
-      const rate = entry.evaluation?.perHour ?? entry.evaluation?.perTrip;
-      if (!Number.isFinite(rate) || rate <= 0) return;
-      if (!best || rate > best.rate) best = { itemId, rate };
-    });
-    return best?.itemId || null;
   }
 
   function renderAbroadSummary() {
@@ -603,31 +607,81 @@
     let box = root.querySelector(".me-abroad-summary");
     if (!box) {
       box = document.createElement("div");
-      box.className = "me-abroad-summary";
+      box.className = "me-card me-abroad-summary";
       box.setAttribute("role", "region");
-      box.setAttribute("aria-label", "Market Edge: best buys here");
+      box.setAttribute("aria-label", "Market Edge: your best trip from here");
       firstTable.parentElement.insertBefore(box, firstTable);
     }
     if (!box.isConnected) firstTable.parentElement.insertBefore(box, firstTable);
-    const ranked = Array.from(abroadState.results.entries())
-      .map(([itemId, entry]) => ({ itemId, ...entry }))
-      .filter((entry) => entry.evaluation && entry.evaluation.perTrip > 0)
-      .sort((a, b) => (b.evaluation.perHour ?? b.evaluation.perTrip) - (a.evaluation.perHour ?? a.evaluation.perTrip))
-      .slice(0, 5);
-    const priced = abroadState.results.size;
-    const flight = context.oneWayMinutes ? `${formatMinutes(context.oneWayMinutes)} each way, ${TRAVEL_TYPE_LABELS[context.travelType] || "Standard flight"}` : "flight time unknown";
-    const capacity = context.capacityFromPage ? `${context.capacityLeft} slots free` : (context.capacityLeft ? `${context.capacityLeft} slots (settings)` : "capacity unknown");
-    const rows = ranked.map((entry, index) => `<li><span class="me-abroad-rank">${index + 1}.</span><span class="me-abroad-name">${escapeHtml(entry.name)}</span><span class="me-abroad-detail">${entry.evaluation.units} × ${formatMoney(entry.evaluation.profitPerUnit)} = ${formatMoney(entry.evaluation.perTrip)}/trip</span><span class="me-abroad-rate">${formatRate(entry.evaluation.perHour)}</span></li>`).join("");
+    const entries = Array.from(abroadState.results.entries()).map(([itemId, entry]) => ({ itemId, ...entry }));
+    const roundTrip = context.oneWayMinutes ? context.oneWayMinutes * 2 : null;
+    const plan = planAbroadTrip(entries.map((entry) => ({
+      itemId: entry.itemId,
+      name: entry.name,
+      buyPrice: entry.evaluation.buyPrice,
+      profitPerUnit: entry.evaluation.profitPerUnit,
+      stock: entry.stock
+    })), { capacityLeft: context.capacityLeft, money: context.money, roundTripMinutes: roundTrip });
+    const country = context.country || "this shop";
+    const planIds = new Set(plan.picks.map((pick) => pick.itemId));
+    syncAbroadBest(plan.picks[0]?.itemId || null);
+
+    let headline;
+    if (!entries.length) headline = `<div class="me-plan-buy">Pricing\u2026</div>`;
+    else if (plan.picks.length) {
+      const buy = plan.picks.map((pick) => `${pick.units} ${escapeHtml(pick.name)}`).join(" + ");
+      headline = `<div class="me-plan"><div class="me-plan-what"><div class="me-plan-buy">Buy ${buy}</div><div class="me-plan-meta">${formatMoney(plan.cost)} cost \u00b7 +${formatMoney(plan.profit)} per trip${plan.slotsLeft > 0 ? ` \u00b7 ${plan.slotsLeft} slot${plan.slotsLeft === 1 ? "" : "s"} unused` : ""}</div></div>${Number.isFinite(plan.perHour) ? `<div class="me-plan-rate">${formatMoney(plan.perHour)}<small>/h</small></div>` : ""}</div>`;
+    } else if (context.capacityLeft <= 0) headline = `<div class="me-plan-buy">No slots left on this trip</div>`;
+    else if (plan.profitable && plan.cashShort) headline = `<div class="me-plan-buy">Not enough cash for a profitable buy</div>`;
+    else headline = `<div class="me-plan-buy">Nothing here beats your Bazaar resale</div>`;
+
+    // Runners-up: profitable rows left out of the plan, best $/hour first.
+    const alternatives = entries
+      .filter((entry) => !planIds.has(entry.itemId) && entry.evaluation.profitPerUnit > 0)
+      .sort((a, b) => (b.evaluation.perHour ?? -Infinity) - (a.evaluation.perHour ?? -Infinity))
+      .slice(0, 2);
+    const altHtml = alternatives.length ? `<div class="me-card-section"><div class="me-kicker">Also good here</div>${alternatives.map((entry) => {
+      const stockNote = entry.stock !== null && entry.stock !== undefined && entry.stock < context.capacityLeft ? `${entry.stock} left` : `+${formatMoney(entry.evaluation.profitPerUnit)} each`;
+      return `<div class="me-alt-row"><span class="me-alt-name">${escapeHtml(entry.name)}</span><span class="me-alt-note">${stockNote}</span><span class="me-alt-rate">${Number.isFinite(entry.evaluation.perHour) && entry.evaluation.perHour > 0 ? `${formatMoney(entry.evaluation.perHour)}/h` : "\u2014"}</span></div>`;
+    }).join("")}</div>` : "";
+
+    const chips = [
+      context.capacityFromPage ? `${context.capacityLeft} slot${context.capacityLeft === 1 ? "" : "s"} free` : (context.capacityLeft ? `${context.capacityLeft} slots (settings)` : "capacity unknown"),
+      Number.isFinite(context.money) && context.money !== null ? `${formatMoney(context.money)} cash` : "",
+      roundTrip ? `${TRAVEL_TYPE_LABELS[context.travelType] || "Standard flight"} \u00b7 ${formatMinutes(roundTrip)} round trip` : "flight time unknown"
+    ].filter(Boolean);
     box.innerHTML = `
-      <div class="me-abroad-title"><span class="me-inline-brand">ME</span>Best buys in ${escapeHtml(context.country || "this shop")}${ranked.length ? "" : (priced ? ": nothing profitable at Bazaar prices" : ": pricing...")}</div>
-      <div class="me-abroad-meta">${escapeHtml(capacity)} · ${escapeHtml(flight)} · resale at your Bazaar price, no fee${context.capacityFromPage && !context.oneWayMinutes ? ' · <span class="me-abroad-warn">set the country</span>' : ""} <button class="me-abroad-settings" type="button">travel type</button></div>
-      ${rows ? `<ol>${rows}</ol>` : ""}`;
+      <div class="me-kicker">Your best trip from ${escapeHtml(country)}</div>
+      ${headline}
+      <div class="me-chips">${chips.map((chip) => `<span class="me-chip">${escapeHtml(chip)}</span>`).join("")}<button class="me-chip me-chip-link me-abroad-settings" type="button">change</button></div>
+      ${altHtml}`;
     box.querySelector(".me-abroad-settings")?.addEventListener("click", (event) => {
       event.preventDefault();
       showSettings();
     });
     return box;
   }
+
+  // The row the plan buys first is the BEST row (green edge and tag); other
+  // profitable rows stay amber. Re-applied after every summary pass, since
+  // rows are priced one by one.
+  function syncAbroadBest(bestId) {
+    abroadState.results.forEach((entry, itemId) => {
+      const strip = entry.card?.querySelector?.(`.me-inline-analysis.me-abroad[data-me-item-id="${itemId}"]`);
+      if (!strip || strip.classList.contains("me-muted")) return;
+      const best = itemId === bestId;
+      strip.classList.toggle("GREEN", best);
+      strip.classList.toggle("YELLOW", !best);
+      let tag = strip.querySelector(".me-best-tag");
+      if (best && !tag) {
+        tag = document.createElement("span");
+        tag.className = "me-tag me-best-tag";
+        tag.textContent = "BEST";
+        strip.insertBefore(tag, strip.firstChild);
+      } else if (!best && tag) tag.remove();
+    });
+  }
+
 
   // The classification's own pass/fail reasons, in words.
   function classificationWhy(direct) {

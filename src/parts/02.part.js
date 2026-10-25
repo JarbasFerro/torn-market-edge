@@ -395,6 +395,36 @@
     return { units, profitPerUnit, perTrip, perHour, roundTripMinutes, limitedBy, cashNeeded: price * units, resalePrice: resale, buyPrice: price };
   }
 
+  // Abroad trip plan: the free slots filled with the most profitable item
+  // first, then the next one when stock or cash runs out. Every unit takes
+  // one slot, so profit per unit is profit per slot; cash is spent as items
+  // are added. Unknown stock (null) never limits.
+  function planAbroadTrip(rows, { capacityLeft = 0, money = null, roundTripMinutes = null } = {}) {
+    let slots = Math.max(0, asInt(capacityLeft, 0));
+    let cash = Number.isFinite(money) && money !== null ? Math.max(0, money) : Infinity;
+    const candidates = (rows || [])
+      .filter((row) => row && row.profitPerUnit > 0 && asInt(row.buyPrice, 0) > 0)
+      .sort((a, b) => b.profitPerUnit - a.profitPerUnit);
+    const picks = [];
+    let cashShort = false;
+    for (const row of candidates) {
+      if (slots <= 0) break;
+      const price = asInt(row.buyPrice, 0);
+      const stock = row.stock === null || row.stock === undefined ? Infinity : Math.max(0, asInt(row.stock, 0));
+      const affordable = Math.floor(cash / price);
+      const units = Math.min(slots, stock, affordable);
+      if (affordable < Math.min(slots, stock)) cashShort = true;
+      if (units <= 0) continue;
+      picks.push({ itemId: row.itemId, name: row.name, units, buyPrice: price, profitPerUnit: row.profitPerUnit, cost: units * price, profit: units * row.profitPerUnit });
+      slots -= units;
+      cash -= units * price;
+    }
+    const profit = picks.reduce((sum, pick) => sum + pick.profit, 0);
+    const cost = picks.reduce((sum, pick) => sum + pick.cost, 0);
+    const perHour = roundTripMinutes > 0 && picks.length ? Math.round(profit / (roundTripMinutes / 60)) : null;
+    return { picks, profit, cost, perHour, slotsLeft: slots, cashShort, profitable: candidates.length };
+  }
+
   function rankTravelPlan(evaluations, { perCountry = 3 } = {}) {
     const byCountry = new Map();
     (evaluations || []).forEach((row) => {
@@ -664,6 +694,7 @@
     flightMinutes,
     rankTravelPlan,
     rankTravelByHour,
+    planAbroadTrip,
     museumByName,
     auctionTimingStats,
     stackableSalesSummary,

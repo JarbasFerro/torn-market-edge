@@ -14,7 +14,7 @@ Torn Market Edge is **decision support, not trading automation**. It never buys,
 
 ## Current status
 
-**v0.6.12**
+**v0.7.0**
 
 The current release is a performance and UI/UX pass: viewport-first scanning with cached layout reads and IntersectionObserver pickup, a bounded store with batched writes (Torn PDA's SQLite storage when available), a fix for PDA's duplicate-request behaviour, one theme-aware visual system that follows Torn's dark mode, rows written in words with a "why this price" toggle, an underprice guard on sell surfaces, and an in-row API key prompt with a grouped, keyboard-complete settings dialog. Torn DOM integration is still validated page by page, so treat new surfaces as beta.
 
@@ -217,6 +217,7 @@ See:
 
 - [CHANGELOG.md](CHANGELOG.md)
 - [CONTRIBUTING.md](CONTRIBUTING.md)
+- [docs/DESIGN.md](docs/DESIGN.md) (design system: tokens, components, copy rules)
 - [docs/TESTING.md](docs/TESTING.md)
 - [docs/GREASY_FORK.md](docs/GREASY_FORK.md)
 - [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md)

@@ -51,6 +51,8 @@ Remove or blur private information. Never include an API key.
 
 ## Before submitting a change
 
+Any UI change follows [docs/DESIGN.md](docs/DESIGN.md): use its tokens and components, and check the result at 390 px wide in dark mode.
+
 Run `npm ci && npm run check`, then the manual checks in [docs/TESTING.md](docs/TESTING.md). jsdom is the only development dependency and is never shipped in the userscript. When you touch a page collector, update the HTML fixture in `tests/fixtures/` that covers it.
 
 For a public release, also follow [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md).

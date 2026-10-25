@@ -552,7 +552,7 @@
   function renderInlineKeyPrompt(visible) {
     const block = renderInlineHtml(
       visible,
-      `<span class="me-inline-brand">ME</span><button class="me-key-cta" type="button">Add API key</button><span class="me-inline-secondary">to price this row</span>`,
+      `<button class="me-key-cta" type="button">Add API key</button><span class="me-inline-secondary">to price this row</span>`,
       "GREY",
       "me-has-cta"
     );
@@ -591,7 +591,7 @@
     if (existing?.dataset?.meComplete === "1") return existing;
     return renderInlineHtml(
       visible,
-      `<span class="me-inline-brand">ME</span><span class="me-inline-secondary">...</span>`,
+      `<span class="me-inline-secondary">Pricing\u2026</span>`,
       "GREY",
       "me-loading"
     );

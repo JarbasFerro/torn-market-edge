@@ -189,7 +189,8 @@ run("Settings dialog: every control is labelled, Escape closes it and defaults c
 
 test("v0.6.0 guards remain present in the assembled userscript", () => {
   assert.match(SOURCE, /body\.dark-mode \{ --me-bg/, "theme tokens follow Torn's dark mode class");
-  assert.match(SOURCE, /@media \(pointer: coarse\) \{ body \{ --me-tap:40px; \} \}/, "touch targets grow on touch screens");
+  assert.match(SOURCE, /@media \(pointer: coarse\) \{ body \{ --me-hit:7px; \} \}/, "invisible hit margin grows on touch screens");
+  assert.match(SOURCE, /\.me-btn::after, [^{]*\{ content:""; position:absolute; inset:calc\(-1 \* var\(--me-hit\)\)/, "small controls keep a larger hit area");
   assert.match(SOURCE, /new IntersectionObserver\(/, "deferred rows use IntersectionObserver");
   assert.match(SOURCE, /PDA_storage/, "Torn PDA SQLite storage adapter");
   assert.match(SOURCE, /API_MEMORY_CACHE_MAX = 300/, "bounded API memory cache");
@@ -253,18 +254,21 @@ run("Abroad shop rows get a $/hour strip below the row grid and a ranked summary
   assert.notEqual(strip.parentElement.className.includes("row___"), true);
   assert.match(strip.textContent, /\/h/, "hourly rate leads the line");
   assert.match(strip.textContent, /28 units/, "units bounded by the trip capacity");
-  assert.match(strip.textContent, /sell \$/, "Bazaar resale price shown");
+  assert.doesNotMatch(strip.textContent, /sell \$|ME/, "resale price lives in the explanation; no ME label");
+  assert.match(strip.querySelector(".me-why").textContent, /Resale in your Bazaar/);
   assert.match(strip.querySelector(".me-why").textContent, /round trip/);
   const xanax = env.document.querySelector(".me-inline-analysis[data-me-item-id='206']");
-  assert.ok(xanax.classList.contains("GREEN"), "the best $/hour row is green");
+  assert.ok(xanax.classList.contains("GREEN"), "the row the plan buys first is green");
+  assert.equal(xanax.querySelector(".me-best-tag").textContent, "BEST");
+  assert.ok(strip.classList.contains("YELLOW") && !strip.querySelector(".me-best-tag"), "other profitable rows stay amber");
   const summary = env.document.querySelector("#travel-root .me-abroad-summary");
   assert.ok(summary, "summary rendered above the shop");
   assert.equal(summary.nextElementSibling.className.includes("stockTableWrapper___"), true, "placed before the first stock table");
-  assert.match(summary.textContent, /Best buys in United Kingdom/);
+  assert.match(summary.textContent, /Your best trip from United Kingdom/);
   assert.match(summary.textContent, /28 slots free/);
-  assert.match(summary.textContent, /2 h 39 min each way/);
-  const names = Array.from(summary.querySelectorAll(".me-abroad-name")).map((node) => node.textContent);
-  assert.equal(names[0], "Xanax", "ranked by $/hour");
+  assert.match(summary.textContent, /Standard flight \u00b7 5 h 18 min round trip/);
+  assert.match(summary.querySelector(".me-plan-buy").textContent, /^Buy 14 Xanax \+ 14 Heather$/, "stock caps Xanax, Heather fills the other slots");
+  assert.match(summary.querySelector(".me-plan-rate").textContent, /^\$[\d.]+[km]\/h$/);
 });
 
 run("Abroad rows are still found when Torn renames its CSS modules; unknown stock never counts as zero", async (t) => {
@@ -309,13 +313,15 @@ run("A purchase abroad (capacity or cash change in Torn's message) re-evaluates 
   assert.equal(env.ME.abroadContext().capacityLeft, 0);
   await env.ME.scanVisibleSurface("travel", { force: true });
   const strip = env.document.querySelector(".me-inline-analysis[data-me-item-id='263']");
-  assert.match(strip.textContent, /0 units = \+\$0\/trip/, "no slots left: nothing to earn this trip");
+  assert.match(strip.textContent, /^No slots left/, "no slots left: the row says why it earns nothing");
+  assert.ok(strip.classList.contains("me-muted"));
   assert.ok(strip.classList.contains("GREY"));
   assert.match(env.document.querySelector(".me-abroad-summary").textContent, /0 slots free/);
+  assert.match(env.document.querySelector(".me-abroad-summary").textContent, /No slots left on this trip/);
   assert.equal(env.requests.filter((url) => url.includes("/itemmarket")).length, env.requests.slice(0, requestsAfterFirst).filter((url) => url.includes("/itemmarket")).length, "re-evaluation reuses the order books");
 });
 
 test("row strips keep the why toggle pinned to the right edge instead of wrapping to a second line", () => {
   assert.match(SOURCE, /div\.me-inline-analysis\.me-row-line > \.me-why-toggle \{ position:absolute !important; top:0 !important; right:0 !important/);
-  assert.match(SOURCE, /div\.me-inline-analysis\.me-row-line\.me-has-why \{ padding-right:34px !important; \}/);
+  assert.match(SOURCE, /div\.me-inline-analysis\.me-row-line\.me-has-why \{ padding-right:28px !important; \}/);
 });

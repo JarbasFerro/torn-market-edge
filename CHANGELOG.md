@@ -6,6 +6,21 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-25
+
+### Added
+
+- **A design system (`docs/DESIGN.md`).** One set of tokens for type, spacing, control heights, radii and state colours. Strips, buttons, tags, chips, cards, panel, menu, toasts and the settings dialog are each defined once and used on every surface. The written spec covers principles, identity, components and copy rules for future changes.
+- **Your best trip, abroad.** The abroad shop summary is now a plan: it fills your free slots with the most profitable item, moves to the next when stock or cash runs out ("Buy 14 Xanax + 14 Heather"), and shows cost, profit per trip and the trip's $/hour large. Slots, cash and flight are small chips, and two runners-up follow under "Also good here".
+
+### Changed
+
+- **Denser everywhere.** Buttons are 22 px in rows and 26 px in panels (they were 32 to 44 px), strips are about 22 px tall, the panel header is 34 px, and menu, toast, travel cards and dialog are tighter. On touch screens an invisible margin around each control keeps it easy to tap.
+- **One identity.** A 3 px coloured left edge marks everything Market Edge adds (green good, amber consider, red warning, grey neutral). The "ME" label is gone from every strip, and figures are separated by " · " everywhere.
+- **Abroad rows are one line, $/hour first.** The row the plan buys first carries a green BEST tag, and other profitable rows have an amber edge. Losses read "Loss −$4k each", and rows that earn nothing this trip say why: "Sold out", "No slots left" or "Not enough cash". The resale price moved into the "?" explanation, and "1 units" is now "1 unit".
+- **Loading strips say "Pricing…"** instead of "ME ...".
+- **The edge tab starts lower** (55% down, never above 200 px), clear of Torn's header, icon row and money bar.
+
 ## [0.6.12] - 2026-10-25
 
 ### Added
