@@ -1273,7 +1273,10 @@
     .me-toast .me-toast-close { float:right; border:0; background:transparent; font:inherit; display:inline-flex; align-items:center; justify-content:center; min-width:var(--me-tap); min-height:var(--me-tap); margin:-6px -6px 0 8px; cursor:pointer; color:var(--me-muted); font-weight:700; border-radius:6px; }
     .me-toast .me-toast-close:hover { background:var(--me-btn); }
     .me-launcher-menu { border-color:var(--me-border); }
-    .me-launcher-menu .me-actions { flex-direction:column; align-items:stretch; }
+    .me-launcher-menu .me-menu-list { display:flex; flex-direction:column; gap:4px; }
+    .me-launcher-menu .me-menu-item { display:flex; flex-direction:column; align-items:flex-start; justify-content:center; gap:2px; width:100%; min-height:44px; padding:6px 10px; text-align:left; }
+    .me-launcher-menu .me-menu-label { font:700 var(--me-fs)/1.2 Arial, sans-serif; }
+    .me-launcher-menu .me-menu-hint { font:500 var(--me-fs-small)/1.3 Arial, sans-serif; color:var(--me-muted); white-space:normal; }
     .me-workbench-cell { white-space:nowrap; }
     .me-workbench-cell .me-inline-input { width:78px; font-size:var(--me-fs-small); padding:2px 3px; margin-left:3px; }
     .me-workbench-cell .me-rule-mode { width:104px; }

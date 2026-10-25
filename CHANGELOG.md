@@ -6,6 +6,13 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.6.10] - 2026-10-25
+
+### Changed
+
+- **The menu only offers what helps on the current page.** Item Market: My listings and Watchlist. Inventory: Portfolio. City shops: Shop runs. Travel: Travel plan. Your Bazaar and listing views without a Fill all bar: Fill all prices. Every supported page: Refresh prices (formerly "Analyze page"). Settings is always last. Each entry carries a one-line description of what it does, and the toolbar inside panels follows the same rules.
+- **The tab only appears on pages Market Edge works on, Torn PDA included.** Elsewhere it would have offered nothing but Settings. Undercut and watchlist alerts still arrive on any Torn page.
+
 ## [0.6.9] - 2026-10-25
 
 ### Changed

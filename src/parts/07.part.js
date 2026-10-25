@@ -1229,6 +1229,37 @@
     launcher.setAttribute("aria-label", `Market Edge menu, ${count} deal${count === 1 ? "" : "s"} on this page`);
   }
 
+  // The menu only offers what helps on the page being viewed; Settings is
+  // always last. Each entry says in a few words what it does.
+  const MENU_ACTIONS = Object.freeze({
+    listings: { label: "My listings", hint: "Your Item Market listings against the live floor; reprice in one tap", run: () => renderOwnListingsPanel() },
+    watchlist: { label: "Watchlist", hint: "Items you track, with price alerts", run: () => renderWatchlistPanel() },
+    portfolio: { label: "Portfolio", hint: "What your whole inventory is worth", run: () => renderPortfolioPanel() },
+    shops: { label: "Shop runs", hint: "This shop's stock ranked by resale profit", run: () => renderShopRunsPanel() },
+    travel: { label: "Travel plan", hint: "Countries ranked by profit per trip", run: () => renderTravelPlanPanel() },
+    fill: { label: "Fill all prices", hint: "Write every suggested price; saving stays manual", run: () => fillAllVisiblePrices() },
+    analyze: { label: "Refresh prices", hint: "Re-read the page and fetch fresh order books", run: () => analyzeCurrentPage() },
+    settings: { label: "Settings", hint: "", run: () => showSettings() }
+  });
+
+  function contextActionIds(surface = detectSurface()) {
+    const ids = [];
+    if (surface === "itemmarket" || surface === "imsell") ids.push("listings", "watchlist");
+    if (surface === "inventory") ids.push("portfolio");
+    if (surface === "cityshop") ids.push("shops");
+    if (surface === "travel") ids.push("travel");
+    // Sell forms have their own Fill all bar; the menu entry is for the
+    // manage views (own Bazaar, own Item Market listings) without one.
+    const manageView = surface === "bazaar" || surface === "imsell" || (surface === "itemmarket" && ownListingsRouteActive());
+    if (manageView && !document.querySelector(".me-fill-bar")) ids.push("fill");
+    if (surface === "itemmarket" || LIST_SURFACES.includes(surface)) ids.push("analyze");
+    return ids;
+  }
+
+  function launcherActions() {
+    return [...contextActionIds(), "settings"].map((id) => ({ id, ...MENU_ACTIONS[id] }));
+  }
+
   function openLauncherMenu() {
     const existing = document.querySelector(".me-launcher-menu");
     if (existing) {
@@ -1239,29 +1270,15 @@
     const menu = document.createElement("div");
     menu.className = "me-toast me-launcher-menu";
     menu.setAttribute("role", "menu");
-    menu.innerHTML = `<div class="me-actions" style="margin:0">
-        <button class="me-btn" data-action="settings" type="button">Settings</button>
-        <button class="me-btn" data-action="analyze" type="button">Analyze page</button>
-        <button class="me-btn" data-action="listings" type="button">My listings</button>
-        <button class="me-btn" data-action="watchlist" type="button">Watchlist</button>
-        <button class="me-btn" data-action="portfolio" type="button">Portfolio</button>
-        <button class="me-btn" data-action="shops" type="button">Shops</button>
-        <button class="me-btn" data-action="travel" type="button">Travel</button>
-        <button class="me-btn" data-action="fill" type="button">Fill all prices</button>
+    const actions = launcherActions();
+    menu.innerHTML = `<div class="me-menu-list">${actions.map((action) => `
+        <button class="me-btn me-menu-item" data-action="${action.id}" type="button" role="menuitem"><span class="me-menu-label">${escapeHtml(action.label)}</span>${action.hint ? `<span class="me-menu-hint">${escapeHtml(action.hint)}</span>` : ""}</button>`).join("")}
       </div>`;
     menu.querySelectorAll("[data-action]").forEach((button) => {
       button.addEventListener("click", () => {
         menu.remove();
         launcher?.setAttribute("aria-expanded", "false");
-        const action = button.dataset.action;
-        if (action === "settings") showSettings();
-        else if (action === "analyze") analyzeCurrentPage();
-        else if (action === "listings") renderOwnListingsPanel();
-        else if (action === "watchlist") renderWatchlistPanel();
-        else if (action === "portfolio") renderPortfolioPanel();
-        else if (action === "shops") renderShopRunsPanel();
-        else if (action === "travel") renderTravelPlanPanel();
-        else if (action === "fill") fillAllVisiblePrices();
+        actions.find((action) => action.id === button.dataset.action)?.run();
       });
     });
     document.body.appendChild(menu);
@@ -1626,12 +1643,13 @@
   // always there; with a userscript menu it appears on supported pages only,
   // where players actually look for the panels.
   function updateLauncher(surface) {
-    if (ENV.isPda || !ENV.hasGmMenu) {
-      ensureLauncher();
-      return;
-    }
+    // Only on pages Market Edge works on, Torn PDA included: elsewhere the
+    // tab would offer nothing but Settings.
     if (surface && surface !== "other") ensureLauncher();
-    else if (launcher?.isConnected) launcher.remove();
+    else if (launcher?.isConnected) {
+      launcher.remove();
+      document.querySelector(".me-launcher-menu")?.remove();
+    }
   }
 
   function analyzeCurrentPage() {
@@ -1656,8 +1674,9 @@
         // fall through to the on-page launcher
       }
     }
-    // Torn PDA and other managers without a menu get a small on-page launcher.
-    ensureLauncher();
+    // Torn PDA and other managers without a menu get the on-page launcher
+    // (on supported pages; navigation keeps it in step).
+    updateLauncher(detectSurface());
   }
 
   if (global.__MARKET_EDGE_EXPOSE_DOM__) {
@@ -1695,6 +1714,8 @@
       showSettings,
       addWatchItem,
       ensureLauncher,
+      updateLauncher,
+      launcherActions,
       showToast,
       renderPortfolioPanel,
       renderShopRunsPanel,

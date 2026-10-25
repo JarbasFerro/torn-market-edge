@@ -644,14 +644,18 @@
     return /manage|mylist|my-list|yourlist|your-list|viewlisting|listings/.test(hash) && !/itemid=/.test(hash);
   }
 
+  // Panel toolbar: the same page rules as the launcher menu, so a panel only
+  // links to the other panels that make sense where the player is.
   function panelToolbarHtml() {
-    return `<div class="me-actions me-panel-toolbar">
-      <button class="me-btn me-open-listings" type="button" title="Compare your Item Market listings with the live floor (Limited key)">My listings</button>
-      <button class="me-btn me-open-watchlist" type="button" title="Watched items and alert targets">Watchlist</button>
-      <button class="me-btn me-open-portfolio" type="button" title="Value your whole inventory through the official API (Minimal key)">Portfolio</button>
-      <button class="me-btn me-open-shops" type="button" title="City shop stock priced against the market">Shops</button>
-      <button class="me-btn me-open-travel" type="button" title="Foreign shop prices ranked by profit per trip">Travel</button>
-    </div>`;
+    const buttons = {
+      listings: `<button class="me-btn me-open-listings" type="button">My listings</button>`,
+      watchlist: `<button class="me-btn me-open-watchlist" type="button">Watchlist</button>`,
+      portfolio: `<button class="me-btn me-open-portfolio" type="button">Portfolio</button>`,
+      shops: `<button class="me-btn me-open-shops" type="button">Shop runs</button>`,
+      travel: `<button class="me-btn me-open-travel" type="button">Travel plan</button>`
+    };
+    const html = contextActionIds().map((id) => buttons[id] || "").join("");
+    return html ? `<div class="me-actions me-panel-toolbar">${html}</div>` : "";
   }
 
   function bindPanelToolbar() {

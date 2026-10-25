@@ -266,6 +266,32 @@ run("Browse grid opens no panel; the edge tab shows the deal count and remembers
   assert.equal(tab.getAttribute("aria-expanded"), "true");
 });
 
+run("Launcher menu offers only what helps on the current page, each with a one-line description", async (t) => {
+  const menuFor = (url) => {
+    const env = boot("<div id='mainContainer'></div>", url);
+    const ids = env.ME.launcherActions().map((action) => action.id);
+    env.close();
+    return ids.join(",");
+  };
+  assert.equal(menuFor("https://www.torn.com/page.php?sid=ItemMarket#/market/view=category&categoryName=Drugs"), "listings,watchlist,analyze,settings");
+  assert.equal(menuFor("https://www.torn.com/item.php"), "portfolio,analyze,settings");
+  assert.equal(menuFor("https://www.torn.com/shops.php?step=candy"), "shops,analyze,settings");
+  assert.equal(menuFor("https://www.torn.com/page.php?sid=travel"), "travel,analyze,settings");
+  assert.equal(menuFor("https://www.torn.com/bazaar.php#/manage"), "fill,analyze,settings");
+  assert.equal(menuFor("https://www.torn.com/index.php"), "settings");
+
+  const env = boot("<div id='mainContainer'></div>", "https://www.torn.com/item.php");
+  t.after(env.close);
+  const tab = env.ME.ensureLauncher();
+  tab.click();
+  const items = Array.from(env.document.querySelectorAll(".me-launcher-menu .me-menu-item"));
+  assert.deepEqual(items.map((item) => item.querySelector(".me-menu-label").textContent), ["Portfolio", "Refresh prices", "Settings"]);
+  assert.match(items[0].querySelector(".me-menu-hint").textContent, /whole inventory/);
+  env.ME.updateLauncher("other");
+  assert.equal(env.document.querySelector(".me-launcher"), null, "no tab on pages Market Edge does not work on");
+  assert.equal(env.document.querySelector(".me-launcher-menu"), null);
+});
+
 run("Own listings workbench fills Torn's price field on the manage page and persists pricing rules", async (t) => {
   const env = boot(fixture("itemmarket-manage.html"), "https://www.torn.com/page.php?sid=ItemMarket#/market/view=manage");
   t.after(env.close);
