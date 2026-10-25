@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.6.10
+// @version      0.6.11
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.6.10",
+    version: "0.6.11",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -1291,6 +1291,33 @@
     return countries;
   }
 
+  // Travel plan by profit per hour of flying: every profitable offer gets the
+  // round trip for its country and travel type, each country keeps its best
+  // rows, and countries are ranked by their best $/hour. perTrip must already
+  // reflect the units the player can carry (capacity, and cash when bounded);
+  // without a capacity the rate is per item.
+  function rankTravelByHour(evaluations, { travelType = "standard", perCountry = 4 } = {}) {
+    const byCountry = new Map();
+    (evaluations || []).forEach((row) => {
+      if (!row || !(row.profitPerUnit > 0)) return;
+      const oneWay = flightMinutes(row.country, travelType);
+      if (!oneWay) return;
+      const roundTripMinutes = oneWay * 2;
+      const perItemOnly = !Number.isFinite(row.perTrip);
+      const gain = perItemOnly ? row.profitPerUnit : row.perTrip;
+      if (!(gain > 0)) return;
+      const perHour = Math.round(gain / (roundTripMinutes / 60));
+      if (!byCountry.has(row.country)) byCountry.set(row.country, []);
+      byCountry.get(row.country).push({ ...row, roundTripMinutes, perHour, perItemOnly });
+    });
+    const countries = Array.from(byCountry.entries()).map(([country, rows]) => {
+      rows.sort((a, b) => b.perHour - a.perHour);
+      return { country, best: rows[0], rows: rows.slice(0, perCountry), roundTripMinutes: rows[0].roundTripMinutes };
+    });
+    countries.sort((a, b) => b.best.perHour - a.best.perHour);
+    return countries;
+  }
+
   // Museum pieces recognised by name (contraband singles and the arrowhead
   // set). Returns a valuation shaped like museumValuation().
   function museumByName({ meta, pointValue, allMetas = [], settings = {} }) {
@@ -1517,6 +1544,7 @@
     evaluateAbroadRow,
     flightMinutes,
     rankTravelPlan,
+    rankTravelByHour,
     museumByName,
     auctionTimingStats,
     stackableSalesSummary,
@@ -4091,6 +4119,30 @@
     .me-visually-hidden { position:absolute !important; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
     .me-modal-actions { display:flex; gap:7px; justify-content:flex-end; margin-top:14px; position:sticky; bottom:-14px; padding:10px 0 0; background:var(--me-bg); }
     .me-error { color:var(--me-bad); font-size:var(--me-fs-meta); line-height:1.4; }
+    .me-trip-head { display:flex; flex-direction:column; gap:2px; margin-bottom:6px; }
+    .me-trip-head .me-actions { margin-top:6px; }
+    .me-trip-context { color:var(--me-muted); font-size:var(--me-fs-meta); }
+    .me-trip-note { margin:4px 0 !important; }
+    .me-trip-list { list-style:none; margin:4px 0 8px; padding:0; display:flex; flex-direction:column; gap:6px; }
+    .me-trip { border:1px solid var(--me-border); border-radius:6px; background:var(--me-bg-2); overflow:hidden; }
+    .me-trip details > summary { list-style:none; cursor:pointer; }
+    .me-trip details > summary::-webkit-details-marker { display:none; }
+    .me-trip-summary { display:flex; align-items:center; gap:10px; padding:8px 10px; min-height:44px; }
+    .me-trip-rank { flex:none; width:18px; color:var(--me-faint); font-weight:700; font-size:var(--me-fs-meta); text-align:center; }
+    .me-trip-main { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; gap:1px; }
+    .me-trip-country { font-weight:700; font-size:var(--me-fs); }
+    .me-trip-time { color:var(--me-faint); font-weight:500; font-size:var(--me-fs-small); margin-left:4px; }
+    .me-trip-item { font-size:var(--me-fs-meta); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .me-trip-item a { color:var(--me-fg); text-decoration:none; font-weight:600; }
+    .me-trip-meta { color:var(--me-muted); font-size:var(--me-fs-small); }
+    .me-trip-more { text-decoration:underline; }
+    .me-trip details[open] .me-trip-more { text-decoration:none; }
+    .me-trip-rate { flex:none; color:var(--me-good); font:800 16px/1 Arial, sans-serif; font-variant-numeric:tabular-nums; white-space:nowrap; }
+    .me-trip-rate small, .me-trip-table small { font-size:10px; font-weight:600; color:var(--me-muted); margin-left:1px; }
+    .me-trip-table { margin:0 !important; border-top:1px solid var(--me-border); }
+    .me-trip-table td { padding:6px 10px !important; }
+    .me-trip-table td a { color:var(--me-fg); text-decoration:none; }
+    .me-link-btn { border:0; background:transparent; padding:0; color:var(--me-muted); font:inherit; text-decoration:underline; cursor:pointer; }
     .me-table { width:100%; border-collapse:collapse; font-size:var(--me-fs-small); margin-top:6px; }
     .me-table th, .me-table td { padding:4px; text-align:right; border-bottom:1px solid var(--me-border); white-space:nowrap; font-variant-numeric:tabular-nums; }
     .me-table th { color:var(--me-muted); font-weight:600; text-transform:uppercase; letter-spacing:.04em; font-size:9px; }
@@ -5391,7 +5443,8 @@
       shops: `<button class="me-btn me-open-shops" type="button">Shop runs</button>`,
       travel: `<button class="me-btn me-open-travel" type="button">Travel plan</button>`
     };
-    const html = contextActionIds().map((id) => buttons[id] || "").join("");
+    // A panel never links to itself.
+    const html = contextActionIds().filter((id) => id !== ui.currentPanel).map((id) => buttons[id] || "").join("");
     return html ? `<div class="me-actions me-panel-toolbar">${html}</div>` : "";
   }
 
@@ -6446,7 +6499,23 @@
     }
   }
 
-  // Travel plan: official foreign shop prices ranked by profit per trip.
+  // Travel plan: official foreign shop prices ranked by profit per hour of
+  // flying. Trips are bounded by capacity and, unless the player chooses
+  // otherwise, by the cash they carry (Torn's sidebar figure).
+  let travelIgnoreCash = false;
+
+  function playerCashOnPage() {
+    const abroad = abroadPagePresent() ? abroadContext().money : null;
+    if (Number.isFinite(abroad) && abroad !== null) return abroad;
+    const node = document.querySelector("#user-money, [data-money][id*='money' i]");
+    const raw = parseIntegerField(node?.getAttribute?.("data-money")) ?? parseIntegerField(node?.textContent);
+    return Number.isFinite(raw) && raw !== null ? raw : null;
+  }
+
+  function perHourText(value) {
+    return `${formatMoney(value)}<small>/h</small>`;
+  }
+
   async function renderTravelPlanPanel({ reload = false } = {}) {
     ui.pinned = true;
     ensureUi();
@@ -6472,35 +6541,73 @@
         log("Travel museum context unavailable", error.message);
       }
       const capacity = Math.max(0, asInt(settings.travelCapacity, 0));
+      const travelType = TRAVEL_TYPE_FACTORS[settings.travelType] ? settings.travelType : "standard";
+      const cash = playerCashOnPage();
+      const cashBound = capacity > 0 && cash !== null && !travelIgnoreCash;
+      let unaffordable = 0;
       const evaluations = offers.map((offer) => {
         const meta = metaById.get(offer.itemId);
         if (meta && isEquipmentType(meta.type)) return null;
+        const units = capacity > 0 ? (cashBound ? Math.min(capacity, Math.floor(cash / Math.max(1, offer.buyPrice))) : capacity) : 0;
+        if (capacity > 0 && units <= 0) {
+          unaffordable += 1;
+          return null;
+        }
         const { exit } = bestAvailableExit({ snapshot: Store.snapshot(offer.itemId), historyStats: null, marketPrice: offer.marketPrice, settings });
-        return evaluateForeignOffer({ offer, exit, settings, capacity, museum: museumContext.get(offer.itemId) || null, shopSell: shopSellFloor(meta) });
+        const row = evaluateForeignOffer({ offer, exit, settings, capacity: units, museum: museumContext.get(offer.itemId) || null, shopSell: shopSellFloor(meta) });
+        return row ? { ...row, units, cashLimited: capacity > 0 && units < capacity } : null;
       }).filter(Boolean);
-      const plan = rankTravelPlan(evaluations, { perCountry: 4 });
-      const countryHtml = plan.map((entry) => `
-        <div class="me-kicker" style="margin-top:8px">${escapeHtml(entry.country)} - best ${escapeHtml(entry.best.name)} ${entry.best.profitPerUnit >= 0 ? "+" : ""}${formatMoney(entry.best.profitPerUnit)} ea${capacity ? `, ${formatMoney(entry.best.perTrip)} per trip` : ""}</div>
-        <table class="me-table"><tbody>${entry.rows.map((row) => `<tr class="${row.state}" title="Exit via ${escapeHtml(row.routes.bestRoute)}; ROI ${(row.roi * 100).toFixed(1)}%${capacity ? `; cash needed ${formatMoney(row.cashNeeded, true)}` : ""}">
-          <td><a href="${itemMarketLink(row.itemId, row.name)}" style="color:inherit">${escapeHtml(row.name)}</a></td>
-          <td>${escapeHtml(row.shop || "")}</td>
-          <td>${formatMoney(row.buyPrice)}</td>
-          <td class="${row.profitPerUnit > 0 ? "me-good" : ""}">${row.profitPerUnit >= 0 ? "+" : ""}${formatMoney(row.profitPerUnit)} ea</td>
-          ${capacity ? `<td>${formatMoney(row.perTrip)}</td>` : ""}
-        </tr>`).join("")}</tbody></table>`).join("");
+      const plan = rankTravelByHour(evaluations, { travelType, perCountry: 4 });
+      const unitsText = (row) => (row.perItemOnly ? "" : ` \u00b7 ${row.units}${row.cashLimited ? ` of ${capacity} (cash)` : " units"}`);
+      const tripHtml = plan.map((entry, index) => {
+        const best = entry.best;
+        const more = entry.rows.slice(1);
+        const summary = `
+          <span class="me-trip-rank">${index + 1}</span>
+          <span class="me-trip-main">
+            <span class="me-trip-country">${escapeHtml(entry.country)} <span class="me-trip-time">${formatMinutes(entry.roundTripMinutes)} round trip</span></span>
+            <span class="me-trip-item"><a href="${itemMarketLink(best.itemId, best.name)}">${escapeHtml(best.name)}</a> +${formatMoney(best.profitPerUnit)} ea</span>
+            <span class="me-trip-meta">${best.perItemOnly ? "per item" : `${formatMoney(best.perTrip)} per trip`}${unitsText(best)}${more.length ? ` \u00b7 <span class="me-trip-more">${more.length} more</span>` : ""}</span>
+          </span>
+          <span class="me-trip-rate">${perHourText(best.perHour)}</span>`;
+        if (!more.length) return `<li class="me-trip"><div class="me-trip-summary">${summary}</div></li>`;
+        const rows = more.map((row) => `<tr>
+            <td><a href="${itemMarketLink(row.itemId, row.name)}">${escapeHtml(row.name)}</a></td>
+            <td>+${formatMoney(row.profitPerUnit)} ea</td>
+            <td>${row.perItemOnly ? "" : formatMoney(row.perTrip)}</td>
+            <td class="me-good">${perHourText(row.perHour)}</td>
+          </tr>`).join("");
+        return `<li class="me-trip"><details><summary class="me-trip-summary">${summary}</summary><table class="me-table me-trip-table"><tbody>${rows}</tbody></table></details></li>`;
+      }).join("");
+      const contextParts = [
+        TRAVEL_TYPE_LABELS[travelType] || "Standard flight",
+        capacity ? `${capacity} items per trip` : "capacity not set",
+        cash !== null ? `cash ${formatMoney(cash)}` : ""
+      ].filter(Boolean).join(" \u00b7 ");
+      const cashToggle = capacity > 0 && cash !== null
+        ? `<button class="me-btn me-travel-cash" type="button" aria-pressed="${travelIgnoreCash ? "true" : "false"}">${travelIgnoreCash ? "Use my cash" : "Ignore cash"}</button>`
+        : "";
+      const cashNote = cashBound && unaffordable
+        ? `<div class="me-note me-trip-note">${unaffordable} item${unaffordable === 1 ? "" : "s"} cost more than the ${formatMoney(cash)} you carry and ${unaffordable === 1 ? "is" : "are"} left out. "Ignore cash" ranks full trips, e.g. after a bank withdrawal.</div>`
+        : "";
+      const capacityNote = capacity ? "" : `<div class="me-note me-trip-note">Set your travel capacity in Settings: $/hour is per item until then.</div>`;
       setPanel(`
-        <div class="me-kicker">Travel plan (official prices)</div>
-        ${metricRows([
-          ["Countries with profitable stock", String(plan.length)],
-          ["Capacity used", capacity ? `${capacity} items per trip` : "not set (per-item only)"],
-          ["Offers evaluated", String(evaluations.length)]
-        ])}
-        ${countryHtml || `<div class="me-note">No foreign offer beats the market after fees right now.</div>`}
-        <div class="me-actions"><button class="me-btn me-travel-reload" type="button">Refresh catalog</button></div>
+        <div class="me-trip-head">
+          <div class="me-kicker">Travel plan, ranked by profit per hour</div>
+          <div class="me-trip-context">${escapeHtml(contextParts)}</div>
+          <div class="me-actions">${cashToggle}<button class="me-btn me-travel-settings" type="button">Flight &amp; capacity</button></div>
+        </div>
+        ${capacityNote}${cashNote}
+        ${tripHtml ? `<ol class="me-trip-list">${tripHtml}</ol>` : `<div class="me-note">No foreign offer beats the market after fees${cashBound ? " with the cash you carry" : ""} right now.</div>`}
         ${panelToolbarHtml()}
-        <div class="me-note">Prices are Torn's official shop prices per country; the official API has no foreign stock, so an item may be sold out or repriced abroad (Patch #413 varies drug and contraband prices). Set your travel capacity in settings for per-trip totals. Exits use recent order books when available, otherwise Torn's market value with an extra haircut.</div>
+        <div class="me-note">$/hour = profit per trip \u00f7 round-trip flight time. Prices are Torn's official shop prices (${evaluations.length} offers checked). Foreign stock is not in the API, so an item can be sold out abroad. <button class="me-link-btn me-travel-reload" type="button">Refresh catalog</button></div>
       `, "TRAVEL");
       ui.body.querySelector(".me-travel-reload")?.addEventListener("click", () => renderTravelPlanPanel({ reload: true }));
+      ui.body.querySelector(".me-travel-settings")?.addEventListener("click", () => showSettings());
+      ui.body.querySelector(".me-travel-cash")?.addEventListener("click", () => {
+        travelIgnoreCash = !travelIgnoreCash;
+        renderTravelPlanPanel();
+      });
       bindPanelToolbar();
     } catch (error) {
       errorPanel(describeApiError(error, { feature: "The travel plan" }));

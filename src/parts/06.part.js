@@ -654,7 +654,8 @@
       shops: `<button class="me-btn me-open-shops" type="button">Shop runs</button>`,
       travel: `<button class="me-btn me-open-travel" type="button">Travel plan</button>`
     };
-    const html = contextActionIds().map((id) => buttons[id] || "").join("");
+    // A panel never links to itself.
+    const html = contextActionIds().filter((id) => id !== ui.currentPanel).map((id) => buttons[id] || "").join("");
     return html ? `<div class="me-actions me-panel-toolbar">${html}</div>` : "";
   }
 

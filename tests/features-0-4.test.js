@@ -92,6 +92,27 @@ test("foreign offers are derived from metadata and ranked per country by profit 
   assert.ok(plan.every((entry) => entry.best.cashNeeded === entry.best.buyPrice * 10));
 });
 
+test("travel plan ranks countries by profit per hour of round-trip flying, not by profit per unit", () => {
+  // Mexico: short hop, small profit. Japan: big profit, long flight.
+  const rows = [
+    { country: "Mexico", name: "Plushie", profitPerUnit: 20_000, perTrip: 20_000 * 10 },
+    { country: "Japan", name: "Xanax", profitPerUnit: 60_000, perTrip: 60_000 * 10 },
+    { country: "Japan", name: "Flower", profitPerUnit: 1_000, perTrip: 1_000 * 10 },
+    { country: "Atlantis", name: "Unknown", profitPerUnit: 9e9, perTrip: 9e9 },
+  ];
+  const plan = ME.rankTravelByHour(rows, { travelType: "standard" });
+  assert.deepEqual(plan.map((entry) => entry.country), ["Mexico", "Japan"], "unknown flight time is left out");
+  assert.equal(plan[0].roundTripMinutes, 52);
+  assert.equal(plan[0].best.perHour, Math.round(200_000 / (52 / 60)));
+  assert.equal(plan[1].best.perHour, Math.round(600_000 / (450 / 60)));
+  assert.equal(plan[1].rows[1].name, "Flower");
+  const jet = ME.rankTravelByHour(rows, { travelType: "jet" });
+  assert.equal(jet[1].roundTripMinutes, 226, "private jet halves each leg (113 min)");
+  const perItem = ME.rankTravelByHour([{ country: "Mexico", name: "Plushie", profitPerUnit: 26_000, perTrip: null }]);
+  assert.equal(perItem[0].best.perItemOnly, true);
+  assert.equal(perItem[0].best.perHour, 30_000);
+});
+
 test("museum pieces are recognised by name: singles pay points, the arrowhead set needs six pieces", () => {
   const fossil = ME.museumByName({ meta: { id: 9001, name: "Patagonian Fossil", marketPrice: 500_000 }, pointValue: 40_000, settings: settings() });
   assert.equal(fossil.points, 20);

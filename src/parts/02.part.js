@@ -410,6 +410,33 @@
     return countries;
   }
 
+  // Travel plan by profit per hour of flying: every profitable offer gets the
+  // round trip for its country and travel type, each country keeps its best
+  // rows, and countries are ranked by their best $/hour. perTrip must already
+  // reflect the units the player can carry (capacity, and cash when bounded);
+  // without a capacity the rate is per item.
+  function rankTravelByHour(evaluations, { travelType = "standard", perCountry = 4 } = {}) {
+    const byCountry = new Map();
+    (evaluations || []).forEach((row) => {
+      if (!row || !(row.profitPerUnit > 0)) return;
+      const oneWay = flightMinutes(row.country, travelType);
+      if (!oneWay) return;
+      const roundTripMinutes = oneWay * 2;
+      const perItemOnly = !Number.isFinite(row.perTrip);
+      const gain = perItemOnly ? row.profitPerUnit : row.perTrip;
+      if (!(gain > 0)) return;
+      const perHour = Math.round(gain / (roundTripMinutes / 60));
+      if (!byCountry.has(row.country)) byCountry.set(row.country, []);
+      byCountry.get(row.country).push({ ...row, roundTripMinutes, perHour, perItemOnly });
+    });
+    const countries = Array.from(byCountry.entries()).map(([country, rows]) => {
+      rows.sort((a, b) => b.perHour - a.perHour);
+      return { country, best: rows[0], rows: rows.slice(0, perCountry), roundTripMinutes: rows[0].roundTripMinutes };
+    });
+    countries.sort((a, b) => b.best.perHour - a.best.perHour);
+    return countries;
+  }
+
   // Museum pieces recognised by name (contraband singles and the arrowhead
   // set). Returns a valuation shaped like museumValuation().
   function museumByName({ meta, pointValue, allMetas = [], settings = {} }) {
@@ -636,6 +663,7 @@
     evaluateAbroadRow,
     flightMinutes,
     rankTravelPlan,
+    rankTravelByHour,
     museumByName,
     auctionTimingStats,
     stackableSalesSummary,

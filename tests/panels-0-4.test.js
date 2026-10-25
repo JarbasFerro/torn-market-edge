@@ -217,9 +217,15 @@ run("Travel plan ranks countries from official foreign shop prices and uses capa
   await env.ME.renderTravelPlanPanel();
   const text = panelText(env);
   assert.match(text, /Travel plan/);
-  assert.match(text, /Japan - best Xanax/);
+  assert.match(text, /ranked by profit per hour/);
   assert.match(text, /Argentina/);
   assert.match(text, /10 items per trip/);
+  const trips = Array.from(env.document.querySelectorAll(".me-trip"));
+  assert.ok(trips.length >= 2, "one card per country");
+  const rates = trips.map((trip) => trip.querySelector(".me-trip-rate").textContent);
+  assert.ok(rates.every((rate) => /^\$[\d.,]+[kmb]?\/h$/.test(rate)), `every card leads with $/hour: ${rates.join(" ")}`);
+  assert.match(trips[0].textContent, /round trip/);
+  assert.equal(env.document.querySelector(".me-open-travel"), null, "the panel does not link to itself");
   assert.ok(env.requests.some((url) => /\/torn\/items(\?|$)/.test(url)), "one catalog request");
 });
 

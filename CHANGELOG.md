@@ -6,6 +6,13 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.6.11] - 2026-10-25
+
+### Changed
+
+- **Travel plan ranked by profit per hour.** Each country is one card: rank, country and round-trip flight time (for your travel type), the best item with its profit each, profit per trip and units, and the $/hour figure large on the right. $/hour is profit per trip ÷ round-trip flight time, the same measure as the abroad shop rows. Tapping a card with more items unfolds them, each with its own $/hour. The metric rows ("countries with profitable stock", "offers evaluated") and the panel's link to itself are gone.
+- **Trips respect the cash you carry.** Units are capped by the cash in Torn's sidebar (or the abroad message). Items you cannot afford are left out, with a note saying how many. "Ignore cash" ranks full-capacity trips (for example after a bank withdrawal), and "Flight & capacity" opens the settings that drive the numbers.
+
 ## [0.6.10] - 2026-10-25
 
 ### Changed
