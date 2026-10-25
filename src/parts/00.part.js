@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.6.11
+// @version      0.6.12
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.6.11",
+    version: "0.6.12",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -123,6 +123,7 @@
     keyInfo: "marketEdge.keyInfo.v1",
     panelState: "marketEdge.panelState.v1",
     launcherTop: "marketEdge.launcherTop.v1",
+    auctionReminders: "marketEdge.auctionReminders.v1",
     watchlist: "marketEdge.watchlist.v1",
     pointsMarket: "marketEdge.pointsMarket.v1",
     auctionSalesPrefix: "marketEdge.auctionSales.v1.",
@@ -161,6 +162,9 @@
     travelType: "standard",
     shopRunQuantity: 100,
     undercutAlerts: true,
+    backgroundAlerts: true,
+    auctionReminders: true,
+    auctionReminderMinutes: 5,
     portfolioRefineRequests: PORTFOLIO_REFINE_DEFAULT,
     auctionEvidenceEnabled: true,
     browseOverlayEnabled: true,

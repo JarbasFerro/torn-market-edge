@@ -1249,6 +1249,8 @@
     .me-visually-hidden { position:absolute !important; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
     .me-modal-actions { display:flex; gap:7px; justify-content:flex-end; margin-top:14px; position:sticky; bottom:-14px; padding:10px 0 0; background:var(--me-bg); }
     .me-error { color:var(--me-bad); font-size:var(--me-fs-meta); line-height:1.4; }
+    .me-ah-remind { display:inline-flex; align-items:center; justify-content:center; min-height:32px; margin:4px 0 0 6px; padding:0 10px; border:1px solid var(--me-btn-border); border-radius:5px; background:var(--me-btn); color:var(--me-fg); font:700 11px/1 Arial, sans-serif; cursor:pointer; touch-action:manipulation; white-space:nowrap; vertical-align:middle; }
+    .me-ah-remind.me-on { border-color:var(--me-good); color:var(--me-good); background:var(--me-good-bg); }
     .me-trip-head { display:flex; flex-direction:column; gap:2px; margin-bottom:6px; }
     .me-trip-head .me-actions { margin-top:6px; }
     .me-trip-context { color:var(--me-muted); font-size:var(--me-fs-meta); }

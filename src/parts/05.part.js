@@ -179,10 +179,13 @@
           </div>
         `)}
 
-        ${settingsSectionHtml("Watchlist", "alerts while a Torn tab is open", `
+        ${settingsSectionHtml("Watchlist", ENV.isPda ? "alerts and phone notifications" : "alerts while a Torn tab is open", `
           <div class="me-form-grid">
             ${f("watchlistEnabled", "Watchlist alerts enabled", { type: "checkbox" })}
             ${f("watchlistIntervalSeconds", `Check every (seconds, min ${WATCHLIST_MIN_INTERVAL_SEC})`, { min: WATCHLIST_MIN_INTERVAL_SEC, max: 3600, step: 5 })}
+            ${ENV.isPda ? f("backgroundAlerts", "Keep checking while PDA shows another screen or tab (uses API calls; stops when the phone suspends PDA)", { type: "checkbox" }) : ""}
+            ${ENV.isPda ? f("auctionReminders", "Auction House: offer \"Remind me\" on every auction", { type: "checkbox" }) : ""}
+            ${ENV.isPda ? f("auctionReminderMinutes", "Remind me this many minutes before an auction ends", { min: 1, max: 120, step: 1 }) : ""}
           </div>
           <div id="me-watchlist-rows"></div>
           <div class="me-actions">
@@ -360,6 +363,7 @@
         else next[key] = Number(input.value || 0);
       });
       next.watchlistIntervalSeconds = Math.max(WATCHLIST_MIN_INTERVAL_SEC, asInt(next.watchlistIntervalSeconds, DEFAULTS.watchlistIntervalSeconds));
+      next.auctionReminderMinutes = clamp(asInt(next.auctionReminderMinutes, DEFAULTS.auctionReminderMinutes), 1, 120);
       Store.setApiKey(backdrop.querySelector("#me-api-key").value);
       Store.saveSettings(next);
       settings = Store.settings();

@@ -1099,6 +1099,9 @@
 
     const requireMoney = !["inventory", "imsell"].includes(surface);
     beginLayoutPass();
+    // Every auction row (equipment included) gets the reminder control,
+    // whether or not Market Edge prices it.
+    if (surface === "auction") renderAuctionReminders();
     let items = surface === "auction"
       ? collectAuctionItems()
       : (surface === "imsell" ? collectSellFormRows()

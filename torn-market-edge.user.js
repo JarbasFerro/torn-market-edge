@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.6.11
+// @version      0.6.12
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.6.11",
+    version: "0.6.12",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -123,6 +123,7 @@
     keyInfo: "marketEdge.keyInfo.v1",
     panelState: "marketEdge.panelState.v1",
     launcherTop: "marketEdge.launcherTop.v1",
+    auctionReminders: "marketEdge.auctionReminders.v1",
     watchlist: "marketEdge.watchlist.v1",
     pointsMarket: "marketEdge.pointsMarket.v1",
     auctionSalesPrefix: "marketEdge.auctionSales.v1.",
@@ -161,6 +162,9 @@
     travelType: "standard",
     shopRunQuantity: 100,
     undercutAlerts: true,
+    backgroundAlerts: true,
+    auctionReminders: true,
+    auctionReminderMinutes: 5,
     portfolioRefineRequests: PORTFOLIO_REFINE_DEFAULT,
     auctionEvidenceEnabled: true,
     browseOverlayEnabled: true,
@@ -4119,6 +4123,8 @@
     .me-visually-hidden { position:absolute !important; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
     .me-modal-actions { display:flex; gap:7px; justify-content:flex-end; margin-top:14px; position:sticky; bottom:-14px; padding:10px 0 0; background:var(--me-bg); }
     .me-error { color:var(--me-bad); font-size:var(--me-fs-meta); line-height:1.4; }
+    .me-ah-remind { display:inline-flex; align-items:center; justify-content:center; min-height:32px; margin:4px 0 0 6px; padding:0 10px; border:1px solid var(--me-btn-border); border-radius:5px; background:var(--me-btn); color:var(--me-fg); font:700 11px/1 Arial, sans-serif; cursor:pointer; touch-action:manipulation; white-space:nowrap; vertical-align:middle; }
+    .me-ah-remind.me-on { border-color:var(--me-good); color:var(--me-good); background:var(--me-good-bg); }
     .me-trip-head { display:flex; flex-direction:column; gap:2px; margin-bottom:6px; }
     .me-trip-head .me-actions { margin-top:6px; }
     .me-trip-context { color:var(--me-muted); font-size:var(--me-fs-meta); }
@@ -4369,10 +4375,13 @@
           </div>
         `)}
 
-        ${settingsSectionHtml("Watchlist", "alerts while a Torn tab is open", `
+        ${settingsSectionHtml("Watchlist", ENV.isPda ? "alerts and phone notifications" : "alerts while a Torn tab is open", `
           <div class="me-form-grid">
             ${f("watchlistEnabled", "Watchlist alerts enabled", { type: "checkbox" })}
             ${f("watchlistIntervalSeconds", `Check every (seconds, min ${WATCHLIST_MIN_INTERVAL_SEC})`, { min: WATCHLIST_MIN_INTERVAL_SEC, max: 3600, step: 5 })}
+            ${ENV.isPda ? f("backgroundAlerts", "Keep checking while PDA shows another screen or tab (uses API calls; stops when the phone suspends PDA)", { type: "checkbox" }) : ""}
+            ${ENV.isPda ? f("auctionReminders", "Auction House: offer \"Remind me\" on every auction", { type: "checkbox" }) : ""}
+            ${ENV.isPda ? f("auctionReminderMinutes", "Remind me this many minutes before an auction ends", { min: 1, max: 120, step: 1 }) : ""}
           </div>
           <div id="me-watchlist-rows"></div>
           <div class="me-actions">
@@ -4550,6 +4559,7 @@
         else next[key] = Number(input.value || 0);
       });
       next.watchlistIntervalSeconds = Math.max(WATCHLIST_MIN_INTERVAL_SEC, asInt(next.watchlistIntervalSeconds, DEFAULTS.watchlistIntervalSeconds));
+      next.auctionReminderMinutes = clamp(asInt(next.auctionReminderMinutes, DEFAULTS.auctionReminderMinutes), 1, 120);
       Store.setApiKey(backdrop.querySelector("#me-api-key").value);
       Store.saveSettings(next);
       settings = Store.settings();
@@ -5888,6 +5898,9 @@
 
     const requireMoney = !["inventory", "imsell"].includes(surface);
     beginLayoutPass();
+    // Every auction row (equipment included) gets the reminder control,
+    // whether or not Market Edge prices it.
+    if (surface === "auction") renderAuctionReminders();
     let items = surface === "auction"
       ? collectAuctionItems()
       : (surface === "imsell" ? collectSellFormRows()
@@ -6206,13 +6219,20 @@
     const entries = await syncSellWatchWithApi();
     if (!entries.length || !Store.apiKey()) return;
     for (const entry of entries) {
-      if (!pageVisible()) break;
+      if (!watchMayContinue()) break;
       try {
         const bundle = await loadSnapshot(entry.itemId, { limit: API_LIST_LIMIT, priority: -60, queueGroup: "watch" });
         const outcome = evaluateSellWatch(entry, bundle.snapshot);
         entry.lastCheckedAt = Math.floor(Date.now() / 1000);
         if (outcome.shouldAlert) {
           entry.lastAlertAt = Math.floor(Date.now() / 1000);
+          if (!pageVisible()) nativeNotify({
+            id: notificationId("undercut", entry.itemId),
+            title: `Undercut: ${entry.name}`,
+            subtitle: `Your ${entry.venue === "IM" ? "Item Market" : "Bazaar"} price ${formatMoney(entry.price)}; the floor is now ${formatMoney(outcome.floor)}. Tap to open the market.`,
+            url: itemMarketLink(entry.itemId, entry.name),
+            cooldownMs: 10 * 60000
+          });
           showToast(`Undercut: <strong>${escapeHtml(entry.name)}</strong> on your ${entry.venue === "IM" ? "Item Market" : "Bazaar"} at ${formatMoney(entry.price)}; the Item Market floor is now ${formatMoney(outcome.floor)} (${outcome.cheaperQuantity.toLocaleString("en-US")} units cheaper). <a href="${itemMarketLink(entry.itemId, entry.name)}">Open market</a> <button type="button" class="me-toast-remove-sell" data-sell-key="${entry.venue}:${entry.itemId}" title="Dismiss alert and remove listing from watch">Dismiss alert</button>`);
         }
         entry.lastFloor = outcome.floor;
@@ -7050,7 +7070,7 @@
 
   async function watchTick({ force = false } = {}) {
     if (!settings.watchlistEnabled || watchRunning) return;
-    if (!pageVisible()) return;
+    if (!watchMayRun()) return;
     const entries = Store.watchlist();
     if (!Store.apiKey()) return;
     if (!entries.length && (settings.undercutAlerts === false || !Store.sellWatch().length)) return;
@@ -7060,7 +7080,7 @@
     watchRunning = true;
     try {
       for (const entry of entries) {
-        if (!pageVisible()) break;
+        if (!watchMayContinue()) break;
         try {
           const bundle = await loadSnapshot(entry.itemId, { limit: API_LIST_LIMIT, priority: -50, queueGroup: "watch" });
           const outcome = evaluateWatchItem(entry, bundle.snapshot);
@@ -7068,6 +7088,14 @@
           if (outcome.shouldAlert) {
             entry.lastAlertAt = Math.floor(Date.now() / 1000);
             showToast(`<strong>${escapeHtml(entry.name)}</strong> is ${formatMoney(outcome.floor)} on the Item Market (target ${formatMoney(entry.target)}, ${outcome.quantityAtOrBelow.toLocaleString("en-US")} units at or below). <a href="${itemMarketLink(entry.itemId, entry.name)}">Open listing</a>`);
+            // On screen the toast is enough; otherwise the phone is told.
+            if (!pageVisible()) nativeNotify({
+              id: notificationId("watch", entry.itemId),
+              title: `${entry.name} at ${formatMoney(outcome.floor)}`,
+              subtitle: `Your target ${formatMoney(entry.target)} \u00b7 ${outcome.quantityAtOrBelow.toLocaleString("en-US")} units at or below. Tap to open the listing.`,
+              url: itemMarketLink(entry.itemId, entry.name),
+              cooldownMs: 10 * 60000
+            });
           }
           entry.lastFloor = outcome.floor;
         } catch (error) {
@@ -7088,6 +7116,222 @@
     if (!settings.watchlistEnabled || !Store.apiKey()) return false;
     if (Store.watchlist().length) return true;
     return settings.undercutAlerts !== false && Store.sellWatch().length > 0;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Torn PDA native notifications, background alerts and auction reminders
+  // ---------------------------------------------------------------------------
+
+  // PDA's scheduleNotification handler puts a real notification on the phone
+  // at a given time; tapping it opens urlCallback in PDA. (PDA's GM_notification
+  // is only a blocking confirm() dialog, so it is never used.) Ids are 0-9999:
+  // 1000-3999 watchlist, 4000-6999 undercut, 7000-9999 auction reminders, one
+  // slot per item or listing so a repeat replaces the earlier notification.
+  const NOTIFY_LOG_KEY = "marketEdge.notifyLog.v1";
+
+  function nativeNotifyAvailable() {
+    return Boolean(ENV.isPda && typeof window.flutter_inappwebview?.callHandler === "function");
+  }
+
+  function notificationId(kind, key) {
+    const base = { watch: 1000, undercut: 4000, auction: 7000 }[kind] ?? 1000;
+    return base + (Math.abs(asInt(key, 0)) % 3000);
+  }
+
+  // Tabs share localStorage: the same alert is not notified twice within
+  // its cooldown even when two PDA tabs both run Market Edge.
+  function notifiedRecently(id, cooldownMs) {
+    try {
+      const log = JSON.parse(localStorage.getItem(NOTIFY_LOG_KEY) || "{}");
+      const now = Date.now();
+      if (log[id] && now - log[id] < cooldownMs) return true;
+      Object.keys(log).forEach((key) => { if (now - log[key] > 86400000) delete log[key]; });
+      log[id] = now;
+      localStorage.setItem(NOTIFY_LOG_KEY, JSON.stringify(log));
+    } catch {
+      // Storage unavailable: notify anyway.
+    }
+    return false;
+  }
+
+  async function nativeNotify({ id, title, subtitle = "", url = "", at = null, cooldownMs = 0 }) {
+    if (!nativeNotifyAvailable()) return false;
+    if (cooldownMs && notifiedRecently(id, cooldownMs)) return false;
+    try {
+      const result = await window.flutter_inappwebview.callHandler("scheduleNotification", {
+        title: String(title).slice(0, 120),
+        subtitle: String(subtitle).slice(0, 240),
+        id,
+        // The handler rejects past timestamps; "now" is a few seconds ahead.
+        timestamp: Math.max(Date.now() + 3000, asInt(at, 0)),
+        overwriteID: true,
+        launchNativeToast: false,
+        urlCallback: url
+      });
+      if (result?.status !== "success") log("Native notification refused", result?.message);
+      return result?.status === "success";
+    } catch (error) {
+      log("Native notification failed", error?.message || error);
+      return false;
+    }
+  }
+
+  async function cancelNativeNotification(id) {
+    if (!nativeNotifyAvailable()) return false;
+    try {
+      const result = await window.flutter_inappwebview.callHandler("cancelNotification", { id });
+      return result?.status === "success";
+    } catch {
+      return false;
+    }
+  }
+
+  // Alerts while Torn is not on screen (Torn PDA): the watch loop keeps
+  // polling as long as PDA's WebView is alive (another PDA screen, another
+  // tab, the browser hidden). It cannot run when the phone has suspended or
+  // closed PDA. One tab polls at a time through a lease in localStorage; a
+  // visible tab always takes it over.
+  const WATCH_LEASE_KEY = "marketEdge.watchLease.v1";
+  const watchTabId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+
+  function backgroundWatchAllowed() {
+    return ENV.isPda && settings.backgroundAlerts !== false;
+  }
+
+  function watchLease(take) {
+    const intervalMs = Math.max(WATCHLIST_MIN_INTERVAL_SEC, asInt(settings.watchlistIntervalSeconds, DEFAULTS.watchlistIntervalSeconds)) * 1000;
+    const now = Date.now();
+    let lease = null;
+    try {
+      lease = JSON.parse(localStorage.getItem(WATCH_LEASE_KEY) || "null");
+    } catch {
+      lease = null;
+    }
+    const free = !lease || !(lease.until > now) || lease.tab === watchTabId;
+    if (!free && !take) return false;
+    try {
+      localStorage.setItem(WATCH_LEASE_KEY, JSON.stringify({ tab: watchTabId, until: now + intervalMs * 2 + 30000 }));
+    } catch {
+      // No shared storage: every tab polls, as before.
+    }
+    return true;
+  }
+
+  function watchMayRun() {
+    if (pageVisible()) return watchLease(true);
+    return backgroundWatchAllowed() && watchLease(false);
+  }
+
+  function watchMayContinue() {
+    return pageVisible() || backgroundWatchAllowed();
+  }
+
+  // Auction reminders: a phone notification a few minutes before an auction
+  // ends, scheduled by the phone itself, so it arrives even with PDA closed.
+  // The end time comes from the row: title "Ends on 14:23:11 - 20/10/26"
+  // (Torn time, UTC), else the timer attribute (seconds left).
+  function parseAuctionEnd(row, now = Date.now()) {
+    const titled = row?.querySelector?.(".time-wrap span[title], .time-mob-wrap span[title]")?.getAttribute("title")
+      || row?.querySelector?.("button.view-info")?.getAttribute("aria-label") || "";
+    const match = titled.match(/Ends on\s+(\d{1,2}):(\d{2}):(\d{2})\s*-\s*(\d{1,2})\/(\d{1,2})\/(\d{2,4})/i);
+    if (match) {
+      const [, hh, mm, ss, dd, mo, yy] = match.map((part) => asInt(part, 0));
+      const year = yy < 100 ? 2000 + yy : yy;
+      const at = Date.UTC(year, mo - 1, dd, hh, mm, ss);
+      if (Number.isFinite(at)) return at;
+    }
+    const timer = asInt(row?.querySelector?.(".time[timer]")?.getAttribute("timer"), 0);
+    return timer > 0 ? now + timer * 1000 : null;
+  }
+
+  function auctionReminders() {
+    const stored = Store.get(STORAGE_KEYS.auctionReminders, {});
+    const now = Date.now();
+    const live = {};
+    Object.entries(stored && typeof stored === "object" ? stored : {}).forEach(([id, entry]) => {
+      if (entry?.endsAt > now) live[id] = entry;
+    });
+    return live;
+  }
+
+  function formatTornTime(ms) {
+    const date = new Date(ms);
+    const pad = (value) => String(value).padStart(2, "0");
+    return `${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())} TCT`;
+  }
+
+  async function toggleAuctionReminder(row, button) {
+    const listingId = asInt(row?.id, 0);
+    if (!listingId) return;
+    const reminders = auctionReminders();
+    const notifId = notificationId("auction", listingId);
+    if (reminders[listingId]) {
+      await cancelNativeNotification(notifId);
+      delete reminders[listingId];
+      Store.set(STORAGE_KEYS.auctionReminders, reminders);
+      renderAuctionReminderButton(row);
+      return;
+    }
+    const endsAt = parseAuctionEnd(row);
+    const name = (row.querySelector(".item-name")?.textContent || "Auction item").trim();
+    if (!endsAt || endsAt - Date.now() < 20000) {
+      if (button) button.textContent = "Ending now";
+      return;
+    }
+    const leadMs = Math.max(1, asInt(settings.auctionReminderMinutes, DEFAULTS.auctionReminderMinutes)) * 60000;
+    // Too close for the full lead time: remind 30 seconds before the end.
+    const at = endsAt - leadMs > Date.now() + 15000 ? endsAt - leadMs : Math.max(Date.now() + 5000, endsAt - 30000);
+    const bid = (row.querySelector(".c-bid-wrap")?.textContent || "").replace(/\s+/g, " ").trim();
+    const ok = await nativeNotify({
+      id: notifId,
+      title: `Auction ending: ${name}`,
+      subtitle: `Ends ${formatTornTime(endsAt)}${bid && !/none/i.test(bid) ? ` \u00b7 bid was ${bid}` : ""}`,
+      url: "https://www.torn.com/amarket.php",
+      at
+    });
+    if (!ok) {
+      if (button) button.textContent = "Not available";
+      return;
+    }
+    reminders[listingId] = { endsAt, at, name };
+    Store.set(STORAGE_KEYS.auctionReminders, reminders);
+    renderAuctionReminderButton(row);
+  }
+
+  function renderAuctionReminderButton(row) {
+    const host = [row.querySelector(".time-mob-wrap"), row.querySelector(".time-wrap")].find((node) => node && hasBox(node));
+    if (!host) return;
+    row.querySelectorAll(".me-ah-remind").forEach((node) => { if (node.parentElement !== host) node.remove(); });
+    let button = host.querySelector(".me-ah-remind");
+    if (!button) {
+      button = document.createElement("button");
+      button.type = "button";
+      button.className = "me-ah-remind";
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleAuctionReminder(row, button);
+      });
+      host.appendChild(button);
+    }
+    const reminder = auctionReminders()[asInt(row.id, 0)];
+    button.classList.toggle("me-on", Boolean(reminder));
+    button.textContent = reminder ? `\u2713 ${formatTornTime(reminder.at)}` : "Remind me";
+    button.setAttribute("aria-pressed", reminder ? "true" : "false");
+    button.setAttribute("aria-label", reminder
+      ? `Reminder set for ${formatTornTime(reminder.at)}; tap to cancel`
+      : `Notify me ${asInt(settings.auctionReminderMinutes, DEFAULTS.auctionReminderMinutes)} minutes before this auction ends`);
+  }
+
+  function renderAuctionReminders() {
+    if (!nativeNotifyAvailable() || settings.auctionReminders === false) return 0;
+    let count = 0;
+    document.querySelectorAll(".items-list > li[id]").forEach((row) => {
+      if (!asInt(row.id, 0) || !parseAuctionEnd(row)) return;
+      renderAuctionReminderButton(row);
+      count += 1;
+    });
+    return count;
   }
 
   function startWatchlist() {
@@ -7714,6 +7958,9 @@
       showSettings,
       addWatchItem,
       ensureLauncher,
+      parseAuctionEnd,
+      renderAuctionReminders,
+      watchMayRun,
       updateLauncher,
       launcherActions,
       showToast,

@@ -6,6 +6,17 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.6.12] - 2026-10-25
+
+### Added
+
+- **Auction reminders (Torn PDA).** Every Auction House row, equipment included, gets a "Remind me" button beside its time left. A tap schedules a phone notification through PDA a few minutes before the auction ends (5 by default; set in Settings → Watchlist). The phone itself fires it, so it arrives even with PDA closed, and tapping it opens the Auction House. The end time comes from Torn's "Ends on" title (Torn time), with the row's timer as a fallback. A second tap cancels the reminder.
+- **Phone notifications for watchlist and undercut alerts (Torn PDA).** When an alert fires while Torn is not on screen, PDA posts a phone notification that opens the item when tapped. Each item has one notification slot (a repeat replaces it), and a shared log stops two tabs notifying the same alert within ten minutes. On screen, the in-page toast is used as before.
+
+### Changed
+
+- **Alerts keep checking in the background (Torn PDA, on by default).** Watchlist and undercut checks continue while PDA shows another screen or tab, or the browser is hidden, as long as PDA is running. They pause when the phone suspends or closes PDA; a userscript cannot run then. Only one tab checks at a time (a lease in shared storage), and a visible tab always takes over. The setting "Keep checking while PDA shows another screen or tab" turns this off.
+
 ## [0.6.11] - 2026-10-25
 
 ### Changed
