@@ -245,13 +245,14 @@
       ];
       // Browse cards are narrow: the chip carries the percentage and verdict
       // only; the full sentence is the accessible name.
+      // Only deals are marked: a grid of PASS chips buries the one card worth
+      // opening. "Under value" reads as good; a bare minus sign did not.
       if (visible?.browseChip) {
-        const chip = renderInlineHtml(visible,
-          `<span class="me-inline-primary">${discount}</span><span class="me-inline-status">${data.label}</span>${stale}`,
-          data.state
-        );
+        if (data.state !== "GREEN" && data.state !== "YELLOW") return renderInlineHtml(visible, "", "GREY", "me-hidden");
+        const under = `${Math.abs(data.discount * 100).toFixed(1)}% under`;
+        const chip = renderInlineHtml(visible, `<span class="me-inline-primary">${under}</span>${stale}`, data.state);
         chip?.setAttribute("role", "note");
-        chip?.setAttribute("aria-label", `Market Edge: ${discount} vs value, ${data.label}`);
+        chip?.setAttribute("aria-label", `Market Edge: ${under} Torn's value, ${data.label}`);
         return chip;
       }
       return renderInlineHtml(visible,

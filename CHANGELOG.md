@@ -6,6 +6,12 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.6.7] - 2026-10-25
+
+### Changed
+
+- **Browse grid marks only deals.** A screen of "PASS" chips buried the one card worth opening. Cards at or above Torn's value now carry no chip. Deals show "8.7% under" in amber (consider) or green (strong) on a tinted background, and the full verdict is the chip's accessible name. A minus sign no longer stands for "cheaper", which read as bad.
+
 ## [0.6.6] - 2026-10-24
 
 ### Fixed

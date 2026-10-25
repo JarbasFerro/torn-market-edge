@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.6.6
+// @version      0.6.7
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.6.6",
+    version: "0.6.7",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -4000,6 +4000,10 @@
     .me-browse-host { position:relative !important; }
     .me-inline-analysis.me-browse-chip { position:absolute !important; top:2px !important; left:2px !important; right:auto !important; bottom:auto !important; z-index:3 !important; display:inline-flex !important; flex-wrap:nowrap !important; gap:3px !important; max-width:calc(100% - 4px) !important; margin:0 !important; padding:1px 4px !important; overflow:hidden !important; white-space:nowrap !important; text-overflow:ellipsis !important; font:700 10px/1.2 Arial, sans-serif !important; pointer-events:none !important; opacity:.95 !important; }
     .me-inline-analysis.me-browse-chip .me-inline-status { font-size:9px !important; letter-spacing:.02em !important; }
+    .me-inline-analysis.me-browse-chip.YELLOW { background:var(--me-warn-bg) !important; }
+    .me-inline-analysis.me-browse-chip.YELLOW .me-inline-primary { color:var(--me-warn) !important; }
+    .me-inline-analysis.me-browse-chip.GREEN { background:var(--me-good-bg) !important; }
+    .me-inline-analysis.me-browse-chip.GREEN .me-inline-primary { color:var(--me-good) !important; }
     .me-inline-analysis.me-hidden, div.me-inline-analysis.me-row-line.me-hidden { display:none !important; visibility:hidden !important; height:0 !important; min-height:0 !important; padding:0 !important; border:0 !important; }
     .me-inline-analysis.me-bazaar-add, .me-inline-analysis.me-has-cta { pointer-events:auto !important; }
 
@@ -4951,13 +4955,14 @@
       ];
       // Browse cards are narrow: the chip carries the percentage and verdict
       // only; the full sentence is the accessible name.
+      // Only deals are marked: a grid of PASS chips buries the one card worth
+      // opening. "Under value" reads as good; a bare minus sign did not.
       if (visible?.browseChip) {
-        const chip = renderInlineHtml(visible,
-          `<span class="me-inline-primary">${discount}</span><span class="me-inline-status">${data.label}</span>${stale}`,
-          data.state
-        );
+        if (data.state !== "GREEN" && data.state !== "YELLOW") return renderInlineHtml(visible, "", "GREY", "me-hidden");
+        const under = `${Math.abs(data.discount * 100).toFixed(1)}% under`;
+        const chip = renderInlineHtml(visible, `<span class="me-inline-primary">${under}</span>${stale}`, data.state);
         chip?.setAttribute("role", "note");
-        chip?.setAttribute("aria-label", `Market Edge: ${discount} vs value, ${data.label}`);
+        chip?.setAttribute("aria-label", `Market Edge: ${under} Torn's value, ${data.label}`);
         return chip;
       }
       return renderInlineHtml(visible,

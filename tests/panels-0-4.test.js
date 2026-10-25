@@ -230,11 +230,10 @@ run("Item Market browse grid is annotated against the official market value with
   for (let i = 0; i < 40 && env.document.querySelectorAll(".me-inline-analysis").length < 3; i += 1) await tick();
   const blocks = Array.from(env.document.querySelectorAll(".me-inline-analysis"));
   const byItem = Object.fromEntries(blocks.map((block) => [block.dataset.meItemId, block]));
-  assert.match(byItem["206"].textContent, /-4\.8%/);
-  assert.match(byItem["206"].textContent, /CONSIDER/);
-  assert.match(byItem["206"].getAttribute("aria-label"), /-4\.8% vs value, CONSIDER/);
-  assert.match(byItem["258"].textContent, /\+20\.0%/);
-  assert.match(byItem["258"].textContent, /PASS/);
+  assert.match(byItem["206"].textContent, /^4\.8% under$/);
+  assert.match(byItem["206"].getAttribute("aria-label"), /4\.8% under Torn's value, CONSIDER/);
+  assert.ok(byItem["258"].classList.contains("me-hidden"), "cards above value carry no chip");
+  assert.equal(byItem["258"].textContent, "");
   // Torn clips card names with an ellipsis and sizes the grid cells itself:
   // the chip overlays the card instead of entering the name/price flow.
   assert.ok(byItem["206"].classList.contains("me-browse-chip"), "browse result is an overlay chip");
