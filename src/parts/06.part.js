@@ -713,8 +713,9 @@
     }
     const itemId = getItemIdFromLocation();
     if (!itemId) {
-      setPanel(`<div class="me-kicker">Item Market</div><div class="me-note">Open a specific item to analyze its order book.${settings.browseOverlayEnabled !== false ? " Browse cards are compared with Torn's official market value as they appear." : ""}</div>${panelToolbarHtml()}`);
-      bindPanelToolbar();
+      // The browse grid speaks through its chips and the launcher's deal
+      // count; a panel that only says "open an item" would cover the grid.
+      removeFloatingUi();
       if (settings.browseOverlayEnabled !== false) scanBrowseGrid({ force: false });
       return;
     }

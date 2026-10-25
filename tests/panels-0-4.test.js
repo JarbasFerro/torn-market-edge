@@ -245,6 +245,27 @@ run("Item Market browse grid is annotated against the official market value with
   assert.equal(env.requests.filter((url) => /\/torn\/[\d,]+\/items/.test(url)).length, 1, "one metadata batch");
 });
 
+run("Browse grid opens no panel; the edge tab shows the deal count and remembers where it was dragged", async (t) => {
+  const env = boot(fixture("itemmarket-browse.html"), "https://www.torn.com/page.php?sid=ItemMarket#/market/view=category&categoryName=Drugs");
+  t.after(env.close);
+  const tab = env.ME.ensureLauncher();
+  await env.ME.renderItemMarket();
+  for (let i = 0; i < 40 && !tab.querySelector(".me-launcher-badge"); i += 1) await tick();
+  assert.equal(env.document.querySelector("#market-edge-root"), null, "no panel over the grid");
+  assert.equal(tab.querySelector(".me-launcher-badge").textContent, "1", "one deal (Xanax) on the page");
+  assert.match(tab.getAttribute("aria-label"), /1 deal on this page/);
+  // Drag 120px down: stored as a share of the viewport, and no menu opens.
+  const fire = (type, y) => tab.dispatchEvent(new env.window.MouseEvent(type, { clientY: y, bubbles: true }));
+  fire("pointerdown", 300); fire("pointermove", 360); fire("pointermove", 420); fire("pointerup", 420);
+  tab.click();
+  assert.equal(env.document.querySelector(".me-launcher-menu"), null, "a drag is not a tap");
+  assert.ok(Number(env.ME.Store.get("marketEdge.launcherTop.v1", 0)) > 0, "position remembered");
+  await tick(450);
+  tab.click();
+  assert.ok(env.document.querySelector(".me-launcher-menu"), "a tap opens the menu");
+  assert.equal(tab.getAttribute("aria-expanded"), "true");
+});
+
 run("Own listings workbench fills Torn's price field on the manage page and persists pricing rules", async (t) => {
   const env = boot(fixture("itemmarket-manage.html"), "https://www.torn.com/page.php?sid=ItemMarket#/market/view=manage");
   t.after(env.close);

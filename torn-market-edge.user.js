@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.6.8
+// @version      0.6.9
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.6.8",
+    version: "0.6.9",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -122,6 +122,7 @@
     playerId: "marketEdge.playerId",
     keyInfo: "marketEdge.keyInfo.v1",
     panelState: "marketEdge.panelState.v1",
+    launcherTop: "marketEdge.launcherTop.v1",
     watchlist: "marketEdge.watchlist.v1",
     pointsMarket: "marketEdge.pointsMarket.v1",
     auctionSalesPrefix: "marketEdge.auctionSales.v1.",
@@ -4102,13 +4103,19 @@
     .me-pill.YELLOW { color:var(--me-warn); border-color:var(--me-warn); }
     .me-pill.RED { color:var(--me-bad); border-color:var(--me-bad); }
     .me-inline-input { width:110px; min-height:var(--me-tap); padding:4px 6px; border:1px solid var(--me-border); border-radius:4px; background:var(--me-bg-2); color:var(--me-fg); font-size:var(--me-fs-meta); }
-    .me-launcher { position:fixed; left:10px; bottom:10px; z-index:999997; min-height:var(--me-tap); min-width:var(--me-tap); padding:6px 12px; border-radius:20px; border:1px solid var(--me-border); background:var(--me-bg); color:var(--me-fg); font:800 var(--me-fs-meta)/1 Arial, sans-serif; cursor:pointer; box-shadow:var(--me-shadow); touch-action:manipulation; }
+    .me-launcher { position:fixed; right:0; left:auto; top:42%; bottom:auto; z-index:999997; display:flex; align-items:center; justify-content:center; width:28px; min-width:28px; height:64px; min-height:64px; margin:0 env(safe-area-inset-right, 0px) 0 0; padding:0; border:1px solid var(--me-border); border-right:0; border-radius:8px 0 0 8px; background:var(--me-bg); color:var(--me-muted); font:800 10px/1 Arial, sans-serif; letter-spacing:.14em; cursor:pointer; box-shadow:var(--me-shadow); touch-action:none; opacity:.94; -webkit-user-select:none; user-select:none; }
+    .me-launcher::before { content:""; position:absolute; top:-8px; bottom:-8px; left:-14px; right:0; }
+    .me-launcher .me-launcher-label { writing-mode:vertical-rl; pointer-events:none; }
+    .me-launcher:hover, .me-launcher:focus-visible, .me-launcher[aria-expanded="true"], .me-launcher.me-dragging { color:var(--me-fg); background:var(--me-bg-2); outline:none; opacity:1; }
+    .me-launcher-badge { position:absolute; top:-7px; left:-9px; min-width:18px; height:18px; padding:0 4px; border-radius:9px; background:var(--me-good); color:#0d1a10; font:800 10px/18px Arial, sans-serif; letter-spacing:0; text-align:center; pointer-events:none; box-shadow:var(--me-shadow); }
+    .me-launcher-menu { position:fixed; right:calc(34px + env(safe-area-inset-right, 0px)); top:30%; z-index:999999; max-width:min(300px, calc(100vw - 48px)); }
     .me-toast-host { position:fixed; left:10px; bottom:56px; z-index:999999; display:flex; flex-direction:column; gap:6px; max-width:min(380px, calc(100vw - 20px)); }
     .me-toast { background:var(--me-bg); border:1px solid var(--me-good); border-radius:6px; padding:8px 10px; color:var(--me-fg); font:var(--me-fs)/1.4 Arial, sans-serif; box-shadow:var(--me-shadow); }
     .me-toast a { color:var(--me-good); font-weight:700; }\n    .me-toast .me-toast-remove-sell { display:inline-block; margin-left:6px; border:0; background:transparent; font:inherit; color:var(--me-bad); text-decoration:underline; cursor:pointer; padding:0; }
     .me-toast .me-toast-close { float:right; border:0; background:transparent; font:inherit; display:inline-flex; align-items:center; justify-content:center; min-width:var(--me-tap); min-height:var(--me-tap); margin:-6px -6px 0 8px; cursor:pointer; color:var(--me-muted); font-weight:700; border-radius:6px; }
     .me-toast .me-toast-close:hover { background:var(--me-btn); }
     .me-launcher-menu { border-color:var(--me-border); }
+    .me-launcher-menu .me-actions { flex-direction:column; align-items:stretch; }
     .me-workbench-cell { white-space:nowrap; }
     .me-workbench-cell .me-inline-input { width:78px; font-size:var(--me-fs-small); padding:2px 3px; margin-left:3px; }
     .me-workbench-cell .me-rule-mode { width:104px; }
@@ -5440,8 +5447,9 @@
     }
     const itemId = getItemIdFromLocation();
     if (!itemId) {
-      setPanel(`<div class="me-kicker">Item Market</div><div class="me-note">Open a specific item to analyze its order book.${settings.browseOverlayEnabled !== false ? " Browse cards are compared with Torn's official market value as they appear." : ""}</div>${panelToolbarHtml()}`);
-      bindPanelToolbar();
+      // The browse grid speaks through its chips and the launcher's deal
+      // count; a panel that only says "open an item" would cover the grid.
+      removeFloatingUi();
       if (settings.browseOverlayEnabled !== false) scanBrowseGrid({ force: false });
       return;
     }
@@ -5986,6 +5994,12 @@
   // market value from one batched metadata request. No order books.
   let browseScanRunning = false;
 
+  function updateBrowseBadge() {
+    const browsing = detectSurface() === "itemmarket" && !getItemIdFromLocation();
+    const deals = browsing ? document.querySelectorAll(".me-inline-analysis.me-browse-chip.GREEN, .me-inline-analysis.me-browse-chip.YELLOW").length : 0;
+    setLauncherBadge(deals);
+  }
+
   async function scanBrowseGrid({ force = false } = {}) {
     if (browseScanRunning || !pageVisible() || !Store.apiKey()) return;
     if (detectSurface() !== "itemmarket" || getItemIdFromLocation()) return;
@@ -6019,6 +6033,7 @@
       log("Browse grid overlay failed", error.message);
     } finally {
       browseScanRunning = false;
+      updateBrowseBadge();
     }
   }
 
@@ -7056,27 +7071,61 @@
   // ---------------------------------------------------------------------------
 
   let launcher = null;
+  let launcherSuppressClick = false;
 
-  function ensureLauncher() {
-    if (launcher?.isConnected) return launcher;
-    launcher = document.createElement("button");
-    launcher.type = "button";
-    launcher.className = "me-launcher";
-    launcher.textContent = "ME";
-    launcher.title = "Market Edge";
-    launcher.addEventListener("click", () => {
-      const existing = document.querySelector(".me-launcher-menu");
-      if (existing) {
-        existing.remove();
-        return;
-      }
-      const menu = document.createElement("div");
-      menu.className = "me-toast me-launcher-menu";
-      menu.style.position = "fixed";
-      menu.style.left = "10px";
-      menu.style.bottom = "44px";
-      menu.style.zIndex = "999999";
-      menu.innerHTML = `<div class="me-actions" style="margin:0">
+  // The launcher is a slim tab on the right edge, out of the way of Torn's
+  // rows and Torn PDA's bottom bar. It can be dragged up or down; the spot is
+  // kept as a share of the viewport height so it survives rotation.
+  const LAUNCHER_DEFAULT_RATIO = 0.42;
+  const LAUNCHER_TOP_MARGIN = 56;
+  const LAUNCHER_BOTTOM_MARGIN = 104;
+
+  function clampLauncherTop(top) {
+    const height = launcher?.offsetHeight || 64;
+    const viewport = window.innerHeight || 640;
+    const max = Math.max(LAUNCHER_TOP_MARGIN, viewport - height - LAUNCHER_BOTTOM_MARGIN);
+    return Math.round(clamp(top, LAUNCHER_TOP_MARGIN, max));
+  }
+
+  function placeLauncher(top = null) {
+    if (!launcher) return;
+    const viewport = window.innerHeight || 640;
+    const ratio = Number(Store.get(STORAGE_KEYS.launcherTop, LAUNCHER_DEFAULT_RATIO));
+    const wanted = top === null ? (Number.isFinite(ratio) ? ratio : LAUNCHER_DEFAULT_RATIO) * viewport : top;
+    launcher.style.top = `${clampLauncherTop(wanted)}px`;
+  }
+
+  // Deals on the Item Market browse grid, shown on the tab instead of
+  // opening a panel that has nothing else to say.
+  function setLauncherBadge(count) {
+    if (!launcher?.isConnected) return;
+    let badge = launcher.querySelector(".me-launcher-badge");
+    if (!count) {
+      badge?.remove();
+      launcher.setAttribute("aria-label", "Market Edge menu");
+      return;
+    }
+    if (!badge) {
+      badge = document.createElement("span");
+      badge.className = "me-launcher-badge";
+      badge.setAttribute("aria-hidden", "true");
+      launcher.appendChild(badge);
+    }
+    badge.textContent = String(count);
+    launcher.setAttribute("aria-label", `Market Edge menu, ${count} deal${count === 1 ? "" : "s"} on this page`);
+  }
+
+  function openLauncherMenu() {
+    const existing = document.querySelector(".me-launcher-menu");
+    if (existing) {
+      existing.remove();
+      launcher?.setAttribute("aria-expanded", "false");
+      return;
+    }
+    const menu = document.createElement("div");
+    menu.className = "me-toast me-launcher-menu";
+    menu.setAttribute("role", "menu");
+    menu.innerHTML = `<div class="me-actions" style="margin:0">
         <button class="me-btn" data-action="settings" type="button">Settings</button>
         <button class="me-btn" data-action="analyze" type="button">Analyze page</button>
         <button class="me-btn" data-action="listings" type="button">My listings</button>
@@ -7086,23 +7135,86 @@
         <button class="me-btn" data-action="travel" type="button">Travel</button>
         <button class="me-btn" data-action="fill" type="button">Fill all prices</button>
       </div>`;
-      menu.querySelectorAll("[data-action]").forEach((button) => {
-        button.addEventListener("click", () => {
-          menu.remove();
-          const action = button.dataset.action;
-          if (action === "settings") showSettings();
-          else if (action === "analyze") analyzeCurrentPage();
-          else if (action === "listings") renderOwnListingsPanel();
-          else if (action === "watchlist") renderWatchlistPanel();
-          else if (action === "portfolio") renderPortfolioPanel();
-          else if (action === "shops") renderShopRunsPanel();
-          else if (action === "travel") renderTravelPlanPanel();
-          else if (action === "fill") fillAllVisiblePrices();
-        });
+    menu.querySelectorAll("[data-action]").forEach((button) => {
+      button.addEventListener("click", () => {
+        menu.remove();
+        launcher?.setAttribute("aria-expanded", "false");
+        const action = button.dataset.action;
+        if (action === "settings") showSettings();
+        else if (action === "analyze") analyzeCurrentPage();
+        else if (action === "listings") renderOwnListingsPanel();
+        else if (action === "watchlist") renderWatchlistPanel();
+        else if (action === "portfolio") renderPortfolioPanel();
+        else if (action === "shops") renderShopRunsPanel();
+        else if (action === "travel") renderTravelPlanPanel();
+        else if (action === "fill") fillAllVisiblePrices();
       });
-      document.body.appendChild(menu);
     });
+    document.body.appendChild(menu);
+    launcher?.setAttribute("aria-expanded", "true");
+    // Beside the tab, vertically centred on it and kept inside the viewport.
+    try {
+      const tab = launcher.getBoundingClientRect();
+      const height = menu.getBoundingClientRect().height || 0;
+      const viewport = window.innerHeight || 640;
+      const top = clamp(tab.top + tab.height / 2 - height / 2, 8, Math.max(8, viewport - height - 8));
+      menu.style.top = `${Math.round(top)}px`;
+    } catch {
+      // CSS default placement stays.
+    }
+    menu.querySelector("button")?.focus?.();
+  }
+
+  function ensureLauncher() {
+    if (launcher?.isConnected) return launcher;
+    launcher = document.createElement("button");
+    launcher.type = "button";
+    launcher.className = "me-launcher";
+    launcher.innerHTML = `<span class="me-launcher-label">ME</span>`;
+    launcher.setAttribute("aria-label", "Market Edge menu");
+    launcher.setAttribute("aria-haspopup", "menu");
+    launcher.setAttribute("aria-expanded", "false");
+
+    // Vertical drag. A press that moves less than 8px is a tap.
+    let drag = null;
+    launcher.addEventListener("pointerdown", (event) => {
+      drag = { startY: event.clientY, startTop: launcher.getBoundingClientRect().top, moved: false, id: event.pointerId };
+    });
+    launcher.addEventListener("pointermove", (event) => {
+      if (!drag) return;
+      const dy = event.clientY - drag.startY;
+      if (!drag.moved && Math.abs(dy) < 8) return;
+      if (!drag.moved) {
+        drag.moved = true;
+        launcher.classList.add("me-dragging");
+        try { launcher.setPointerCapture?.(drag.id); } catch { /* not capturable */ }
+      }
+      event.preventDefault?.();
+      placeLauncher(drag.startTop + dy);
+    });
+    const endDrag = () => {
+      if (drag?.moved) {
+        const top = parseFloat(launcher.style.top) || 0;
+        Store.set(STORAGE_KEYS.launcherTop, Math.round((top / (window.innerHeight || 640)) * 1000) / 1000);
+        launcherSuppressClick = true;
+        setTimeout(() => { launcherSuppressClick = false; }, 400);
+      }
+      launcher.classList.remove("me-dragging");
+      drag = null;
+    };
+    launcher.addEventListener("pointerup", endDrag);
+    launcher.addEventListener("pointercancel", endDrag);
+    launcher.addEventListener("click", (event) => {
+      if (launcherSuppressClick) {
+        launcherSuppressClick = false;
+        event.preventDefault();
+        return;
+      }
+      openLauncherMenu();
+    });
+    window.addEventListener("resize", () => placeLauncher(), { passive: true });
     document.body.appendChild(launcher);
+    placeLauncher();
     return launcher;
   }
 

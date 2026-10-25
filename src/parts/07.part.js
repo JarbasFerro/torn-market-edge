@@ -108,6 +108,12 @@
   // market value from one batched metadata request. No order books.
   let browseScanRunning = false;
 
+  function updateBrowseBadge() {
+    const browsing = detectSurface() === "itemmarket" && !getItemIdFromLocation();
+    const deals = browsing ? document.querySelectorAll(".me-inline-analysis.me-browse-chip.GREEN, .me-inline-analysis.me-browse-chip.YELLOW").length : 0;
+    setLauncherBadge(deals);
+  }
+
   async function scanBrowseGrid({ force = false } = {}) {
     if (browseScanRunning || !pageVisible() || !Store.apiKey()) return;
     if (detectSurface() !== "itemmarket" || getItemIdFromLocation()) return;
@@ -141,6 +147,7 @@
       log("Browse grid overlay failed", error.message);
     } finally {
       browseScanRunning = false;
+      updateBrowseBadge();
     }
   }
 
@@ -1178,27 +1185,61 @@
   // ---------------------------------------------------------------------------
 
   let launcher = null;
+  let launcherSuppressClick = false;
 
-  function ensureLauncher() {
-    if (launcher?.isConnected) return launcher;
-    launcher = document.createElement("button");
-    launcher.type = "button";
-    launcher.className = "me-launcher";
-    launcher.textContent = "ME";
-    launcher.title = "Market Edge";
-    launcher.addEventListener("click", () => {
-      const existing = document.querySelector(".me-launcher-menu");
-      if (existing) {
-        existing.remove();
-        return;
-      }
-      const menu = document.createElement("div");
-      menu.className = "me-toast me-launcher-menu";
-      menu.style.position = "fixed";
-      menu.style.left = "10px";
-      menu.style.bottom = "44px";
-      menu.style.zIndex = "999999";
-      menu.innerHTML = `<div class="me-actions" style="margin:0">
+  // The launcher is a slim tab on the right edge, out of the way of Torn's
+  // rows and Torn PDA's bottom bar. It can be dragged up or down; the spot is
+  // kept as a share of the viewport height so it survives rotation.
+  const LAUNCHER_DEFAULT_RATIO = 0.42;
+  const LAUNCHER_TOP_MARGIN = 56;
+  const LAUNCHER_BOTTOM_MARGIN = 104;
+
+  function clampLauncherTop(top) {
+    const height = launcher?.offsetHeight || 64;
+    const viewport = window.innerHeight || 640;
+    const max = Math.max(LAUNCHER_TOP_MARGIN, viewport - height - LAUNCHER_BOTTOM_MARGIN);
+    return Math.round(clamp(top, LAUNCHER_TOP_MARGIN, max));
+  }
+
+  function placeLauncher(top = null) {
+    if (!launcher) return;
+    const viewport = window.innerHeight || 640;
+    const ratio = Number(Store.get(STORAGE_KEYS.launcherTop, LAUNCHER_DEFAULT_RATIO));
+    const wanted = top === null ? (Number.isFinite(ratio) ? ratio : LAUNCHER_DEFAULT_RATIO) * viewport : top;
+    launcher.style.top = `${clampLauncherTop(wanted)}px`;
+  }
+
+  // Deals on the Item Market browse grid, shown on the tab instead of
+  // opening a panel that has nothing else to say.
+  function setLauncherBadge(count) {
+    if (!launcher?.isConnected) return;
+    let badge = launcher.querySelector(".me-launcher-badge");
+    if (!count) {
+      badge?.remove();
+      launcher.setAttribute("aria-label", "Market Edge menu");
+      return;
+    }
+    if (!badge) {
+      badge = document.createElement("span");
+      badge.className = "me-launcher-badge";
+      badge.setAttribute("aria-hidden", "true");
+      launcher.appendChild(badge);
+    }
+    badge.textContent = String(count);
+    launcher.setAttribute("aria-label", `Market Edge menu, ${count} deal${count === 1 ? "" : "s"} on this page`);
+  }
+
+  function openLauncherMenu() {
+    const existing = document.querySelector(".me-launcher-menu");
+    if (existing) {
+      existing.remove();
+      launcher?.setAttribute("aria-expanded", "false");
+      return;
+    }
+    const menu = document.createElement("div");
+    menu.className = "me-toast me-launcher-menu";
+    menu.setAttribute("role", "menu");
+    menu.innerHTML = `<div class="me-actions" style="margin:0">
         <button class="me-btn" data-action="settings" type="button">Settings</button>
         <button class="me-btn" data-action="analyze" type="button">Analyze page</button>
         <button class="me-btn" data-action="listings" type="button">My listings</button>
@@ -1208,23 +1249,86 @@
         <button class="me-btn" data-action="travel" type="button">Travel</button>
         <button class="me-btn" data-action="fill" type="button">Fill all prices</button>
       </div>`;
-      menu.querySelectorAll("[data-action]").forEach((button) => {
-        button.addEventListener("click", () => {
-          menu.remove();
-          const action = button.dataset.action;
-          if (action === "settings") showSettings();
-          else if (action === "analyze") analyzeCurrentPage();
-          else if (action === "listings") renderOwnListingsPanel();
-          else if (action === "watchlist") renderWatchlistPanel();
-          else if (action === "portfolio") renderPortfolioPanel();
-          else if (action === "shops") renderShopRunsPanel();
-          else if (action === "travel") renderTravelPlanPanel();
-          else if (action === "fill") fillAllVisiblePrices();
-        });
+    menu.querySelectorAll("[data-action]").forEach((button) => {
+      button.addEventListener("click", () => {
+        menu.remove();
+        launcher?.setAttribute("aria-expanded", "false");
+        const action = button.dataset.action;
+        if (action === "settings") showSettings();
+        else if (action === "analyze") analyzeCurrentPage();
+        else if (action === "listings") renderOwnListingsPanel();
+        else if (action === "watchlist") renderWatchlistPanel();
+        else if (action === "portfolio") renderPortfolioPanel();
+        else if (action === "shops") renderShopRunsPanel();
+        else if (action === "travel") renderTravelPlanPanel();
+        else if (action === "fill") fillAllVisiblePrices();
       });
-      document.body.appendChild(menu);
     });
+    document.body.appendChild(menu);
+    launcher?.setAttribute("aria-expanded", "true");
+    // Beside the tab, vertically centred on it and kept inside the viewport.
+    try {
+      const tab = launcher.getBoundingClientRect();
+      const height = menu.getBoundingClientRect().height || 0;
+      const viewport = window.innerHeight || 640;
+      const top = clamp(tab.top + tab.height / 2 - height / 2, 8, Math.max(8, viewport - height - 8));
+      menu.style.top = `${Math.round(top)}px`;
+    } catch {
+      // CSS default placement stays.
+    }
+    menu.querySelector("button")?.focus?.();
+  }
+
+  function ensureLauncher() {
+    if (launcher?.isConnected) return launcher;
+    launcher = document.createElement("button");
+    launcher.type = "button";
+    launcher.className = "me-launcher";
+    launcher.innerHTML = `<span class="me-launcher-label">ME</span>`;
+    launcher.setAttribute("aria-label", "Market Edge menu");
+    launcher.setAttribute("aria-haspopup", "menu");
+    launcher.setAttribute("aria-expanded", "false");
+
+    // Vertical drag. A press that moves less than 8px is a tap.
+    let drag = null;
+    launcher.addEventListener("pointerdown", (event) => {
+      drag = { startY: event.clientY, startTop: launcher.getBoundingClientRect().top, moved: false, id: event.pointerId };
+    });
+    launcher.addEventListener("pointermove", (event) => {
+      if (!drag) return;
+      const dy = event.clientY - drag.startY;
+      if (!drag.moved && Math.abs(dy) < 8) return;
+      if (!drag.moved) {
+        drag.moved = true;
+        launcher.classList.add("me-dragging");
+        try { launcher.setPointerCapture?.(drag.id); } catch { /* not capturable */ }
+      }
+      event.preventDefault?.();
+      placeLauncher(drag.startTop + dy);
+    });
+    const endDrag = () => {
+      if (drag?.moved) {
+        const top = parseFloat(launcher.style.top) || 0;
+        Store.set(STORAGE_KEYS.launcherTop, Math.round((top / (window.innerHeight || 640)) * 1000) / 1000);
+        launcherSuppressClick = true;
+        setTimeout(() => { launcherSuppressClick = false; }, 400);
+      }
+      launcher.classList.remove("me-dragging");
+      drag = null;
+    };
+    launcher.addEventListener("pointerup", endDrag);
+    launcher.addEventListener("pointercancel", endDrag);
+    launcher.addEventListener("click", (event) => {
+      if (launcherSuppressClick) {
+        launcherSuppressClick = false;
+        event.preventDefault();
+        return;
+      }
+      openLauncherMenu();
+    });
+    window.addEventListener("resize", () => placeLauncher(), { passive: true });
     document.body.appendChild(launcher);
+    placeLauncher();
     return launcher;
   }
 

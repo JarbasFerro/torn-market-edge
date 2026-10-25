@@ -6,6 +6,13 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.6.9] - 2026-10-25
+
+### Changed
+
+- **The launcher is a slim tab on the right edge.** The round "ME" button in the bottom-left corner sat on top of the last row's controls and next to Torn PDA's bottom bar. It is now a 28 × 64px tab on the right edge (with a larger invisible touch area), kept clear of the top of the page, the bottom bar and the device's safe area. Drag it up or down to move it: the spot is remembered as a share of the screen height, and a drag never opens the menu. A tap opens the menu beside the tab, one full-width button per line.
+- **The browse grid opens no panel.** The Item Market browse panel only said "open an item" and covered about 100px of the grid. On the browse grid the chips speak for themselves, and the tab shows a green count of the deals on the page.
+
 ## [0.6.8] - 2026-10-25
 
 ### Changed
