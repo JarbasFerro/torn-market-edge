@@ -1422,7 +1422,251 @@
     return count;
   }
 
+  // ---------------------------------------------------------------------------
+  // Foreign run timer: when to leave Torn to land just before a foreign
+  // restock. Opt-in, because the stock comes from YATA (yata.yt), a
+  // third-party service; the request carries no API key and no player data.
+  // ---------------------------------------------------------------------------
+
+  const FOREIGN_RUN_POLL_MS = 120000;
+  const FOREIGN_RUN_NOTIFY_ID = 900; // 0-999 is free (see notificationId)
+  let foreignRunTimer = null;
+  let foreignRunLastPollAt = 0;
+  let foreignRunRunning = false;
+  let yataCache = { at: 0, data: null };
+
+  function foreignRunKey() {
+    return `${settings.foreignRunCountry}:${asInt(settings.foreignRunItemId, 0)}`;
+  }
+
+  function foreignRunCountryName() {
+    return YATA_COUNTRIES[settings.foreignRunCountry] || "abroad";
+  }
+
+  // Units one trip needs: the stock is "short" below this.
+  function foreignRunThreshold() {
+    return Math.max(1, asInt(settings.tripUnits, 0) || asInt(Store.get(STORAGE_KEYS.lastTripCapacity, 0), 0) || asInt(settings.travelCapacity, 0) || 1);
+  }
+
+  function foreignStockLogs() {
+    const stored = Store.get(STORAGE_KEYS.foreignStockLog, {});
+    return stored && typeof stored === "object" ? stored : {};
+  }
+
+  async function loadYataExport({ maxAgeMs = 60000 } = {}) {
+    if (yataCache.data && Date.now() - yataCache.at < maxAgeMs) return yataCache.data;
+    // No headers: the Torn API key is never sent to a third party.
+    const response = await transportGet(YATA_EXPORT_URL, {});
+    if (response.status < 200 || response.status >= 300) throw new Error(`YATA answered HTTP ${response.status}.`);
+    let payload;
+    try {
+      payload = JSON.parse(response.responseText || "{}");
+    } catch {
+      throw new Error("YATA sent a response that is not JSON.");
+    }
+    const data = normalizeYataExport(payload);
+    if (!Object.keys(data).length) throw new Error("YATA returned no foreign stock.");
+    yataCache = { at: Date.now(), data };
+    return data;
+  }
+
+  function foreignRunPrediction(log = foreignStockLogs()[foreignRunKey()]) {
+    return predictForeignRun({
+      log,
+      nowSec: Math.floor(Date.now() / 1000),
+      oneWayMinutes: flightMinutes(foreignRunCountryName(), settings.travelType),
+      leadMinutes: asInt(settings.foreignRunLeadMinutes, DEFAULTS.foreignRunLeadMinutes),
+      threshold: foreignRunThreshold()
+    });
+  }
+
+  async function foreignRunTick({ force = false } = {}) {
+    if (!settings.foreignRunEnabled || foreignRunRunning) return null;
+    if (!force && Date.now() - foreignRunLastPollAt < FOREIGN_RUN_POLL_MS) return null;
+    if (!force && !watchMayRun()) return null;
+    foreignRunLastPollAt = Date.now();
+    foreignRunRunning = true;
+    try {
+      const data = await loadYataExport({ maxAgeMs: force ? 0 : 60000 });
+      const country = data[settings.foreignRunCountry];
+      const itemId = asInt(settings.foreignRunItemId, 0);
+      const item = country?.items?.[itemId];
+      if (!country || !item) {
+        recordRuntime("foreign-run", `${itemId} not sold in ${foreignRunCountryName()} per YATA`);
+        return null;
+      }
+      const logs = foreignStockLogs();
+      const key = foreignRunKey();
+      const next = recordStockObservation(logs[key], { at: country.update, quantity: item.quantity }, { threshold: foreignRunThreshold() });
+      next.name = item.name;
+      next.cost = item.cost;
+      logs[key] = next;
+      Store.set(STORAGE_KEYS.foreignStockLog, logs);
+      const prediction = foreignRunPrediction(next);
+      await foreignRunNotify(prediction, next);
+      if (ui.currentPanel === "run" && ui.root?.isConnected) renderForeignRunPanel({ refresh: false });
+      return prediction;
+    } catch (error) {
+      if (!error?.marketEdgeCanceled) log("Foreign run check failed", error.message);
+      if (ui.currentPanel === "run" && ui.root?.isConnected) renderForeignRunPanel({ refresh: false, error: error.message });
+      return null;
+    } finally {
+      foreignRunRunning = false;
+    }
+  }
+
+  // PDA: the phone itself fires a notification at the departure time, even
+  // with PDA closed; rescheduled whenever the plan moves by a minute or more.
+  // "Leave now" is told once per restock cycle: a toast on screen, else the
+  // phone (unless the scheduled notification has just fired for it).
+  async function foreignRunNotify(prediction, log) {
+    const notice = Store.get(STORAGE_KEYS.foreignRunNotice, {}) || {};
+    const name = log?.name || "your item";
+    const country = foreignRunCountryName();
+    const flight = TRAVEL_TYPE_LABELS[settings.travelType] || "Standard flight";
+    let changed = false;
+    if (prediction.status === "wait" && nativeNotifyAvailable() && Math.abs(asInt(notice.scheduledLeaveAt, 0) - prediction.leaveAt) >= 60) {
+      const ok = await nativeNotify({
+        id: FOREIGN_RUN_NOTIFY_ID,
+        title: `Leave for ${country} now: ${name}`,
+        subtitle: `${flight} lands ${formatTornTime(prediction.landsAt * 1000)}, earliest restock ${formatTornTime(prediction.earliest * 1000)}. Tap to open Travel.`,
+        url: "https://www.torn.com/page.php?sid=travel",
+        at: prediction.leaveAt * 1000
+      });
+      if (ok) {
+        notice.scheduledLeaveAt = prediction.leaveAt;
+        changed = true;
+      }
+    }
+    if (prediction.status === "go-now") {
+      const cycle = String(prediction.reason === "in-stock" ? `stock:${prediction.lastRestock?.to}` : `restock:${prediction.earliest}`);
+      if (notice.goNowCycle !== cycle) {
+        notice.goNowCycle = cycle;
+        changed = true;
+        const why = prediction.reason === "in-stock"
+          ? `${asInt(prediction.quantity, 0).toLocaleString("en-US")} in stock and it usually lasts until after you land.`
+          : `Earliest restock ${formatTornTime(prediction.earliest * 1000)}; you land ${formatTornTime(prediction.landsAt * 1000)}.`;
+        if (pageVisible()) {
+          showToast(`<strong>Leave for ${escapeHtml(country)} now</strong> for ${escapeHtml(name)}. ${escapeHtml(why)} <a href="https://www.torn.com/page.php?sid=travel">Travel</a>`, { timeoutMs: 30000 });
+        } else {
+          const justFired = Math.abs(Math.floor(Date.now() / 1000) - asInt(notice.scheduledLeaveAt, 0)) < 600;
+          if (!justFired) {
+            nativeNotify({ id: FOREIGN_RUN_NOTIFY_ID, title: `Leave for ${country} now: ${name}`, subtitle: why, url: "https://www.torn.com/page.php?sid=travel" });
+          }
+        }
+      }
+    }
+    if (changed) Store.set(STORAGE_KEYS.foreignRunNotice, notice);
+  }
+
+  function startForeignRun() {
+    if (foreignRunTimer) clearInterval(foreignRunTimer);
+    foreignRunTimer = null;
+    if (!settings.foreignRunEnabled) {
+      if (Store.get(STORAGE_KEYS.foreignRunNotice, null)) {
+        cancelNativeNotification(FOREIGN_RUN_NOTIFY_ID);
+        Store.delete(STORAGE_KEYS.foreignRunNotice);
+      }
+      return;
+    }
+    foreignRunLastPollAt = 0;
+    foreignRunTimer = setInterval(() => { foreignRunTick().catch(() => {}); }, 30000);
+    setTimeout(() => { foreignRunTick().catch(() => {}); }, 3000);
+  }
+
+  function formatDuration(seconds) {
+    if (!Number.isFinite(seconds)) return "unknown";
+    return formatMinutes(Math.max(0, Math.round(seconds / 60)));
+  }
+
+  function formatLocalTime(ms) {
+    try {
+      return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    } catch {
+      return "";
+    }
+  }
+
+  function foreignRunHeadlineHtml(prediction, log) {
+    const now = Math.floor(Date.now() / 1000);
+    const at = (sec) => `${formatTornTime(sec * 1000)}`;
+    const flight = TRAVEL_TYPE_LABELS[settings.travelType] || "Standard flight";
+    if (prediction.status === "no-flight") return `<div class="me-plan-buy">No flight time known for ${escapeHtml(foreignRunCountryName())}</div>`;
+    if (prediction.status === "learning") {
+      return `<div class="me-plan-buy">Learning the restock times</div><div class="me-plan-meta">${prediction.restocksSeen} restock${prediction.restocksSeen === 1 ? "" : "s"} seen. Two in a row, each caught within 30 min, give the first departure time. Keep Torn open (in Torn PDA, background checks keep going); it checks every 2 minutes.</div>`;
+    }
+    if (prediction.status === "go-now") {
+      const why = prediction.reason === "in-stock"
+        ? `${asInt(prediction.quantity, 0).toLocaleString("en-US")} in stock; a restock usually lasts ${formatDuration(prediction.lastingSec)}, and you land at ${at(prediction.landsAt)}.`
+        : `${flight} lands ${at(prediction.landsAt)}; earliest restock ${at(prediction.earliest)}${prediction.reason === "overdue" ? " (overdue)" : ""}, typical ${at(prediction.typical)}. Wait in the shop if it is not there yet.`;
+      return `<div class="me-plan"><div class="me-plan-what"><div class="me-plan-buy">Leave now</div><div class="me-plan-meta">${escapeHtml(why)}</div></div></div>`;
+    }
+    return `<div class="me-plan"><div class="me-plan-what"><div class="me-plan-buy">Leave at ${at(prediction.leaveAt)}</div><div class="me-plan-meta">in ${formatDuration(prediction.leaveAt - now)} · your time ${escapeHtml(formatLocalTime(prediction.leaveAt * 1000))}</div><div class="me-plan-meta">${escapeHtml(flight)} lands ${at(prediction.landsAt)}, ${asInt(settings.foreignRunLeadMinutes, DEFAULTS.foreignRunLeadMinutes)} min before the earliest likely restock (${at(prediction.earliest)}; typical ${at(prediction.typical)}).</div></div></div>`;
+  }
+
+  function renderForeignRunPanel({ refresh = true, error = "" } = {}) {
+    ui.pinned = true;
+    ensureUi();
+    ui.currentPanel = "run";
+    if (!settings.foreignRunEnabled) {
+      setPanel(`
+        <div class="me-kicker">Foreign run timer</div>
+        <div class="me-note">Tells you when to leave Torn so you land just before a foreign restock, for example Xanax in South Africa, with a phone notification in Torn PDA.</div>
+        <div class="me-note">Foreign stock is not in the official API. This uses the public export of YATA (yata.yt), the same crowd-reported source Torn PDA shows. Turning it on sends one request to yata.yt every 2 minutes while Torn is open. It carries no API key and no player data, but YATA sees your IP address like any website.</div>
+        <div class="me-actions"><button class="me-btn me-run-enable" type="button">Turn on (Xanax, South Africa)</button><button class="me-btn me-run-settings" type="button">Choose item and country</button></div>
+        ${panelToolbarHtml()}`, "RUN");
+      ui.body.querySelector(".me-run-enable")?.addEventListener("click", () => {
+        Store.saveSettings({ ...settings, foreignRunEnabled: true });
+        settings = Store.settings();
+        startForeignRun();
+        renderForeignRunPanel();
+      });
+      ui.body.querySelector(".me-run-settings")?.addEventListener("click", () => showSettings());
+      bindPanelToolbar();
+      return;
+    }
+    const log = foreignStockLogs()[foreignRunKey()] || null;
+    const prediction = foreignRunPrediction(log);
+    const name = log?.name || `Item ${asInt(settings.foreignRunItemId, 0)}`;
+    const threshold = foreignRunThreshold();
+    const chips = [
+      log?.lastQty !== null && log?.lastQty !== undefined ? `${asInt(log.lastQty, 0).toLocaleString("en-US")} in stock` : "stock not read yet",
+      log?.cost ? `${formatMoney(log.cost)} each` : "",
+      log?.cost ? `${threshold} for ${formatMoney(log.cost * threshold)}` : "",
+      log?.lastAt ? `report ${formatAge(Math.floor(Date.now() / 1000) - log.lastAt)} ago` : "",
+      `${TRAVEL_TYPE_LABELS[settings.travelType] || "Standard flight"} · ${formatDuration(prediction.flightSec)} one way`
+    ].filter(Boolean);
+    const restocks = (log?.restocks || []).slice(-5).reverse();
+    const historyHtml = restocks.length ? `<div class="me-card-section"><div class="me-kicker">Recent restocks (TCT)</div>${restocks.map((event) => `<div class="me-alt-row"><span class="me-alt-name">${formatTornTime(event.from * 1000).replace(" TCT", "")}–${formatTornTime(event.to * 1000)}</span><span class="me-alt-note">${event.to - event.from > 1800 ? "rough (report gap)" : `${asInt(event.quantity, 0).toLocaleString("en-US")} units`}</span></div>`).join("")}</div>` : "";
+    const stats = [
+      prediction.shortestGapSec ? `shortest gap ${formatDuration(prediction.shortestGapSec)}` : "",
+      prediction.typicalGapSec ? `typical ${formatDuration(prediction.typicalGapSec)}` : "",
+      Number.isFinite(prediction.lastingSec) ? `stock lasts ~${formatDuration(prediction.lastingSec)}` : "",
+      prediction.gapsUsed ? `from ${prediction.gapsUsed} gap${prediction.gapsUsed === 1 ? "" : "s"}` : ""
+    ].filter(Boolean).join(" · ");
+    const notice = Store.get(STORAGE_KEYS.foreignRunNotice, {}) || {};
+    const notifyNote = nativeNotifyAvailable()
+      ? (prediction.status === "wait" && asInt(notice.scheduledLeaveAt, 0) === prediction.leaveAt ? `Phone notification set for ${formatTornTime(prediction.leaveAt * 1000)}.` : "A phone notification is set once there is a departure time.")
+      : "Outside Torn PDA there is no phone notification: a toast appears while a Torn tab is open.";
+    setPanel(`
+      <div class="me-kicker">Foreign run · ${escapeHtml(name)} · ${escapeHtml(foreignRunCountryName())}</div>
+      ${foreignRunHeadlineHtml(prediction, log)}
+      <div class="me-chips">${chips.map((chip) => `<span class="me-chip">${escapeHtml(chip)}</span>`).join("")}</div>
+      ${error ? `<div class="me-error">${escapeHtml(error)}</div>` : ""}
+      ${stats ? `<div class="me-note">${escapeHtml(stats)}</div>` : ""}
+      ${historyHtml}
+      <div class="me-note">${escapeHtml(notifyNote)}</div>
+      <div class="me-actions"><button class="me-btn me-run-refresh" type="button">Check now</button><button class="me-btn me-run-settings" type="button">Item, country, flight</button></div>
+      ${panelToolbarHtml()}
+      <div class="me-note">Stock from YATA (yata.yt), reported by travellers. Restocks have been random since Patch #413, so the plan aims at the earliest likely restock: the last restock plus the shortest gap seen. Landing early means waiting in the shop; landing late can mean an empty shelf. "Short" means under ${threshold} units, one trip.</div>`, "RUN");
+    ui.body.querySelector(".me-run-refresh")?.addEventListener("click", () => { foreignRunTick({ force: true }); });
+    ui.body.querySelector(".me-run-settings")?.addEventListener("click", () => showSettings());
+    bindPanelToolbar();
+    if (refresh) foreignRunTick({ force: !log }).catch(() => {});
+  }
+
   function startWatchlist() {
+    startForeignRun();
     if (watchTimer) clearInterval(watchTimer);
     watchTimer = null;
     if (!watchNeeded()) return;
@@ -1570,6 +1814,7 @@
     portfolio: { label: "Portfolio", hint: "What your whole inventory is worth", run: () => renderPortfolioPanel() },
     shops: { label: "Shop runs", hint: "This shop's stock ranked by resale profit", run: () => renderShopRunsPanel() },
     travel: { label: "Travel plan", hint: "Countries ranked by profit per trip", run: () => renderTravelPlanPanel() },
+    run: { label: "Foreign run", hint: "When to leave so you land just before a restock", run: () => renderForeignRunPanel() },
     fill: { label: "Fill all prices", hint: "Write every suggested price; saving stays manual", run: () => fillAllVisiblePrices() },
     analyze: { label: "Refresh prices", hint: "Re-read the page and fetch fresh order books", run: () => analyzeCurrentPage() },
     settings: { label: "Settings", hint: "", run: () => showSettings() }
@@ -1581,6 +1826,8 @@
     if (surface === "inventory") ids.push("portfolio");
     if (surface === "cityshop") ids.push("shops");
     if (surface === "travel") ids.push("travel");
+    // Once turned on, the run timer is one tap away on every supported page.
+    if (surface === "travel" || settings.foreignRunEnabled) ids.push("run");
     // Sell forms have their own Fill all bar; the menu entry is for the
     // manage views (own Bazaar, own Item Market listings) without one.
     const manageView = surface === "bazaar" || surface === "imsell" || (surface === "itemmarket" && ownListingsRouteActive());
@@ -2001,6 +2248,7 @@
         GM_registerMenuCommand("Market Edge portfolio", () => renderPortfolioPanel());
         GM_registerMenuCommand("Market Edge city shop runs", () => renderShopRunsPanel());
         GM_registerMenuCommand("Market Edge travel plan", () => renderTravelPlanPanel());
+        GM_registerMenuCommand("Market Edge foreign run timer", () => renderForeignRunPanel());
         GM_registerMenuCommand("Market Edge fill all visible prices", () => fillAllVisiblePrices());
         return;
       } catch {
@@ -2062,6 +2310,10 @@
       syncSellWatchWithApi,
       normalizeOwnBazaar,
       fillAllVisiblePrices,
+      foreignRunTick,
+      foreignRunPrediction,
+      renderForeignRunPanel,
+      loadYataExport,
       collectOwnListingRows,
       collectSellFormRows,
       fillOwnListingOnPage,

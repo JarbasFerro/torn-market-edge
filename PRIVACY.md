@@ -4,9 +4,15 @@ Torn Market Edge is designed to operate locally in the user's browser.
 
 ## Data sent over the network
 
-The userscript sends requests only to Torn's official API host:
+The userscript sends requests to Torn's official API host:
 
 `https://api.torn.com`
+
+and, only when you turn on the **Foreign run timer** (off by default), to YATA's public foreign-stock export:
+
+`https://yata.yt/api/v1/travel/export/`
+
+The YATA request is a plain GET with no headers: it carries no API key, no player id and no other player data. YATA, like any website, sees your IP address and the time of the request. While the timer is on, Market Edge requests it at most once every two minutes while Torn is open (in Torn PDA, also while background checks are allowed). Turning the timer off stops the requests.
 
 The API key is transmitted to Torn using the API authorization header. It is not intentionally transmitted to GitHub, Greasy Fork, the script author, analytics providers, advertising services, or any other third party.
 
@@ -21,13 +27,14 @@ All requests go to `https://api.torn.com/v2` with the `comment=market-edge` para
 - `/torn/{ids}/items` (item metadata and official market prices);
 - `/key/info` (access level, when you test the key);
 - `/user/basic` (fallback player identification);
-- `/user/itemmarket` (your own listings, only when you open that panel and only with a Limited key);
+- `/user/itemmarket` (your own listings: when you open that panel, and on sell pages to pace prices to what you already have listed; only with a Limited key);
+- `/user/bazaar` (your own Bazaar: undercut alerts, and on sell pages and abroad to pace prices to what you already have listed);
 - `/user/inventory` (your inventory, only when you open the Portfolio panel and only with a Minimal or higher key);
 - `/torn/cityshops` (city shop stock and prices, Shops panel and city shop pages);
 - `/torn/items` (item catalog for foreign shop prices, Travel plan, at most once per six hours);
 - `/market/{id}/auctionhouse` (ended auctions, evidence for stackable items on the Item Market and Auction House pages).
 
-Inside Torn PDA the requests go through PDA's own HTTP bridge to the same host. When neither the userscript bridge nor PDA is available, the browser's `fetch` is used, still only to `api.torn.com`.
+Inside Torn PDA the requests go through PDA's own HTTP bridge to the same hosts. When neither the userscript bridge nor PDA is available, the browser's `fetch` is used, still only to these hosts.
 
 ## Data stored locally
 
@@ -47,7 +54,9 @@ Market Edge may persist the following in userscript-manager storage (inside Torn
 - per-item pricing rules for the repricing workbench;
 - your own listed prices (item, venue, price, quantity) recorded for undercut alerts;
 - a compact copy of your inventory (item ids, amounts, uids) for the Portfolio panel;
-- city shop stock and the compact shop catalog (item ids, names, market and shop prices).
+- city shop stock and the compact shop catalog (item ids, names, market and shop prices);
+- the trip capacity last read on an abroad shop page;
+- with the Foreign run timer on: the stock reports for the chosen item and country (times and quantities of restocks and sell-outs, up to 40 of each) and the departure time of the scheduled phone notification.
 
 This data is used only to provide the script's market-analysis functionality, reduce unnecessary Torn API requests, and improve loading performance. Your own Item Market listings are fetched on demand and are not persisted.
 

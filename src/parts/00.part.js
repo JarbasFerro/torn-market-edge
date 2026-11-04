@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.7.3
+// @version      0.8.0
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -15,6 +15,7 @@
 // @grant        GM_addStyle
 // @grant        GM_registerMenuCommand
 // @connect      api.torn.com
+// @connect      yata.yt
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -31,7 +32,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.7.3",
+    version: "0.8.0",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -101,6 +102,12 @@
   });
   const TRAVEL_TYPE_FACTORS = Object.freeze({ standard: 1, airstrip: 0.7, jet: 0.5, business: 0.3 });
   const TRAVEL_TYPE_LABELS = Object.freeze({ standard: "Standard flight", airstrip: "Airstrip", jet: "Private jet (WLT)", business: "Business class" });
+  // YATA foreign-stock export country codes (opt-in foreign run timer).
+  const YATA_COUNTRIES = Object.freeze({
+    mex: "Mexico", cay: "Cayman Islands", can: "Canada", haw: "Hawaii", uni: "United Kingdom", arg: "Argentina",
+    swi: "Switzerland", jap: "Japan", chi: "China", uae: "UAE", sou: "South Africa"
+  });
+  const YATA_EXPORT_URL = "https://yata.yt/api/v1/travel/export/";
   // Torn's body[data-country] slugs on the abroad page.
   const COUNTRY_SLUGS = Object.freeze({
     "mexico": "Mexico", "cayman-islands": "Cayman Islands", "cayman": "Cayman Islands", "canada": "Canada", "hawaii": "Hawaii",
@@ -135,7 +142,9 @@
     cityShops: "marketEdge.cityShops.v1",
     foreignCatalog: "marketEdge.foreignCatalog.v1",
     itemMetaPrefix: "marketEdge.itemMeta.v2.",
-    lastTripCapacity: "marketEdge.lastTripCapacity.v1"
+    lastTripCapacity: "marketEdge.lastTripCapacity.v1",
+    foreignStockLog: "marketEdge.foreignStockLog.v1",
+    foreignRunNotice: "marketEdge.foreignRunNotice.v1"
   });
 
   const DEFAULTS = Object.freeze({
@@ -171,6 +180,10 @@
     portfolioRefineRequests: PORTFOLIO_REFINE_DEFAULT,
     auctionEvidenceEnabled: true,
     browseOverlayEnabled: true,
+    foreignRunEnabled: false,
+    foreignRunItemId: 206,
+    foreignRunCountry: "sou",
+    foreignRunLeadMinutes: 5,
     developerMode: false
   });
 

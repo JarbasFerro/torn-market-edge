@@ -282,7 +282,7 @@ run("Launcher menu offers only what helps on the current page, each with a one-l
   assert.equal(menuFor("https://www.torn.com/page.php?sid=ItemMarket#/market/view=category&categoryName=Drugs"), "listings,watchlist,analyze,settings");
   assert.equal(menuFor("https://www.torn.com/item.php"), "portfolio,analyze,settings");
   assert.equal(menuFor("https://www.torn.com/shops.php?step=candy"), "shops,analyze,settings");
-  assert.equal(menuFor("https://www.torn.com/page.php?sid=travel"), "travel,analyze,settings");
+  assert.equal(menuFor("https://www.torn.com/page.php?sid=travel"), "travel,run,analyze,settings");
   assert.equal(menuFor("https://www.torn.com/bazaar.php#/manage"), "fill,analyze,settings");
   assert.equal(menuFor("https://www.torn.com/index.php"), "settings");
 

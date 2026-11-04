@@ -55,6 +55,7 @@ The valuation model covers fungible/stackable items only. Weapons and armor are 
 - Item Market browse-grid overlay versus Torn's official market value with no per-item requests
 - Watchlist with in-page alerts, polled only while a Torn tab is visible (the timer only runs while there is something to poll)
 - Every row line in plain words with a `?` toggle that explains the price (cheapest listing, Torn's value, net after fee, rule in force, order-book age); no tooltips, so it works in Torn PDA
+- Foreign run timer (opt-in, YATA foreign stock): learns when an item restocks abroad, e.g. Xanax in South Africa, and tells you when to leave Torn to land just before the earliest likely restock, with a Torn PDA phone notification at that time
 - Trip pacing: with more than one trip's worth listed or in hand, fill prices and the abroad resale price move from the floor down toward the conservative anchor (reached at three trips), so a large stack sells instead of waiting
 - Underprice guard: sell suggestions below an NPC shop price or under half of Torn's value are flagged before you fill
 - One visual system that follows Torn's light and dark theme, 12/11/10 px type with tabular figures, 32 px controls (40 px on touch screens)

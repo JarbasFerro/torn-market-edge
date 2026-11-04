@@ -241,7 +241,9 @@ test("source guards for v0.4.0 endpoints and safeguards", () => {
   assert.match(source, /\/user\/inventory\?limit=/);
   assert.match(source, /\/torn\/cityshops/);
   assert.match(source, /@connect\s+api\.torn\.com/);
-  assert.equal((source.match(/@connect/g) || []).length, 1, "only api.torn.com is contacted");
+  assert.equal((source.match(/@connect/g) || []).length, 2, "only api.torn.com and the opt-in YATA export are contacted");
+  assert.match(source, /@connect\s+yata\.yt\n/);
+  assert.match(source, /transportGet\(YATA_EXPORT_URL, \{\}\)/, "the YATA request carries no headers, so never the API key");
   assert.doesNotMatch(source, /\.submit\(\)/);
   assert.doesNotMatch(source, /location\.reload/);
 });

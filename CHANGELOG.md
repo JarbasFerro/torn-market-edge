@@ -6,6 +6,23 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-04
+
+### Added
+
+- **Foreign run timer (opt-in).** It tells you when to leave Torn so you land just before a foreign restock, for example Xanax in South Africa. Foreign stock is not in the official API, so the timer reads YATA's public export (the crowd-reported source Torn PDA also shows), once every two minutes while Torn is open. The request carries no API key and no player data. The timer is off until you turn it on, from the "Foreign run" panel or Settings → Foreign run timer.
+  - It logs each restock and sell-out of the chosen item as a window between two stock reports. Only windows narrower than 30 minutes count.
+  - Restocks are random since Patch #413, so it aims at the **earliest likely restock**: the last restock plus the shortest gap seen between two restocks. It then subtracts your one-way flight (from "Travel type": airstrip to South Africa is 3 h 28 min) and a lead time (5 minutes by default). Landing early means waiting in the shop; landing late can mean an empty shelf.
+  - "Leave now" appears when that time has passed, or when the item is in stock and usually lasts longer than your flight.
+  - Until it has seen two restocks it says it is learning.
+  - In Torn PDA the phone fires a notification at the departure time, even with PDA closed. Elsewhere a toast appears in an open Torn tab.
+  - The panel shows stock, unit cost, the cash one trip needs, recent restocks, the shortest and typical gaps, and how long stock lasts.
+- "Foreign run" in the launcher menu: on the travel page, and on every supported page once the timer is on.
+
+### Changed
+
+- `PRIVACY.md` lists the opt-in YATA request, plus the `/user/bazaar` and `/user/itemmarket` reads that pace sell prices (v0.7.2).
+
 ## [0.7.3] - 2026-11-04
 
 ### Fixed

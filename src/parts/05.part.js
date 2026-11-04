@@ -208,6 +208,16 @@
           </div>
         `)}
 
+        ${settingsSectionHtml("Foreign run timer", current.foreignRunEnabled ? `on \u00b7 ${YATA_COUNTRIES[current.foreignRunCountry] || ""}` : "off \u00b7 uses YATA", `
+          <div class="me-form-grid">
+            ${f("foreignRunEnabled", "Time my runs with YATA foreign stock (yata.yt)", { type: "checkbox", help: "Third-party data: one request to yata.yt every 2 minutes while Torn is open, with no API key and no player data. YATA sees your IP address. Off by default." })}
+            <label for="me-set-foreignRunCountry">Country</label><select id="me-set-foreignRunCountry" data-setting="foreignRunCountry">${Object.entries(YATA_COUNTRIES).map(([code, name]) => `<option value="${code}" ${code === current.foreignRunCountry ? "selected" : ""}>${name}</option>`).join("")}</select>
+            ${f("foreignRunItemId", "Item ID (Xanax is 206)", { min: 1, step: 1 })}
+            ${f("foreignRunLeadMinutes", "Land this many minutes before the earliest likely restock", { min: 0, max: 60, step: 1 })}
+          </div>
+          <div class="me-form-help">Flight time comes from "Travel type" under Panels and travel.</div>
+        `)}
+
         ${settingsSectionHtml("Scanning and diagnostics", "advanced", `
           <div class="me-form-grid">
             ${f("scanMaxVisibleItems", "Rows priced per scan", { min: 1, max: 50, step: 1, help: "Rows further down the page are priced as they scroll into view." })}
@@ -366,6 +376,9 @@
       });
       next.watchlistIntervalSeconds = Math.max(WATCHLIST_MIN_INTERVAL_SEC, asInt(next.watchlistIntervalSeconds, DEFAULTS.watchlistIntervalSeconds));
       next.auctionReminderMinutes = clamp(asInt(next.auctionReminderMinutes, DEFAULTS.auctionReminderMinutes), 1, 120);
+      next.foreignRunItemId = Math.max(1, asInt(next.foreignRunItemId, DEFAULTS.foreignRunItemId));
+      next.foreignRunLeadMinutes = clamp(asInt(next.foreignRunLeadMinutes, DEFAULTS.foreignRunLeadMinutes), 0, 60);
+      if (!YATA_COUNTRIES[next.foreignRunCountry]) next.foreignRunCountry = DEFAULTS.foreignRunCountry;
       Store.setApiKey(backdrop.querySelector("#me-api-key").value);
       Store.saveSettings(next);
       settings = Store.settings();

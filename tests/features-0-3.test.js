@@ -313,7 +313,7 @@ test("v0.3.0 guards remain present in the assembled userscript", () => {
   assert.equal(clicks.length, checkboxClicks.length, "the only simulated click is the Bazaar max-quantity checkbox, inside the user's explicit fill tap");
   assert.doesNotMatch(source, /\.submit\(\)/, "the script must never submit forms");
   assert.doesNotMatch(source, /location\.reload/, "the script must never reload pages");
-  assert.doesNotMatch(source, /@connect[ \t]+(?!api\.torn\.com)\S/, "only api.torn.com may be connected");
+  assert.doesNotMatch(source, /@connect[ \t]+(?!api\.torn\.com\s|yata\.yt\s)\S/, "only api.torn.com and the opt-in YATA export may be connected");
 });
 
 // ---------------------------------------------------------------------------

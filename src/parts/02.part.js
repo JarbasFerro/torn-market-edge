@@ -625,6 +625,132 @@
     return rowListed ? Math.max(listed, row) : listed + row;
   }
 
+  // ---------------------------------------------------------------------------
+  // Foreign run timer (opt-in YATA foreign stock)
+  // ---------------------------------------------------------------------------
+
+  // YATA's public export: { stocks: { sou: { update, stocks: [{ id, name,
+  // quantity, cost }] } }, timestamp }. Returns { code: { country, update
+  // (seconds), items: { itemId: { name, quantity, cost } } } }.
+  function normalizeYataExport(payload) {
+    const out = {};
+    const stocks = payload?.stocks && typeof payload.stocks === "object" ? payload.stocks : {};
+    Object.entries(stocks).forEach(([code, entry]) => {
+      const country = YATA_COUNTRIES[code];
+      if (!country) return;
+      const items = {};
+      (Array.isArray(entry?.stocks) ? entry.stocks : []).forEach((row) => {
+        const itemId = asInt(row?.id, 0);
+        if (!itemId) return;
+        items[itemId] = { name: String(row?.name || `Item ${itemId}`), quantity: Math.max(0, asInt(row?.quantity, 0)), cost: Math.max(0, asInt(row?.cost, 0)) };
+      });
+      out[code] = { country, update: asInt(entry?.update, 0), items };
+    });
+    return out;
+  }
+
+  // Restock log for one item in one country, built from successive stock
+  // reports. "Short" means fewer units than one trip needs. A restock is a
+  // report going from short to enough; a sell-out the reverse. Each event is
+  // a bracket { from, to } (seconds): it happened after the previous report
+  // and by this one, so a long gap between reports gives a wide bracket.
+  const FOREIGN_LOG_MAX_EVENTS = 40;
+
+  function recordStockObservation(log, { at, quantity }, { threshold = 1 } = {}) {
+    const next = {
+      lastAt: asInt(log?.lastAt, 0),
+      lastQty: log?.lastQty === null || log?.lastQty === undefined ? null : asInt(log.lastQty, 0),
+      restocks: Array.isArray(log?.restocks) ? log.restocks.slice() : [],
+      sellouts: Array.isArray(log?.sellouts) ? log.sellouts.slice() : []
+    };
+    const time = asInt(at, 0);
+    if (!time || time <= next.lastAt) return next;
+    const qty = Math.max(0, asInt(quantity, 0));
+    const need = Math.max(1, asInt(threshold, 1));
+    if (next.lastQty !== null && next.lastAt) {
+      const wasShort = next.lastQty < need;
+      const isShort = qty < need;
+      if (wasShort && !isShort) next.restocks.push({ from: next.lastAt, to: time, quantity: qty });
+      if (!wasShort && isShort) next.sellouts.push({ from: next.lastAt, to: time });
+    }
+    next.lastAt = time;
+    next.lastQty = qty;
+    next.restocks = next.restocks.slice(-FOREIGN_LOG_MAX_EVENTS);
+    next.sellouts = next.sellouts.slice(-FOREIGN_LOG_MAX_EVENTS);
+    return next;
+  }
+
+  function medianOf(values) {
+    const sorted = values.slice().sort((a, b) => a - b);
+    if (!sorted.length) return null;
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
+  }
+
+  // When to leave Torn to land just before the next restock. Restocks are
+  // randomised (Patch #413), so the plan aims at the EARLIEST likely one:
+  // the last restock's earliest moment plus the shortest gap seen between
+  // two restocks. Landing early only means waiting in the shop; landing late
+  // can mean an empty shelf. Only brackets narrower than precisionSec count.
+  // Times are seconds; flight and lead are minutes.
+  function predictForeignRun({ log, nowSec, oneWayMinutes, leadMinutes = 5, threshold = 1, precisionSec = 1800, recent = 10 }) {
+    const restocks = Array.isArray(log?.restocks) ? log.restocks : [];
+    const sellouts = Array.isArray(log?.sellouts) ? log.sellouts : [];
+    const precise = (event) => event && event.to - event.from <= precisionSec;
+    const mid = (event) => Math.round((event.from + event.to) / 2);
+    const gaps = [];
+    for (let index = 1; index < restocks.length; index += 1) {
+      const previous = restocks[index - 1];
+      const current = restocks[index];
+      if (!precise(previous) || !precise(current)) continue;
+      const shortest = current.from - previous.to;
+      if (shortest > 0) gaps.push({ shortest, typical: mid(current) - mid(previous) });
+    }
+    const recentGaps = gaps.slice(-recent);
+    // How long a restock lasts: from the restock (latest moment) to the last
+    // report that still had enough, a lower bound.
+    const lasting = [];
+    sellouts.forEach((sellout) => {
+      if (!precise(sellout)) return;
+      const restock = restocks.filter((event) => event.to <= sellout.from).pop();
+      if (restock && precise(restock)) lasting.push(sellout.from - restock.to);
+    });
+    const lastingSec = medianOf(lasting.slice(-recent));
+    const inStock = log?.lastQty !== null && log?.lastQty !== undefined && asInt(log.lastQty, 0) >= Math.max(1, asInt(threshold, 1));
+    const flightSec = Math.max(0, Math.round((Number(oneWayMinutes) || 0) * 60));
+    const leadSec = Math.max(0, Math.round((Number(leadMinutes) || 0) * 60));
+    const last = restocks[restocks.length - 1] || null;
+    const base = {
+      restocksSeen: restocks.length,
+      gapsUsed: recentGaps.length,
+      shortestGapSec: recentGaps.length ? Math.min(...recentGaps.map((gap) => gap.shortest)) : null,
+      typicalGapSec: medianOf(recentGaps.map((gap) => gap.typical)),
+      lastingSec,
+      lastRestock: last,
+      inStock,
+      quantity: log?.lastQty ?? null,
+      reportedAt: asInt(log?.lastAt, 0) || null,
+      flightSec
+    };
+    if (!flightSec) return { ...base, status: "no-flight" };
+
+    // In stock now and it usually lasts long enough to still be there on
+    // landing: go now.
+    if (inStock && last && Number.isFinite(lastingSec)) {
+      const goneBy = last.to + lastingSec;
+      if (nowSec + flightSec <= goneBy) return { ...base, status: "go-now", reason: "in-stock", landsAt: nowSec + flightSec, goneBy };
+    }
+    if (!recentGaps.length || !last) return { ...base, status: "learning" };
+
+    const earliest = last.from + base.shortestGapSec;
+    const typical = mid(last) + base.typicalGapSec;
+    const leaveAt = earliest - flightSec - leadSec;
+    if (leaveAt <= nowSec) {
+      return { ...base, status: "go-now", reason: earliest <= nowSec ? "overdue" : "window", earliest, typical, leaveAt, landsAt: nowSec + flightSec };
+    }
+    return { ...base, status: "wait", earliest, typical, leaveAt, landsAt: leaveAt + flightSec };
+  }
+
   // Sell-side watch: the player's own listed prices, alerted when the Item
   // Market floor drops below them.
   function normalizeSellWatch(raw) {
@@ -748,6 +874,9 @@
     tripUnitsFor,
     pacedFloorSuggestion,
     sellBacklog,
+    normalizeYataExport,
+    recordStockObservation,
+    predictForeignRun,
     normalizeSellWatch,
     evaluateSellWatch,
     summarizePortfolio
