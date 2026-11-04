@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.7.2
+// @version      0.7.3
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.7.2",
+    version: "0.7.3",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -5171,8 +5171,18 @@
     fillBarTimer = setTimeout(renderFillBar, 120);
   }
 
+  // A strip counts only while its row is on screen. Torn's Bazaar add form
+  // keeps every category's rows in the page and hides the inactive tabs, so
+  // strips priced on another tab stay connected but have no box. Measured
+  // fresh, not from the layout-pass cache, because a tab switch changes it.
+  function fillStripShown(node) {
+    if (!node?.isConnected || typeof node.getBoundingClientRect !== "function") return false;
+    const rect = node.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
   function renderFillBar() {
-    const strips = Array.from(document.querySelectorAll(".me-inline-analysis.me-fill-strip")).filter((node) => node.isConnected && node.meFillInfo);
+    const strips = Array.from(document.querySelectorAll(".me-inline-analysis.me-fill-strip")).filter((node) => node.meFillInfo && fillStripShown(node));
     let bar = document.querySelector(".me-fill-bar");
     if (strips.length < 2) {
       bar?.remove();
@@ -6246,6 +6256,9 @@
 
     await Promise.allSettled(tasks);
     if (surface === "inventory") restoreScrollAfterTabSwitch();
+    // A category switch shows rows priced earlier without re-rendering them:
+    // recount the fill bar for what is on screen now.
+    if (surface === "bazaar" || surface === "imsell") scheduleFillBar();
     const annotated = items.filter((visible) => visible.card?.querySelector?.(`.me-inline-analysis[data-me-item-id="${visible.itemId}"]`)?.dataset?.meComplete === "1").length;
     recordRuntime("scan", `${surface}: ${annotated}/${items.length} rows`, { surface, rows: items.length, annotated, ms: Date.now() - scanStartedAt });
   }
@@ -6441,6 +6454,8 @@
     let filled = 0;
     document.querySelectorAll(".me-inline-analysis .me-bazaar-fill-btn").forEach((button) => {
       if (!(button instanceof HTMLElement) || !button.isConnected || typeof button.meFill !== "function") return;
+      // Never write into a row the player cannot see (another category tab).
+      if (!fillStripShown(button.closest(".me-inline-analysis"))) return;
       button.meFill();
       filled += 1;
     });

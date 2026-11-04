@@ -286,8 +286,18 @@
     fillBarTimer = setTimeout(renderFillBar, 120);
   }
 
+  // A strip counts only while its row is on screen. Torn's Bazaar add form
+  // keeps every category's rows in the page and hides the inactive tabs, so
+  // strips priced on another tab stay connected but have no box. Measured
+  // fresh, not from the layout-pass cache, because a tab switch changes it.
+  function fillStripShown(node) {
+    if (!node?.isConnected || typeof node.getBoundingClientRect !== "function") return false;
+    const rect = node.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
   function renderFillBar() {
-    const strips = Array.from(document.querySelectorAll(".me-inline-analysis.me-fill-strip")).filter((node) => node.isConnected && node.meFillInfo);
+    const strips = Array.from(document.querySelectorAll(".me-inline-analysis.me-fill-strip")).filter((node) => node.meFillInfo && fillStripShown(node));
     let bar = document.querySelector(".me-fill-bar");
     if (strips.length < 2) {
       bar?.remove();

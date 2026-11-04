@@ -6,6 +6,12 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-11-04
+
+### Fixed
+
+- **"Fill all" no longer counts or fills rows on other category tabs.** Torn's Bazaar add form keeps every category's rows in the page and hides the inactive tabs. Strips priced on a tab you had opened earlier stayed counted, so the bar read "16 to fill of 17" with one plushie on screen, and "Fill all" would have written quantities and prices into the hidden rows, ready to be listed by Torn's "Add to Bazaar". The bar now counts only rows on screen, recounts after a category switch, and "Fill all" checks each row again at the moment it fills.
+
 ## [0.7.2] - 2026-11-04
 
 ### Added

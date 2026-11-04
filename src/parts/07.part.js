@@ -102,6 +102,9 @@
 
     await Promise.allSettled(tasks);
     if (surface === "inventory") restoreScrollAfterTabSwitch();
+    // A category switch shows rows priced earlier without re-rendering them:
+    // recount the fill bar for what is on screen now.
+    if (surface === "bazaar" || surface === "imsell") scheduleFillBar();
     const annotated = items.filter((visible) => visible.card?.querySelector?.(`.me-inline-analysis[data-me-item-id="${visible.itemId}"]`)?.dataset?.meComplete === "1").length;
     recordRuntime("scan", `${surface}: ${annotated}/${items.length} rows`, { surface, rows: items.length, annotated, ms: Date.now() - scanStartedAt });
   }
@@ -297,6 +300,8 @@
     let filled = 0;
     document.querySelectorAll(".me-inline-analysis .me-bazaar-fill-btn").forEach((button) => {
       if (!(button instanceof HTMLElement) || !button.isConnected || typeof button.meFill !== "function") return;
+      // Never write into a row the player cannot see (another category tab).
+      if (!fillStripShown(button.closest(".me-inline-analysis"))) return;
       button.meFill();
       filled += 1;
     });

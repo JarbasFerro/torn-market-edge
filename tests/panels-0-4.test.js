@@ -701,6 +701,27 @@ run("Fill all bar fills every row, overwriting typed prices, and Undo all restor
   assert.equal(priceOf(rows[1]).value, "5", "typed price back");
 });
 
+run("Rows on a hidden category tab are not counted by the fill bar and never filled by Fill all", async (t) => {
+  const env = boot(twoRowAddListing(), "https://www.torn.com/page.php?sid=ItemMarket#/addListing");
+  t.after(env.close);
+  const rows = Array.from(env.document.querySelectorAll(".itemRowWrapper___f6 .itemRow___g7"));
+  const priceOf = (row) => row.querySelector(".priceInputWrapper___k1 input:not([type='hidden'])");
+  await env.ME.scanVisibleSurface("imsell", { force: true });
+  for (let i = 0; i < 20 && !env.document.querySelector(".me-fill-bar .me-fill-bar-fill"); i += 1) await tick();
+  assert.match(env.document.querySelector(".me-fill-bar").textContent, /2 to fill of 2/);
+  // The player switches category: Torn hides the second row (no box) but
+  // keeps it, and its strip, in the page.
+  const noBox = () => ({ width: 0, height: 0, top: 0, bottom: 0, left: 0, right: 0, x: 0, y: 0 });
+  [rows[1], ...rows[1].querySelectorAll("*")].forEach((node) => { node.getBoundingClientRect = noBox; });
+  assert.ok(rows[1].querySelector(".me-inline-analysis.me-fill-strip"), "hidden row keeps its strip");
+  await env.ME.scanVisibleSurface("imsell", { force: true });
+  for (let i = 0; i < 20 && env.document.querySelector(".me-fill-bar"); i += 1) await tick();
+  assert.equal(env.document.querySelector(".me-fill-bar"), null, "one row on screen: no bar, not \"1 to fill of 2\"");
+  env.ME.fillAllVisiblePrices();
+  assert.equal(priceOf(rows[0]).value, "789999", "the visible row is filled");
+  assert.equal(priceOf(rows[1]).value, "", "the hidden row is never written");
+});
+
 run("Sell-side surfaces reuse a recent order book instead of refreshing it every scan", async (t) => {
   const env = boot(fixture("inventory-torn.html"), "https://www.torn.com/item.php#drugs-items");
   t.after(env.close);
