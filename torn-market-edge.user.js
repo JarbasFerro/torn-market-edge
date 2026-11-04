@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.7.0
+// @version      0.7.1
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.7.0",
+    version: "0.7.1",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -4967,7 +4967,10 @@
   function renderBazaarAddSuggestion(result) {
     const visible = result.visible;
     const source = result?.sellForm || result?.ownBazaar || {};
-    const target = source.target;
+    // The price the strip shows and writes is the rule-resolved fill (floor
+    // minus undercut by default), not the conservative anchor: the own-Bazaar
+    // result keeps the anchor in `target` for the repricing view.
+    const target = source.fill?.price || source.target;
     const stale = staleMarker(result);
     if (!Number.isFinite(target) || target <= 0) {
       return renderInlineHtml(

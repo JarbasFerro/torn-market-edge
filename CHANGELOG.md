@@ -6,6 +6,12 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-11-04
+
+### Fixed
+
+- **Adding items to your Bazaar now fills the Item Market floor minus your undercut.** The strip said "IM floor $32,475 − $1" but showed and wrote the lower conservative anchor ($29,934). Fill and Fill all now use the same floor-based price as the Item Market sell form, through your per-item pricing rule (a "hold anchor" rule still uses the anchor).
+
 ## [0.7.0] - 2026-10-25
 
 ### Added

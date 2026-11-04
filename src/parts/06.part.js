@@ -145,7 +145,10 @@
   function renderBazaarAddSuggestion(result) {
     const visible = result.visible;
     const source = result?.sellForm || result?.ownBazaar || {};
-    const target = source.target;
+    // The price the strip shows and writes is the rule-resolved fill (floor
+    // minus undercut by default), not the conservative anchor: the own-Bazaar
+    // result keeps the anchor in `target` for the repricing view.
+    const target = source.fill?.price || source.target;
     const stale = staleMarker(result);
     if (!Number.isFinite(target) || target <= 0) {
       return renderInlineHtml(

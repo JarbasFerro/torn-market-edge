@@ -406,7 +406,7 @@ run("Bazaar add form falls back to generic sell-form rows when Torn's structure 
   assert.ok(button);
   button.click();
   const inputs = Array.from(env.document.querySelectorAll(".fields___f1 input"));
-  assert.match(inputs[1].value, /^8[0-3]\d{4}$/, "price field (rightmost) is filled with the Bazaar target");
+  assert.equal(inputs[1].value, "789999", "price field (rightmost) is filled with the floor minus the undercut");
   assert.equal(inputs[0].value, "25", "quantity field is filled with the owned amount");
 });
 

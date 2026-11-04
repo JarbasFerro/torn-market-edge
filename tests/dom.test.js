@@ -221,3 +221,25 @@ run("Inline inventory result shows the museum set route", (t) => {
   assert.ok(block.querySelector(".me-why").classList.contains("me-open"));
 });
 
+
+run("Bazaar add strip fills the Item Market floor minus the undercut, not the anchor", (t) => {
+  const env = boot(fixture("bazaar-add.html"), "https://www.torn.com/bazaar.php#/add");
+  t.after(env.close);
+  const plushie = env.ME.collectBazaarAddItems().find((item) => item.itemId === 258);
+  // A thin floor well above the depth-weighted anchor: the strip must still
+  // show and write floor - $1, as its "IM floor ... - $1" label says.
+  const snapshot = {
+    itemId: 258, itemName: "Jaguar Plushie", averagePrice: 30000, cacheTimestamp: Math.floor(Date.now() / 1000),
+    listings: [{ price: 32475, quantity: 1 }, { price: 32500, quantity: 2 }, { price: 33000, quantity: 50 }],
+    lowestPrice: 32475, calculatedMarketAnchor: 29934,
+    depthMetrics: { listingCount: 3, top5Quantity: 53, top20Quantity: 53 }, supportedCommodity: true,
+  };
+  const history = { historicalFairValue: null, oneDay: { count: 0, volatility: null } };
+  const result = env.ME.resultForSurface("bazaar", plushie, snapshot, history, true, {});
+  assert.equal(result.ownBazaar.fill.price, 32474);
+  const block = env.ME.renderInlineResult("bazaar", result, true);
+  assert.match(block.querySelector(".me-fill-figures").textContent, /\$32,474/);
+  assert.equal(block.meFillInfo.target, 32474);
+  block.querySelector(".me-fill-main").click();
+  assert.equal(String(plushie.priceInput.value).replace(/\D/g, ""), "32474");
+});
