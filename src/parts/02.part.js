@@ -687,46 +687,72 @@
     return sorted.length % 2 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
   }
 
-  // When to leave Torn to land just before the next restock. Restocks are
-  // randomised (Patch #413), so the plan aims at the EARLIEST likely one:
-  // the last restock's earliest moment plus the shortest gap seen between
-  // two restocks. Landing early only means waiting in the shop; landing late
-  // can mean an empty shelf. Only brackets narrower than precisionSec count.
-  // Times are seconds; flight and lead are minutes.
+  // When to leave Torn to land just before a restock. Foreign shops restock
+  // a fairly steady time after they EMPTY (Torn PDA's "average restock time"
+  // measures the same thing), while the time between two restocks swings
+  // with how fast travellers buy the stock out. So the cycle is:
+  //   restock -> (stock lasts L) -> sell-out -> (empty for E) -> restock
+  // and the next restock is the last sell-out + E. When the flight is longer
+  // than that, the plan chains through further cycles, each adding L + E.
+  // It aims at the EARLIEST likely restock (shortest E and L seen): landing
+  // early means waiting in the shop, landing late an empty shelf. Only
+  // events caught within precisionSec count. Seconds; flight/lead minutes.
   function predictForeignRun({ log, nowSec, oneWayMinutes, leadMinutes = 5, threshold = 1, precisionSec = 1800, recent = 10 }) {
     const restocks = Array.isArray(log?.restocks) ? log.restocks : [];
     const sellouts = Array.isArray(log?.sellouts) ? log.sellouts : [];
     const precise = (event) => event && event.to - event.from <= precisionSec;
     const mid = (event) => Math.round((event.from + event.to) / 2);
-    const gaps = [];
-    for (let index = 1; index < restocks.length; index += 1) {
-      const previous = restocks[index - 1];
-      const current = restocks[index];
-      if (!precise(previous) || !precise(current)) continue;
-      const shortest = current.from - previous.to;
-      if (shortest > 0) gaps.push({ shortest, typical: mid(current) - mid(previous) });
-    }
-    const recentGaps = gaps.slice(-recent);
-    // How long a restock lasts: from the restock (latest moment) to the last
-    // report that still had enough, a lower bound.
-    const lasting = [];
-    sellouts.forEach((sellout) => {
-      if (!precise(sellout)) return;
-      const restock = restocks.filter((event) => event.to <= sellout.from).pop();
-      if (restock && precise(restock)) lasting.push(sellout.from - restock.to);
+    // Empty spells: a sell-out followed by the next restock.
+    const empties = [];
+    restocks.forEach((restock) => {
+      const sellout = sellouts.filter((event) => event.to <= restock.from).pop();
+      if (!sellout || !precise(sellout) || !precise(restock)) return;
+      const between = restocks.some((other) => other !== restock && other.from >= sellout.to && other.to <= restock.from);
+      if (between) return;
+      empties.push({ shortest: restock.from - sellout.to, typical: mid(restock) - mid(sellout), longest: restock.to - sellout.from });
     });
-    const lastingSec = medianOf(lasting.slice(-recent));
+    // Stock spells: a restock followed by the next sell-out.
+    const spells = [];
+    sellouts.forEach((sellout) => {
+      const restock = restocks.filter((event) => event.to <= sellout.from).pop();
+      if (!restock || !precise(sellout) || !precise(restock)) return;
+      spells.push({ shortest: sellout.from - restock.to, typical: mid(sellout) - mid(restock), longest: sellout.to - restock.from });
+    });
+    const recentEmpties = empties.slice(-recent).filter((spell) => spell.shortest >= 0);
+    const recentSpells = spells.slice(-recent).filter((spell) => spell.shortest >= 0);
+    const minOf = (rows, key) => (rows.length ? Math.min(...rows.map((row) => row[key])) : null);
+    const maxOf = (rows, key) => (rows.length ? Math.max(...rows.map((row) => row[key])) : null);
+    const emptyShortest = minOf(recentEmpties, "shortest");
+    const emptyTypical = medianOf(recentEmpties.map((row) => row.typical));
+    const emptyLongest = maxOf(recentEmpties, "longest");
+    const lastingShortest = minOf(recentSpells, "shortest");
+    const lastingTypical = medianOf(recentSpells.map((row) => row.typical));
+    const lastingLongest = maxOf(recentSpells, "longest");
+    // Torn PDA's reliability measure: share of empty spells within 20% of
+    // the average, once there are more than five.
+    let reliability = null;
+    if (recentEmpties.length > 5) {
+      const mean = recentEmpties.reduce((sum, row) => sum + row.typical, 0) / recentEmpties.length;
+      reliability = Math.round(recentEmpties.filter((row) => Math.abs(row.typical - mean) < mean * 0.2).length * 100 / recentEmpties.length);
+    }
+
     const inStock = log?.lastQty !== null && log?.lastQty !== undefined && asInt(log.lastQty, 0) >= Math.max(1, asInt(threshold, 1));
     const flightSec = Math.max(0, Math.round((Number(oneWayMinutes) || 0) * 60));
     const leadSec = Math.max(0, Math.round((Number(leadMinutes) || 0) * 60));
-    const last = restocks[restocks.length - 1] || null;
+    const lastRestock = restocks[restocks.length - 1] || null;
+    const lastSellout = sellouts[sellouts.length - 1] || null;
     const base = {
       restocksSeen: restocks.length,
-      gapsUsed: recentGaps.length,
-      shortestGapSec: recentGaps.length ? Math.min(...recentGaps.map((gap) => gap.shortest)) : null,
-      typicalGapSec: medianOf(recentGaps.map((gap) => gap.typical)),
-      lastingSec,
-      lastRestock: last,
+      emptySpells: recentEmpties.length,
+      stockSpells: recentSpells.length,
+      emptyShortestSec: emptyShortest,
+      emptyTypicalSec: emptyTypical,
+      lastingShortestSec: lastingShortest,
+      lastingTypicalSec: lastingTypical,
+      lastingLongestSec: lastingLongest,
+      reliability,
+      lastRestock,
+      lastSellout,
       inStock,
       quantity: log?.lastQty ?? null,
       reportedAt: asInt(log?.lastAt, 0) || null,
@@ -734,21 +760,47 @@
     };
     if (!flightSec) return { ...base, status: "no-flight" };
 
-    // In stock now and it usually lasts long enough to still be there on
-    // landing: go now.
-    if (inStock && last && Number.isFinite(lastingSec)) {
-      const goneBy = last.to + lastingSec;
-      if (nowSec + flightSec <= goneBy) return { ...base, status: "go-now", reason: "in-stock", landsAt: nowSec + flightSec, goneBy };
+    // In stock now and it usually lasts until after landing: go now.
+    if (inStock && lastRestock && Number.isFinite(lastingShortest)) {
+      const goneBy = lastRestock.to + lastingShortest;
+      if (nowSec + flightSec <= goneBy) return { ...base, status: "go-now", reason: "in-stock", landsAt: nowSec + flightSec, goneBy, cyclesAhead: 0 };
     }
-    if (!recentGaps.length || !last) return { ...base, status: "learning" };
+    if (!recentEmpties.length) return { ...base, status: "learning", need: "empty" };
 
-    const earliest = last.from + base.shortestGapSec;
-    const typical = mid(last) + base.typicalGapSec;
-    const leaveAt = earliest - flightSec - leadSec;
-    if (leaveAt <= nowSec) {
-      return { ...base, status: "go-now", reason: earliest <= nowSec ? "overdue" : "window", earliest, typical, leaveAt, landsAt: nowSec + flightSec };
+    // The first restock still to come, as an [earliest, typical, latest] range.
+    let restock;
+    if (!inStock && lastSellout && (!lastRestock || lastSellout.from >= lastRestock.to)) {
+      restock = { earliest: lastSellout.from + emptyShortest, typical: mid(lastSellout) + emptyTypical, latest: lastSellout.to + emptyLongest };
+    } else if (lastRestock && Number.isFinite(lastingShortest)) {
+      // In stock (or just restocked): first its sell-out, then the empty spell.
+      restock = {
+        earliest: lastRestock.from + lastingShortest + emptyShortest,
+        typical: mid(lastRestock) + lastingTypical + emptyTypical,
+        latest: lastRestock.to + lastingLongest + emptyLongest
+      };
+    } else {
+      return { ...base, status: "learning", need: "lasting" };
     }
-    return { ...base, status: "wait", earliest, typical, leaveAt, landsAt: leaveAt + flightSec };
+
+    // Walk forward until a restock can still be reached: depart before its
+    // earliest moment, or land before its earliest sell-out.
+    for (let cycles = 0; cycles < 12; cycles += 1) {
+      const leaveAt = restock.earliest - flightSec - leadSec;
+      const plan = { ...base, earliest: restock.earliest, typical: restock.typical, latest: restock.latest, cyclesAhead: cycles };
+      if (leaveAt > nowSec) return { ...plan, status: "wait", leaveAt, landsAt: leaveAt + flightSec };
+      const landsAt = nowSec + flightSec;
+      // Past the ideal departure: still worth going if you land before the
+      // typical sell-out of this restock; otherwise aim at the next one.
+      const soldOutBy = restock.typical + (Number.isFinite(lastingTypical) ? lastingTypical : 0);
+      if (landsAt <= soldOutBy) return { ...plan, status: "go-now", reason: restock.earliest <= nowSec ? "overdue" : "window", leaveAt, landsAt };
+      if (!Number.isFinite(lastingShortest)) return { ...base, status: "learning", need: "lasting" };
+      restock = {
+        earliest: restock.earliest + lastingShortest + emptyShortest,
+        typical: restock.typical + lastingTypical + emptyTypical,
+        latest: restock.latest + lastingLongest + emptyLongest
+      };
+    }
+    return { ...base, status: "learning", need: "cycles" };
   }
 
   // Sell-side watch: the player's own listed prices, alerted when the Item

@@ -6,6 +6,17 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-11-04
+
+### Fixed
+
+- **The foreign run timer predicts restocks from the sell-out, not from the previous restock.** A foreign shop restocks a fairly steady time after it empties: about two hours for South Africa Xanax, the figure Torn PDA shows as "average restock time". How fast travellers empty it varies (19 to 57 minutes on 2026-11-04), so the time between two restocks is not steady, and v0.8.0's restock-to-restock gap was the wrong anchor. The timer now:
+  - expects the next restock at the last sell-out plus the shortest empty spell seen;
+  - when your flight cannot reach that restock before it typically sells out, chains through the next cycle, adding the stock spell and the empty spell, and says so ("the restock after next");
+  - says "Leave now" when the ideal departure has just passed but you would still land before that restock's typical sell-out;
+  - shows the expected restock range (earliest, typical, latest), how long stock lasts, and a reliability rating (Torn PDA's measure: the share of empty spells within 20% of the average).
+- It now needs one sell-out followed by a restock, plus one restock followed by its sell-out, about one cycle of watching instead of two restocks.
+
 ## [0.8.0] - 2026-11-04
 
 ### Added

@@ -1544,7 +1544,7 @@
         notice.goNowCycle = cycle;
         changed = true;
         const why = prediction.reason === "in-stock"
-          ? `${asInt(prediction.quantity, 0).toLocaleString("en-US")} in stock and it usually lasts until after you land.`
+          ? `${asInt(prediction.quantity, 0).toLocaleString("en-US")} in stock, and it lasts until after you land.`
           : `Earliest restock ${formatTornTime(prediction.earliest * 1000)}; you land ${formatTornTime(prediction.landsAt * 1000)}.`;
         if (pageVisible()) {
           showToast(`<strong>Leave for ${escapeHtml(country)} now</strong> for ${escapeHtml(name)}. ${escapeHtml(why)} <a href="https://www.torn.com/page.php?sid=travel">Travel</a>`, { timeoutMs: 30000 });
@@ -1593,15 +1593,16 @@
     const flight = TRAVEL_TYPE_LABELS[settings.travelType] || "Standard flight";
     if (prediction.status === "no-flight") return `<div class="me-plan-buy">No flight time known for ${escapeHtml(foreignRunCountryName())}</div>`;
     if (prediction.status === "learning") {
-      return `<div class="me-plan-buy">Learning the restock times</div><div class="me-plan-meta">${prediction.restocksSeen} restock${prediction.restocksSeen === 1 ? "" : "s"} seen. Two in a row, each caught within 30 min, give the first departure time. Keep Torn open (in Torn PDA, background checks keep going); it checks every 2 minutes.</div>`;
+      const need = prediction.need === "lasting" ? "how long a restock lasts (a restock, then its sell-out)" : "one sell-out followed by the next restock";
+      return `<div class="me-plan-buy">Learning the restock times</div><div class="me-plan-meta">The first departure time needs ${need}, each caught within 30 min. Keep Torn open (in Torn PDA, background checks keep going); it checks every 2 minutes. ${prediction.restocksSeen} restock${prediction.restocksSeen === 1 ? "" : "s"} seen so far.</div>`;
     }
     if (prediction.status === "go-now") {
       const why = prediction.reason === "in-stock"
-        ? `${asInt(prediction.quantity, 0).toLocaleString("en-US")} in stock; a restock usually lasts ${formatDuration(prediction.lastingSec)}, and you land at ${at(prediction.landsAt)}.`
-        : `${flight} lands ${at(prediction.landsAt)}; earliest restock ${at(prediction.earliest)}${prediction.reason === "overdue" ? " (overdue)" : ""}, typical ${at(prediction.typical)}. Wait in the shop if it is not there yet.`;
+        ? `${asInt(prediction.quantity, 0).toLocaleString("en-US")} in stock; a restock lasts at least ${formatDuration(prediction.lastingShortestSec)}, and you land at ${at(prediction.landsAt)}.`
+        : `${flight} lands ${at(prediction.landsAt)}; restock expected ${at(prediction.earliest)} to ${at(prediction.latest)}${prediction.reason === "overdue" ? " (due now)" : ""}, typical ${at(prediction.typical)}. Wait in the shop if it is not there yet.`;
       return `<div class="me-plan"><div class="me-plan-what"><div class="me-plan-buy">Leave now</div><div class="me-plan-meta">${escapeHtml(why)}</div></div></div>`;
     }
-    return `<div class="me-plan"><div class="me-plan-what"><div class="me-plan-buy">Leave at ${at(prediction.leaveAt)}</div><div class="me-plan-meta">in ${formatDuration(prediction.leaveAt - now)} · your time ${escapeHtml(formatLocalTime(prediction.leaveAt * 1000))}</div><div class="me-plan-meta">${escapeHtml(flight)} lands ${at(prediction.landsAt)}, ${asInt(settings.foreignRunLeadMinutes, DEFAULTS.foreignRunLeadMinutes)} min before the earliest likely restock (${at(prediction.earliest)}; typical ${at(prediction.typical)}).</div></div></div>`;
+    return `<div class="me-plan"><div class="me-plan-what"><div class="me-plan-buy">Leave at ${at(prediction.leaveAt)}</div><div class="me-plan-meta">in ${formatDuration(prediction.leaveAt - now)} · your time ${escapeHtml(formatLocalTime(prediction.leaveAt * 1000))}</div><div class="me-plan-meta">${escapeHtml(flight)} lands ${at(prediction.landsAt)}, ${asInt(settings.foreignRunLeadMinutes, DEFAULTS.foreignRunLeadMinutes)} min before the earliest likely restock (${at(prediction.earliest)}; typical ${at(prediction.typical)}, latest ${at(prediction.latest)})${prediction.cyclesAhead ? `. That is ${prediction.cyclesAhead === 1 ? "the restock after next" : `${prediction.cyclesAhead + 1} restocks ahead`}: the next one sells out before you could land` : ""}.</div></div></div>`;
   }
 
   function renderForeignRunPanel({ refresh = true, error = "" } = {}) {
@@ -1639,10 +1640,9 @@
     const restocks = (log?.restocks || []).slice(-5).reverse();
     const historyHtml = restocks.length ? `<div class="me-card-section"><div class="me-kicker">Recent restocks (TCT)</div>${restocks.map((event) => `<div class="me-alt-row"><span class="me-alt-name">${formatTornTime(event.from * 1000).replace(" TCT", "")}–${formatTornTime(event.to * 1000)}</span><span class="me-alt-note">${event.to - event.from > 1800 ? "rough (report gap)" : `${asInt(event.quantity, 0).toLocaleString("en-US")} units`}</span></div>`).join("")}</div>` : "";
     const stats = [
-      prediction.shortestGapSec ? `shortest gap ${formatDuration(prediction.shortestGapSec)}` : "",
-      prediction.typicalGapSec ? `typical ${formatDuration(prediction.typicalGapSec)}` : "",
-      Number.isFinite(prediction.lastingSec) ? `stock lasts ~${formatDuration(prediction.lastingSec)}` : "",
-      prediction.gapsUsed ? `from ${prediction.gapsUsed} gap${prediction.gapsUsed === 1 ? "" : "s"}` : ""
+      Number.isFinite(prediction.emptyTypicalSec) ? `restocks ${formatDuration(prediction.emptyTypicalSec)} after it empties (shortest ${formatDuration(prediction.emptyShortestSec)}, ${prediction.emptySpells} seen)` : "",
+      Number.isFinite(prediction.lastingTypicalSec) ? `stock lasts ${formatDuration(prediction.lastingShortestSec)} to ${formatDuration(prediction.lastingLongestSec)} (typical ${formatDuration(prediction.lastingTypicalSec)})` : "",
+      Number.isFinite(prediction.reliability) ? `reliability ${prediction.reliability >= 80 ? "high" : prediction.reliability >= 66 ? "medium-high" : prediction.reliability >= 33 ? "medium" : "low"}` : ""
     ].filter(Boolean).join(" · ");
     const notice = Store.get(STORAGE_KEYS.foreignRunNotice, {}) || {};
     const notifyNote = nativeNotifyAvailable()
@@ -1658,7 +1658,7 @@
       <div class="me-note">${escapeHtml(notifyNote)}</div>
       <div class="me-actions"><button class="me-btn me-run-refresh" type="button">Check now</button><button class="me-btn me-run-settings" type="button">Item, country, flight</button></div>
       ${panelToolbarHtml()}
-      <div class="me-note">Stock from YATA (yata.yt), reported by travellers. Restocks have been random since Patch #413, so the plan aims at the earliest likely restock: the last restock plus the shortest gap seen. Landing early means waiting in the shop; landing late can mean an empty shelf. "Short" means under ${threshold} units, one trip.</div>`, "RUN");
+      <div class="me-note">Stock from YATA (yata.yt), reported by travellers. A shop restocks a fairly steady time after it empties, while how fast it empties varies, so the plan chains sell-out + empty time and aims at the earliest likely restock. Landing early means waiting in the shop; landing late can mean an empty shelf. "Short" means under ${threshold} units, one trip.</div>`, "RUN");
     ui.body.querySelector(".me-run-refresh")?.addEventListener("click", () => { foreignRunTick({ force: true }); });
     ui.body.querySelector(".me-run-settings")?.addEventListener("click", () => showSettings());
     bindPanelToolbar();

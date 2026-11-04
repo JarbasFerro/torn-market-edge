@@ -33,6 +33,13 @@ function feed(log, from, to, stock, threshold = 28) {
 const RESTOCKS = [60, 180, 310].map((minutes) => T0 + minutes * MIN);
 const stockAt = (t) => (RESTOCKS.some((r) => t >= r && t < r + 20 * MIN) ? 900 : 0);
 
+// The South Africa Xanax pattern read from Torn PDA's chart on 2026-11-04
+// (local time): restocks 04:28, 07:28, 10:08, 12:40, selling out after 58,
+// 40, 22 and 18 minutes; each restock about two hours after the shop empties.
+const at = (hhmm) => T0 + (Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3))) * MIN;
+const SA = [["04:28", "05:26"], ["07:28", "08:08"], ["10:08", "10:30"], ["12:40", "12:58"]].map(([r, e]) => [at(r), at(e)]);
+const saStock = (t) => (SA.some(([r, e]) => t >= r && t < e) ? 1500 : 0);
+
 test("normalizeYataExport keeps known countries and maps items by id", () => {
   const data = ME.normalizeYataExport({ stocks: { sou: { update: 1793794965, stocks: [{ id: 206, name: "Xanax", quantity: 0, cost: 669000 }] }, zzz: { stocks: [] } } });
   assert.deepEqual(Object.keys(data), ["sou"]);
@@ -56,42 +63,59 @@ test("recordStockObservation brackets restocks and sell-outs between reports and
   assert.equal(small.restocks.length, 1);
 });
 
-test("predictForeignRun aims at the earliest likely restock: last restock + shortest gap - flight - lead", () => {
-  const log = feed(null, T0, T0 + 5 * 60 * MIN + 40 * MIN, stockAt);
-  // Gaps between restocks: 120 and 130 minutes; the shortest possible gap is
-  // (next restock's earliest) - (previous restock's latest) = 118 / 128.
-  const now = RESTOCKS[2] + 30 * MIN; // sold out again
-  const prediction = ME.predictForeignRun({ log, nowSec: now, oneWayMinutes: 208, leadMinutes: 5, threshold: 28 });
-  assert.equal(prediction.status, "go-now", "a 2-hour cycle is shorter than the flight: the window is already open");
-  assert.equal(prediction.reason, "window");
-  assert.equal(prediction.gapsUsed, 2);
-  assert.equal(prediction.shortestGapSec, 118 * MIN);
-  const earliest = RESTOCKS[2] - 2 * MIN + 118 * MIN;
-  assert.equal(prediction.earliest, earliest);
-  assert.equal(prediction.leaveAt, earliest - 208 * MIN - 5 * MIN, "airstrip 3 h 28 min plus 5 minutes' lead");
-  assert.ok(prediction.leaveAt < now);
+test("predictForeignRun times from the sell-out: restock = empty + shortest empty spell, chained past a flight that misses it", () => {
+  const log = feed(null, at("01:30"), at("13:44"), saStock);
+  assert.equal(log.restocks.length, 4);
+  assert.equal(log.sellouts.length, 4);
+  const plan = (now) => ME.predictForeignRun({ log, nowSec: now, oneWayMinutes: 208, leadMinutes: 5, threshold: 28 });
+
+  // 13:30: the 14:54 restock cannot be reached (3 h 28 min airstrip) and
+  // sells out by ~15:30, so the plan aims at the one after: 14:54 + 16 min
+  // shortest stock spell + 118 min shortest empty spell = 17:08.
+  const early = plan(at("13:30"));
+  assert.equal(early.status, "wait");
+  assert.equal(early.cyclesAhead, 1);
+  assert.equal(early.emptyShortestSec, 118 * MIN);
+  assert.equal(early.lastingShortestSec, 16 * MIN);
+  assert.equal(early.earliest, at("17:08"));
+  assert.equal(early.leaveAt, at("13:35"), "17:08 - 3 h 28 min - 5 min");
+  assert.equal(early.landsAt, at("17:03"));
+  assert.equal(early.typical, at("17:32"));
+
+  // 13:44: the ideal moment just passed, but landing at 17:12 still beats the
+  // typical sell-out of that restock: go now.
+  const now = plan(at("13:44"));
+  assert.equal(now.status, "go-now");
+  assert.equal(now.reason, "window");
+  assert.equal(now.landsAt, at("17:12"));
+
+  // 14:30: landing at 17:58 still beats its typical sell-out (17:32 + 31 min).
+  assert.equal(plan(at("14:30")).status, "go-now");
+  // 15:00: landing at 18:28 is too late for it: the restock after that one.
+  const late = plan(at("15:00"));
+  assert.equal(late.status, "wait");
+  assert.equal(late.cyclesAhead, 2);
+  assert.ok(late.leaveAt > at("15:00"));
 });
 
-test("predictForeignRun: wait, then go-now inside the window, learning without two precise restocks", () => {
-  // Restocks every 6 hours, lasting 20 minutes.
-  const sixHourly = [60, 420, 780].map((minutes) => T0 + minutes * MIN);
-  const stock = (t) => (sixHourly.some((r) => t >= r && t < r + 20 * MIN) ? 900 : 0);
-  const log = feed(null, T0, T0 + 800 * MIN, stock);
-  const flight = 208;
-  const early = ME.predictForeignRun({ log, nowSec: sixHourly[2] + 30 * MIN, oneWayMinutes: flight, leadMinutes: 5, threshold: 28 });
-  assert.equal(early.status, "wait");
-  assert.equal(early.landsAt, early.leaveAt + flight * MIN);
-  assert.equal(early.earliest - early.landsAt, 5 * MIN, "lands 5 minutes before the earliest restock");
-  const late = ME.predictForeignRun({ log, nowSec: early.leaveAt + MIN, oneWayMinutes: flight, leadMinutes: 5, threshold: 28 });
-  assert.equal(late.status, "go-now");
-  assert.equal(late.reason, "window");
+test("predictForeignRun: right after a sell-out with a short flight, the next restock itself", () => {
+  const log = feed(null, at("01:30"), at("13:00"), saStock);
+  const plan = ME.predictForeignRun({ log, nowSec: at("13:00"), oneWayMinutes: 26, leadMinutes: 5, threshold: 28 });
+  assert.equal(plan.status, "wait");
+  assert.equal(plan.cyclesAhead, 0);
+  assert.equal(plan.earliest, at("12:56") + 118 * MIN);
+  assert.equal(plan.leaveAt, plan.earliest - 31 * MIN);
+});
 
-  const one = feed(null, T0, T0 + 100 * MIN, stock);
+test("predictForeignRun: learning until a sell-out and the next restock are seen; rough brackets never count", () => {
+  const flight = 208;
+  const one = feed(null, T0, T0 + 100 * MIN, stockAt);
   assert.equal(ME.predictForeignRun({ log: one, nowSec: T0 + 100 * MIN, oneWayMinutes: flight, threshold: 28 }).status, "learning");
   assert.equal(ME.predictForeignRun({ log: null, nowSec: T0, oneWayMinutes: flight, threshold: 28 }).status, "learning");
+  const log = feed(null, T0, T0 + 400 * MIN, stockAt);
   assert.equal(ME.predictForeignRun({ log, nowSec: T0, oneWayMinutes: null, threshold: 28 }).status, "no-flight");
 
-  // Reports 3 hours apart give wide brackets that are not used for gaps.
+  // Reports 3 hours apart give wide brackets that are not used.
   let gappy = null;
   [0, 180, 360, 540, 720].forEach((minutes) => { gappy = ME.recordStockObservation(gappy, { at: T0 + minutes * MIN, quantity: minutes % 360 === 180 ? 900 : 0 }, { threshold: 28 }); });
   const rough = ME.predictForeignRun({ log: gappy, nowSec: T0 + 720 * MIN, oneWayMinutes: flight, threshold: 28 });
@@ -107,7 +131,7 @@ test("predictForeignRun: in stock and lasting longer than the flight means go no
   const prediction = ME.predictForeignRun({ log, nowSec: T0 + 430 * MIN, oneWayMinutes: 208, threshold: 28 });
   assert.equal(prediction.status, "go-now");
   assert.equal(prediction.reason, "in-stock");
-  assert.equal(prediction.lastingSec, 298 * MIN);
+  assert.equal(prediction.lastingShortestSec, 298 * MIN);
 });
 
 // ---------------------------------------------------------------------------
