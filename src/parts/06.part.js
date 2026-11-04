@@ -131,10 +131,31 @@
     return restored;
   }
 
+  function tripsText(pace) {
+    const trips = Math.round((pace?.trips || 0) * 10) / 10;
+    return `${trips.toLocaleString("en-US")} trip${trips === 1 ? "" : "s"}`;
+  }
+
+  // One sentence on how the backlog moved the price, for the why panels.
+  function paceWhyLine(pace) {
+    if (!pace?.tripUnits) return "";
+    const held = `You hold ${pace.backlog.toLocaleString("en-US")} unit${pace.backlog === 1 ? "" : "s"}`;
+    if (!pace.paced) {
+      if (pace.backlog <= pace.tripUnits) return `${held}, one trip (${pace.tripUnits}) or less, so the price sits at the floor.`;
+      return `${held} (${tripsText(pace)} of ${pace.tripUnits}), but the conservative anchor is not below the floor, so the floor stays.`;
+    }
+    const share = Math.round(pace.weight * 100);
+    return `${held} (${tripsText(pace)} of ${pace.tripUnits}), so the price moves ${share === 100 ? "all the way" : `${share}% of the way`} from the floor (${formatMoney(pace.floorPrice, true)}) down to the conservative anchor (${formatMoney(pace.anchor, true)}), where Torn's daily average says units actually sell. At ${PACE_FULL_TRIPS} trips or more it is the anchor.`;
+  }
+
   // Where the suggested price comes from, in a few words.
   function fillOriginText(result, source) {
     const snapshot = result.snapshot || {};
     if (source.fill?.mode === "anchor") return "market anchor";
+    const pace = source.pace;
+    if (pace?.paced && source.fill?.price === pace.price) {
+      return `${pace.backlog.toLocaleString("en-US")} held (${tripsText(pace)}) \u00b7 ${pace.weight >= 1 ? "at anchor" : `${Math.round(pace.weight * 100)}% to anchor`}`;
+    }
     if (snapshot.lowestPrice) {
       const undercut = Math.max(0, asInt(settings.itemMarketUndercut));
       return undercut ? `IM floor ${formatMoney(snapshot.lowestPrice, true)} \u2212 ${formatMoney(undercut, true)}` : `IM floor ${formatMoney(snapshot.lowestPrice, true)}`;
@@ -184,8 +205,9 @@
     const ruleLine = rule ? `Your rule for this item: ${rule.mode === "hold" ? "never fill" : rule.mode === "anchor" ? "hold the anchor price" : "undercut the floor"}${rule.minPrice ? `, never below ${formatMoney(rule.minPrice, true)}` : ""}.` : "";
     const why = [
       snapshot.lowestPrice
-        ? `Cheapest Item Market listing ${formatMoney(snapshot.lowestPrice, true)}; suggested price is ${source.fill?.mode === "anchor" ? "the conservative market anchor" : `that floor minus your ${formatMoney(Math.max(0, asInt(settings.itemMarketUndercut)), true)} undercut`}.`
+        ? `Cheapest Item Market listing ${formatMoney(snapshot.lowestPrice, true)}; suggested price is ${source.fill?.mode === "anchor" ? "the conservative market anchor" : (source.pace?.paced ? "paced to your backlog" : `that floor minus your ${formatMoney(Math.max(0, asInt(settings.itemMarketUndercut)), true)} undercut`)}.`
         : "No live Item Market listings; the price comes from Torn's daily value.",
+      source.fill?.mode === "anchor" ? "" : paceWhyLine(source.pace),
       sellForm && Number.isFinite(source.net) ? `Net per unit after the ${source.feeBps / 100}% Item Market fee: ${formatMoney(source.net, true)}.` : (result?.ownBazaar ? "Bazaar sales carry no fee." : ""),
       snapshot.averagePrice ? `Torn's daily value: ${formatMoney(snapshot.averagePrice, true)}.` : "",
       ruleLine,
@@ -423,7 +445,8 @@
       const why = [
         `Target ${formatMoney(data?.target, true)} is the conservative Bazaar exit; your price is ${Number.isFinite(data?.delta) ? (data.delta > 0 ? `${formatMoney(data.delta, true)} below it` : `${formatMoney(-data.delta, true)} above it`) : "unknown"}.`,
         data?.floor ? `Cheapest Item Market listing: ${formatMoney(data.floor, true)}.` : "",
-        fillPrice ? `Fill writes ${formatMoney(fillPrice, true)} (${fill.mode === "anchor" ? "anchor price" : "floor minus undercut"}${fill.clamped ? ", raised to your minimum" : ""}); saving stays manual.` : "",
+        fillPrice ? `Fill writes ${formatMoney(fillPrice, true)} (${fill.mode === "anchor" ? "anchor price" : (data?.pace?.paced ? "paced to your backlog" : "floor minus undercut")}${fill.clamped ? ", raised to your minimum" : ""}); saving stays manual.` : "",
+        fillPrice && fill.mode !== "anchor" ? paceWhyLine(data?.pace) : "",
         data?.warning || "",
         orderBookAgeLine(result)
       ];
@@ -568,6 +591,7 @@
     const limits = evaluation.limitedBy.join(" and ");
     const why = [
       `Resale in your ${data.resaleRoute} at ${formatMoney(data.resalePrice, true)} per unit minus the shop price ${formatMoney(evaluation.buyPrice, true)} = ${formatMoney(evaluation.profitPerUnit, true)} per unit.`,
+      data.pace ? `Resale is the price Market Edge would fill after this trip. ${paceWhyLine(data.pace)}` : "",
       `${unitsText(evaluation.units)} this trip, limited by ${limits || "capacity"} (${context.capacityLeft} slots free${context.capacityFromPage ? "" : " from your settings"}${visible.stock !== null && visible.stock !== undefined ? `, ${visible.stock} in stock` : ""}${Number.isFinite(context.money) && context.money !== null ? `, ${formatMoney(context.money, true)} cash` : ""}).`,
       evaluation.roundTripMinutes
         ? `${formatMoney(evaluation.perTrip, true)} per trip over a ${formatMinutes(evaluation.roundTripMinutes)} round trip (${TRAVEL_TYPE_LABELS[context.travelType] || "Standard flight"} to ${context.country}) = ${formatRate(evaluation.perHour)}.`
@@ -937,6 +961,15 @@
     return null;
   }
 
+  // Floor-based suggestion for one sell row, paced to what the player holds
+  // of this item (see pacedFloorSuggestion). rowListed: the row's units are
+  // already in the Bazaar (manage view), so they are not added again.
+  function pacedFillFor(visible, snapshot, extras, anchor, { rowListed = false, rowUnits = null } = {}) {
+    const units = rowUnits ?? Math.max(1, asInt(visible.maxAvailable || visible.quantity, 1));
+    const backlog = sellBacklog({ holding: extras?.holdings?.get?.(visible.itemId) || null, rowUnits: units, rowListed });
+    return pacedFloorSuggestion({ snapshot, backlog, tripUnits: currentTripUnits(), undercut: settings.itemMarketUndercut, anchor });
+  }
+
   function resultForSurface(surface, visible, snapshot, historyStats, ownBazaar, renderMeta = {}, museum = null, extras = {}) {
     const shopSell = extras?.shopSell || null;
     const salesSummary = extras?.salesSummary || null;
@@ -954,13 +987,14 @@
       // and the net per unit after the configured fee.
       const estimate = estimateInventoryExit({ quantity: visible.quantity, snapshot, historyStats, settings, museum, shopSell });
       if (!estimate) return { visible, snapshot, historyStats, sellForm: { target: null, reason: (snapshot?.listings || []).length ? "price unavailable" : "no listings" }, renderMeta };
-      const floorSuggestion = snapshot.lowestPrice ? Math.max(1, snapshot.lowestPrice - Math.max(0, asInt(settings.itemMarketUndercut))) : null;
+      const pace = pacedFillFor(visible, snapshot, extras, estimate.routes.itemMarket.suggestedPrice);
+      const floorSuggestion = pace?.price ?? null;
       const rule = Store.pricingRules()[visible.itemId] || null;
       const fill = applyPricingRule({ rule, floorSuggestion, anchorSuggestion: estimate.routes.itemMarket.suggestedPrice });
       const target = fill.price || estimate.routes.itemMarket.suggestedPrice;
       const feeBps = itemMarketFeeBps(settings);
       const warning = underpriceWarning(target, snapshot, shopSell);
-      return { visible, snapshot, historyStats, sellForm: { target, net: grossToNet(target, feeBps), feeBps, floor: snapshot.lowestPrice, rule, fill, estimate, warning }, renderMeta };
+      return { visible, snapshot, historyStats, sellForm: { target, net: grossToNet(target, feeBps), feeBps, floor: snapshot.lowestPrice, rule, fill, pace, estimate, warning }, renderMeta };
     }
 
     if (surface === "auction") {
@@ -980,11 +1014,12 @@
       // Repricing workbench: the floor-based suggestion (floor minus undercut,
       // Bazaar is fee-free so no discount) and the anchor-based target go
       // through the item's pricing rule.
-      const floorSuggestion = snapshot.lowestPrice ? Math.max(1, snapshot.lowestPrice - Math.max(0, asInt(settings.itemMarketUndercut))) : null;
+      const pace = pacedFillFor(visible, snapshot, extras, target, { rowListed: !visible.bazaarAdd });
+      const floorSuggestion = pace?.price ?? null;
       const rule = Store.pricingRules()[visible.itemId] || null;
       const fill = applyPricingRule({ rule, floorSuggestion, anchorSuggestion: target });
       const warning = underpriceWarning(fill.price || target, snapshot, shopSell);
-      return { visible, snapshot, historyStats, ownBazaar: { target, delta, estimate, fill, rule, floor: snapshot.lowestPrice, warning }, renderMeta };
+      return { visible, snapshot, historyStats, ownBazaar: { target, delta, estimate, fill, pace, rule, floor: snapshot.lowestPrice, warning }, renderMeta };
     }
 
     if (surface === "travel" && visible.abroad) {
@@ -996,16 +1031,23 @@
       const routes = estimate.routes;
       const bazaarRoute = routes.bazaar || null;
       const resaleRoute = bazaarRoute ? "Bazaar" : routes.bestRoute;
-      const resalePrice = bazaarRoute ? bazaarRoute.suggestedPrice : Math.floor(routes.bestNet);
-      const evaluation = evaluateAbroadRow({
-        buyPrice: visible.price,
-        stock: visible.stock,
-        capacityLeft: context.capacityLeft,
-        money: context.money,
-        resalePrice,
-        oneWayMinutes: context.oneWayMinutes
-      });
-      return { visible, snapshot, historyStats, abroad: { context, evaluation, resaleRoute, resalePrice, estimate }, renderMeta };
+      const anchorResale = bazaarRoute ? bazaarRoute.suggestedPrice : Math.floor(routes.bestNet);
+      const rowArgs = { buyPrice: visible.price, stock: visible.stock, capacityLeft: context.capacityLeft, money: context.money, oneWayMinutes: context.oneWayMinutes };
+      // Resale is what Market Edge would fill in your Bazaar once this trip's
+      // units join what you already hold: the floor while you hold a trip or
+      // less, deeper as the backlog grows, never below the anchor. Without
+      // pacing (or with the Bazaar route off) it stays the anchor.
+      let resalePrice = anchorResale;
+      let pace = null;
+      if (bazaarRoute && currentTripUnits()) {
+        const units = evaluateAbroadRow({ ...rowArgs, resalePrice: anchorResale })?.units || 0;
+        pace = pacedFillFor(visible, snapshot, extras, anchorResale, { rowUnits: units });
+        const rule = Store.pricingRules()[visible.itemId] || null;
+        const fill = applyPricingRule({ rule, floorSuggestion: pace?.price ?? null, anchorSuggestion: anchorResale });
+        if (fill.price) resalePrice = fill.price;
+      }
+      const evaluation = evaluateAbroadRow({ ...rowArgs, resalePrice });
+      return { visible, snapshot, historyStats, abroad: { context, evaluation, resaleRoute, resalePrice, anchorResale, pace, estimate }, renderMeta };
     }
 
     let quantity = visible.quantity;

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.7.1
+// @version      0.7.2
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.7.1",
+    version: "0.7.2",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -134,7 +134,8 @@
     inventory: "marketEdge.inventory.v1",
     cityShops: "marketEdge.cityShops.v1",
     foreignCatalog: "marketEdge.foreignCatalog.v1",
-    itemMetaPrefix: "marketEdge.itemMeta.v2."
+    itemMetaPrefix: "marketEdge.itemMeta.v2.",
+    lastTripCapacity: "marketEdge.lastTripCapacity.v1"
   });
 
   const DEFAULTS = Object.freeze({
@@ -149,6 +150,8 @@
     bazaarDiscount: 0.01,
     allowedHistoricalPremium: 1.01,
     itemMarketUndercut: 1,
+    paceToTrips: true,
+    tripUnits: 0,
     anonymousListing: false,
     anonymousFeeWaived: false,
     museumSetsEnabled: true,

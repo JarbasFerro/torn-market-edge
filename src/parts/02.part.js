@@ -581,6 +581,50 @@
     return { price: Math.floor(price), mode, reason: "" };
   }
 
+  // Trip pacing. A trader who restocks every trip needs one trip's worth to
+  // sell before the next arrives, not the whole stack at the floor. Units per
+  // trip come from the setting, else the capacity last read on an abroad
+  // page, else the travel-capacity setting; 0 means pacing is off.
+  function tripUnitsFor(settings = {}, lastCapacity = 0) {
+    if (settings.paceToTrips === false) return 0;
+    return Math.max(0, asInt(settings.tripUnits, 0)) || Math.max(0, asInt(lastCapacity, 0)) || Math.max(0, asInt(settings.travelCapacity, 0));
+  }
+
+  // Floor-based suggestion paced to the player's backlog. Asks deeper in the
+  // book are dearer, so a bigger stack cannot sell faster by sitting deeper:
+  // it sells faster by moving down toward the conservative anchor, which is
+  // capped by Torn's daily average of real purchases (where volume actually
+  // trades, often in bazaars under the Item Market floor). One trip or less
+  // in hand: the floor minus the undercut, as before. From one to three
+  // trips: linearly from the floor down to the anchor. Three trips or more:
+  // the anchor. Never below the anchor, never above the floor suggestion.
+  const PACE_FULL_TRIPS = 3;
+
+  function pacedFloorSuggestion({ snapshot, backlog = 0, tripUnits = 0, undercut = 1, anchor = null }) {
+    const floor = asInt(snapshot?.lowestPrice, 0);
+    if (!floor) return null;
+    const floorPrice = Math.max(1, floor - Math.max(0, asInt(undercut, 0)));
+    const held = Math.max(0, asInt(backlog, 0));
+    const trip = Math.max(0, asInt(tripUnits, 0));
+    const anchorPrice = Number.isFinite(anchor) && anchor > 0 ? Math.floor(anchor) : null;
+    const trips = trip ? held / trip : null;
+    const base = { price: floorPrice, paced: false, backlog: held, tripUnits: trip, trips, weight: 0, floorPrice, anchor: anchorPrice };
+    if (!trip || held <= trip || !anchorPrice || anchorPrice >= floorPrice) return base;
+    const weight = clamp((trips - 1) / (PACE_FULL_TRIPS - 1), 0, 1);
+    const price = Math.max(anchorPrice, Math.round(floorPrice - (floorPrice - anchorPrice) * weight));
+    return { ...base, price, paced: price < floorPrice, weight };
+  }
+
+  // Units of one item the player already holds for sale (Bazaar plus Item
+  // Market listings), plus the units on this row when they are not listed
+  // yet. Without API holdings, the row alone.
+  function sellBacklog({ holding = null, rowUnits = 0, rowListed = false } = {}) {
+    const row = Math.max(0, asInt(rowUnits, 0));
+    if (!holding) return row;
+    const listed = Math.max(0, asInt(holding.bazaar, 0)) + Math.max(0, asInt(holding.im, 0));
+    return rowListed ? Math.max(listed, row) : listed + row;
+  }
+
   // Sell-side watch: the player's own listed prices, alerted when the Item
   // Market floor drops below them.
   function normalizeSellWatch(raw) {
@@ -701,6 +745,9 @@
     evaluateBrowseCard,
     normalizePricingRules,
     applyPricingRule,
+    tripUnitsFor,
+    pacedFloorSuggestion,
+    sellBacklog,
     normalizeSellWatch,
     evaluateSellWatch,
     summarizePortfolio

@@ -855,6 +855,16 @@
     return Object.keys(FOREIGN_FLIGHT_MINUTES).find((name) => message.includes(name)) || "";
   }
 
+  // The trip capacity read abroad sets the default units per trip for
+  // pricing; stored only when it changes.
+  function rememberTripCapacity(capacity) {
+    if (asInt(Store.get(STORAGE_KEYS.lastTripCapacity, 0), 0) !== capacity) Store.set(STORAGE_KEYS.lastTripCapacity, capacity);
+  }
+
+  function currentTripUnits() {
+    return tripUnitsFor(settings, Store.get(STORAGE_KEYS.lastTripCapacity, 0));
+  }
+
   // "You are in United Kingdom and have $2,887,289. You have purchased 0 / 28
   // items so far." gives cash, items bought and the trip capacity.
   function abroadContext() {
@@ -865,6 +875,7 @@
     const capacity = capacityMatch ? asInt(capacityMatch[2].replace(/,/g, ""), 0) : Math.max(0, asInt(settings.travelCapacity, 0));
     const money = moneyMatch ? asInt(moneyMatch[1].replace(/,/g, ""), 0) : null;
     const country = abroadCountryName();
+    if (capacityMatch && capacity > 0) rememberTripCapacity(capacity);
     return {
       country,
       capacity,

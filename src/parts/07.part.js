@@ -18,6 +18,13 @@
     }
 
     const sellSideSurface = surface === "inventory" || surface === "imsell" || (surface === "bazaar" && ownBazaar);
+    // What the player already holds for sale paces fill prices and the
+    // abroad resale price. Skipped when pacing is off.
+    const abroadRows = surface === "travel" && items.some((visible) => visible.abroad);
+    if (abroadRows) abroadContext(); // remembers the trip capacity before pacing reads it
+    const holdings = (surface === "imsell" || (surface === "bazaar" && ownBazaar) || abroadRows) && currentTripUnits()
+      ? await loadSellHoldings()
+      : null;
 
     const tasks = items.map(async (visible, index) => {
       const priority = viewportPriority(visible, index);
@@ -35,7 +42,7 @@
           return;
         }
         const museum = museumContext.get(visible.itemId) || null;
-        const extras = { shopSell: shopSellFloor(meta), salesSummary: null };
+        const extras = { shopSell: shopSellFloor(meta), salesSummary: null, holdings };
         if (surface === "auction" && settings.auctionEvidenceEnabled !== false && meta && metadataSupportsCommodity(meta)) {
           try {
             extras.salesSummary = stackableSalesSummary(await loadAuctionSales(visible.itemId, { priority: priority - 5 }));
@@ -992,6 +999,41 @@
     };
     body.querySelectorAll(".me-rule-mode").forEach((select) => select.addEventListener("change", () => saveRule(select.closest("tr"))));
     body.querySelectorAll(".me-rule-min").forEach((input) => input.addEventListener("change", () => saveRule(input.closest("tr"))));
+  }
+
+  let sellHoldingsImDenied = false;
+
+  // Units of each item listed in the player's Bazaar (public key) and on the
+  // Item Market (Limited key; skipped once the key is known to lack it).
+  // Returns null when neither is readable, so rows fall back to their own
+  // quantity.
+  async function loadSellHoldings() {
+    if (!Store.apiKey()) return null;
+    const map = new Map();
+    const add = (itemId, venue, amount) => {
+      const entry = map.get(itemId) || { bazaar: 0, im: 0 };
+      entry[venue] += Math.max(0, asInt(amount, 0));
+      map.set(itemId, entry);
+    };
+    let known = false;
+    try {
+      normalizeOwnBazaar(await api.ownBazaar({ priority: 90 })).forEach((row) => add(row.itemId, "bazaar", row.amount));
+      known = true;
+    } catch (error) {
+      if (!error?.marketEdgeCanceled) log("Bazaar holdings unavailable", error.message);
+    }
+    const keyInfo = Store.keyInfo()?.info || null;
+    const imAllowed = keySupports(keyInfo, { section: "user", selection: "itemmarket", minimumType: "Limited Access" });
+    if (imAllowed !== false && !sellHoldingsImDenied) {
+      try {
+        normalizeOwnListings(await api.ownListings({ priority: 90 })).filter((row) => !row.equipment).forEach((row) => add(row.itemId, "im", row.available || row.amount));
+        known = true;
+      } catch (error) {
+        if (asInt(error?.tornCode, 0) === 16) sellHoldingsImDenied = true;
+        if (!error?.marketEdgeCanceled) log("Item Market holdings unavailable", error.message);
+      }
+    }
+    return known ? map : null;
   }
 
   async function renderOwnListingsPanel({ force = false } = {}) {

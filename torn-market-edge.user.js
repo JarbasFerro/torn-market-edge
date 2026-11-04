@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Market Edge
 // @namespace    https://github.com/JarbasFerro/torn-market-edge
-// @version      0.7.1
+// @version      0.7.2
 // @description  Decision-support overlay for Torn markets using the official Torn API. No automated trades.
 // @author       JarbasFerro
 // @homepageURL  https://github.com/JarbasFerro/torn-market-edge
@@ -31,7 +31,7 @@
 
   const APP = Object.freeze({
     name: "Market Edge",
-    version: "0.7.1",
+    version: "0.7.2",
     schemaVersion: 1,
     logPrefix: "[MarketEdge]"
   });
@@ -134,7 +134,8 @@
     inventory: "marketEdge.inventory.v1",
     cityShops: "marketEdge.cityShops.v1",
     foreignCatalog: "marketEdge.foreignCatalog.v1",
-    itemMetaPrefix: "marketEdge.itemMeta.v2."
+    itemMetaPrefix: "marketEdge.itemMeta.v2.",
+    lastTripCapacity: "marketEdge.lastTripCapacity.v1"
   });
 
   const DEFAULTS = Object.freeze({
@@ -149,6 +150,8 @@
     bazaarDiscount: 0.01,
     allowedHistoricalPremium: 1.01,
     itemMarketUndercut: 1,
+    paceToTrips: true,
+    tripUnits: 0,
     anonymousListing: false,
     anonymousFeeWaived: false,
     museumSetsEnabled: true,
@@ -1466,6 +1469,50 @@
     return { price: Math.floor(price), mode, reason: "" };
   }
 
+  // Trip pacing. A trader who restocks every trip needs one trip's worth to
+  // sell before the next arrives, not the whole stack at the floor. Units per
+  // trip come from the setting, else the capacity last read on an abroad
+  // page, else the travel-capacity setting; 0 means pacing is off.
+  function tripUnitsFor(settings = {}, lastCapacity = 0) {
+    if (settings.paceToTrips === false) return 0;
+    return Math.max(0, asInt(settings.tripUnits, 0)) || Math.max(0, asInt(lastCapacity, 0)) || Math.max(0, asInt(settings.travelCapacity, 0));
+  }
+
+  // Floor-based suggestion paced to the player's backlog. Asks deeper in the
+  // book are dearer, so a bigger stack cannot sell faster by sitting deeper:
+  // it sells faster by moving down toward the conservative anchor, which is
+  // capped by Torn's daily average of real purchases (where volume actually
+  // trades, often in bazaars under the Item Market floor). One trip or less
+  // in hand: the floor minus the undercut, as before. From one to three
+  // trips: linearly from the floor down to the anchor. Three trips or more:
+  // the anchor. Never below the anchor, never above the floor suggestion.
+  const PACE_FULL_TRIPS = 3;
+
+  function pacedFloorSuggestion({ snapshot, backlog = 0, tripUnits = 0, undercut = 1, anchor = null }) {
+    const floor = asInt(snapshot?.lowestPrice, 0);
+    if (!floor) return null;
+    const floorPrice = Math.max(1, floor - Math.max(0, asInt(undercut, 0)));
+    const held = Math.max(0, asInt(backlog, 0));
+    const trip = Math.max(0, asInt(tripUnits, 0));
+    const anchorPrice = Number.isFinite(anchor) && anchor > 0 ? Math.floor(anchor) : null;
+    const trips = trip ? held / trip : null;
+    const base = { price: floorPrice, paced: false, backlog: held, tripUnits: trip, trips, weight: 0, floorPrice, anchor: anchorPrice };
+    if (!trip || held <= trip || !anchorPrice || anchorPrice >= floorPrice) return base;
+    const weight = clamp((trips - 1) / (PACE_FULL_TRIPS - 1), 0, 1);
+    const price = Math.max(anchorPrice, Math.round(floorPrice - (floorPrice - anchorPrice) * weight));
+    return { ...base, price, paced: price < floorPrice, weight };
+  }
+
+  // Units of one item the player already holds for sale (Bazaar plus Item
+  // Market listings), plus the units on this row when they are not listed
+  // yet. Without API holdings, the row alone.
+  function sellBacklog({ holding = null, rowUnits = 0, rowListed = false } = {}) {
+    const row = Math.max(0, asInt(rowUnits, 0));
+    if (!holding) return row;
+    const listed = Math.max(0, asInt(holding.bazaar, 0)) + Math.max(0, asInt(holding.im, 0));
+    return rowListed ? Math.max(listed, row) : listed + row;
+  }
+
   // Sell-side watch: the player's own listed prices, alerted when the Item
   // Market floor drops below them.
   function normalizeSellWatch(raw) {
@@ -1586,6 +1633,9 @@
     evaluateBrowseCard,
     normalizePricingRules,
     applyPricingRule,
+    tripUnitsFor,
+    pacedFloorSuggestion,
+    sellBacklog,
     normalizeSellWatch,
     evaluateSellWatch,
     summarizePortfolio
@@ -3760,6 +3810,16 @@
     return Object.keys(FOREIGN_FLIGHT_MINUTES).find((name) => message.includes(name)) || "";
   }
 
+  // The trip capacity read abroad sets the default units per trip for
+  // pricing; stored only when it changes.
+  function rememberTripCapacity(capacity) {
+    if (asInt(Store.get(STORAGE_KEYS.lastTripCapacity, 0), 0) !== capacity) Store.set(STORAGE_KEYS.lastTripCapacity, capacity);
+  }
+
+  function currentTripUnits() {
+    return tripUnitsFor(settings, Store.get(STORAGE_KEYS.lastTripCapacity, 0));
+  }
+
   // "You are in United Kingdom and have $2,887,289. You have purchased 0 / 28
   // items so far." gives cash, items bought and the trip capacity.
   function abroadContext() {
@@ -3770,6 +3830,7 @@
     const capacity = capacityMatch ? asInt(capacityMatch[2].replace(/,/g, ""), 0) : Math.max(0, asInt(settings.travelCapacity, 0));
     const money = moneyMatch ? asInt(moneyMatch[1].replace(/,/g, ""), 0) : null;
     const country = abroadCountryName();
+    if (capacityMatch && capacity > 0) rememberTripCapacity(capacity);
     return {
       country,
       capacity,
@@ -4374,6 +4435,8 @@
         ${settingsSectionHtml("Selling", "undercut, fees, routes", `
           <div class="me-form-grid">
             ${f("itemMarketUndercut", "Undercut the cheapest listing by ($)", { min: 0, step: 1, help: "Fill buttons write the cheapest Item Market price minus this amount." })}
+            ${f("paceToTrips", "Pace prices to my trips", { type: "checkbox", help: "With one trip's worth or less listed and in hand, fills use the floor minus the undercut. With more, the price moves down toward the conservative anchor (capped by Torn's daily average of real sales), reaching it at three trips, so a big stack sells instead of waiting. Abroad, the resale price follows the same rule." })}
+            ${f("tripUnits", "Units per trip (0 = the capacity seen abroad)", { min: 0, max: 1000, step: 1 })}
             ${f("anonymousListing", "I list anonymously on the Item Market (+10% fee)", { type: "checkbox" })}
             ${f("anonymousFeeWaived", "Anonymous fee waived by a 5-star company perk", { type: "checkbox" })}
             ${f("bazaarEnabled", "Consider the Bazaar as an exit route", { type: "checkbox" })}
@@ -4953,10 +5016,31 @@
     return restored;
   }
 
+  function tripsText(pace) {
+    const trips = Math.round((pace?.trips || 0) * 10) / 10;
+    return `${trips.toLocaleString("en-US")} trip${trips === 1 ? "" : "s"}`;
+  }
+
+  // One sentence on how the backlog moved the price, for the why panels.
+  function paceWhyLine(pace) {
+    if (!pace?.tripUnits) return "";
+    const held = `You hold ${pace.backlog.toLocaleString("en-US")} unit${pace.backlog === 1 ? "" : "s"}`;
+    if (!pace.paced) {
+      if (pace.backlog <= pace.tripUnits) return `${held}, one trip (${pace.tripUnits}) or less, so the price sits at the floor.`;
+      return `${held} (${tripsText(pace)} of ${pace.tripUnits}), but the conservative anchor is not below the floor, so the floor stays.`;
+    }
+    const share = Math.round(pace.weight * 100);
+    return `${held} (${tripsText(pace)} of ${pace.tripUnits}), so the price moves ${share === 100 ? "all the way" : `${share}% of the way`} from the floor (${formatMoney(pace.floorPrice, true)}) down to the conservative anchor (${formatMoney(pace.anchor, true)}), where Torn's daily average says units actually sell. At ${PACE_FULL_TRIPS} trips or more it is the anchor.`;
+  }
+
   // Where the suggested price comes from, in a few words.
   function fillOriginText(result, source) {
     const snapshot = result.snapshot || {};
     if (source.fill?.mode === "anchor") return "market anchor";
+    const pace = source.pace;
+    if (pace?.paced && source.fill?.price === pace.price) {
+      return `${pace.backlog.toLocaleString("en-US")} held (${tripsText(pace)}) \u00b7 ${pace.weight >= 1 ? "at anchor" : `${Math.round(pace.weight * 100)}% to anchor`}`;
+    }
     if (snapshot.lowestPrice) {
       const undercut = Math.max(0, asInt(settings.itemMarketUndercut));
       return undercut ? `IM floor ${formatMoney(snapshot.lowestPrice, true)} \u2212 ${formatMoney(undercut, true)}` : `IM floor ${formatMoney(snapshot.lowestPrice, true)}`;
@@ -5006,8 +5090,9 @@
     const ruleLine = rule ? `Your rule for this item: ${rule.mode === "hold" ? "never fill" : rule.mode === "anchor" ? "hold the anchor price" : "undercut the floor"}${rule.minPrice ? `, never below ${formatMoney(rule.minPrice, true)}` : ""}.` : "";
     const why = [
       snapshot.lowestPrice
-        ? `Cheapest Item Market listing ${formatMoney(snapshot.lowestPrice, true)}; suggested price is ${source.fill?.mode === "anchor" ? "the conservative market anchor" : `that floor minus your ${formatMoney(Math.max(0, asInt(settings.itemMarketUndercut)), true)} undercut`}.`
+        ? `Cheapest Item Market listing ${formatMoney(snapshot.lowestPrice, true)}; suggested price is ${source.fill?.mode === "anchor" ? "the conservative market anchor" : (source.pace?.paced ? "paced to your backlog" : `that floor minus your ${formatMoney(Math.max(0, asInt(settings.itemMarketUndercut)), true)} undercut`)}.`
         : "No live Item Market listings; the price comes from Torn's daily value.",
+      source.fill?.mode === "anchor" ? "" : paceWhyLine(source.pace),
       sellForm && Number.isFinite(source.net) ? `Net per unit after the ${source.feeBps / 100}% Item Market fee: ${formatMoney(source.net, true)}.` : (result?.ownBazaar ? "Bazaar sales carry no fee." : ""),
       snapshot.averagePrice ? `Torn's daily value: ${formatMoney(snapshot.averagePrice, true)}.` : "",
       ruleLine,
@@ -5245,7 +5330,8 @@
       const why = [
         `Target ${formatMoney(data?.target, true)} is the conservative Bazaar exit; your price is ${Number.isFinite(data?.delta) ? (data.delta > 0 ? `${formatMoney(data.delta, true)} below it` : `${formatMoney(-data.delta, true)} above it`) : "unknown"}.`,
         data?.floor ? `Cheapest Item Market listing: ${formatMoney(data.floor, true)}.` : "",
-        fillPrice ? `Fill writes ${formatMoney(fillPrice, true)} (${fill.mode === "anchor" ? "anchor price" : "floor minus undercut"}${fill.clamped ? ", raised to your minimum" : ""}); saving stays manual.` : "",
+        fillPrice ? `Fill writes ${formatMoney(fillPrice, true)} (${fill.mode === "anchor" ? "anchor price" : (data?.pace?.paced ? "paced to your backlog" : "floor minus undercut")}${fill.clamped ? ", raised to your minimum" : ""}); saving stays manual.` : "",
+        fillPrice && fill.mode !== "anchor" ? paceWhyLine(data?.pace) : "",
         data?.warning || "",
         orderBookAgeLine(result)
       ];
@@ -5390,6 +5476,7 @@
     const limits = evaluation.limitedBy.join(" and ");
     const why = [
       `Resale in your ${data.resaleRoute} at ${formatMoney(data.resalePrice, true)} per unit minus the shop price ${formatMoney(evaluation.buyPrice, true)} = ${formatMoney(evaluation.profitPerUnit, true)} per unit.`,
+      data.pace ? `Resale is the price Market Edge would fill after this trip. ${paceWhyLine(data.pace)}` : "",
       `${unitsText(evaluation.units)} this trip, limited by ${limits || "capacity"} (${context.capacityLeft} slots free${context.capacityFromPage ? "" : " from your settings"}${visible.stock !== null && visible.stock !== undefined ? `, ${visible.stock} in stock` : ""}${Number.isFinite(context.money) && context.money !== null ? `, ${formatMoney(context.money, true)} cash` : ""}).`,
       evaluation.roundTripMinutes
         ? `${formatMoney(evaluation.perTrip, true)} per trip over a ${formatMinutes(evaluation.roundTripMinutes)} round trip (${TRAVEL_TYPE_LABELS[context.travelType] || "Standard flight"} to ${context.country}) = ${formatRate(evaluation.perHour)}.`
@@ -5759,6 +5846,15 @@
     return null;
   }
 
+  // Floor-based suggestion for one sell row, paced to what the player holds
+  // of this item (see pacedFloorSuggestion). rowListed: the row's units are
+  // already in the Bazaar (manage view), so they are not added again.
+  function pacedFillFor(visible, snapshot, extras, anchor, { rowListed = false, rowUnits = null } = {}) {
+    const units = rowUnits ?? Math.max(1, asInt(visible.maxAvailable || visible.quantity, 1));
+    const backlog = sellBacklog({ holding: extras?.holdings?.get?.(visible.itemId) || null, rowUnits: units, rowListed });
+    return pacedFloorSuggestion({ snapshot, backlog, tripUnits: currentTripUnits(), undercut: settings.itemMarketUndercut, anchor });
+  }
+
   function resultForSurface(surface, visible, snapshot, historyStats, ownBazaar, renderMeta = {}, museum = null, extras = {}) {
     const shopSell = extras?.shopSell || null;
     const salesSummary = extras?.salesSummary || null;
@@ -5776,13 +5872,14 @@
       // and the net per unit after the configured fee.
       const estimate = estimateInventoryExit({ quantity: visible.quantity, snapshot, historyStats, settings, museum, shopSell });
       if (!estimate) return { visible, snapshot, historyStats, sellForm: { target: null, reason: (snapshot?.listings || []).length ? "price unavailable" : "no listings" }, renderMeta };
-      const floorSuggestion = snapshot.lowestPrice ? Math.max(1, snapshot.lowestPrice - Math.max(0, asInt(settings.itemMarketUndercut))) : null;
+      const pace = pacedFillFor(visible, snapshot, extras, estimate.routes.itemMarket.suggestedPrice);
+      const floorSuggestion = pace?.price ?? null;
       const rule = Store.pricingRules()[visible.itemId] || null;
       const fill = applyPricingRule({ rule, floorSuggestion, anchorSuggestion: estimate.routes.itemMarket.suggestedPrice });
       const target = fill.price || estimate.routes.itemMarket.suggestedPrice;
       const feeBps = itemMarketFeeBps(settings);
       const warning = underpriceWarning(target, snapshot, shopSell);
-      return { visible, snapshot, historyStats, sellForm: { target, net: grossToNet(target, feeBps), feeBps, floor: snapshot.lowestPrice, rule, fill, estimate, warning }, renderMeta };
+      return { visible, snapshot, historyStats, sellForm: { target, net: grossToNet(target, feeBps), feeBps, floor: snapshot.lowestPrice, rule, fill, pace, estimate, warning }, renderMeta };
     }
 
     if (surface === "auction") {
@@ -5802,11 +5899,12 @@
       // Repricing workbench: the floor-based suggestion (floor minus undercut,
       // Bazaar is fee-free so no discount) and the anchor-based target go
       // through the item's pricing rule.
-      const floorSuggestion = snapshot.lowestPrice ? Math.max(1, snapshot.lowestPrice - Math.max(0, asInt(settings.itemMarketUndercut))) : null;
+      const pace = pacedFillFor(visible, snapshot, extras, target, { rowListed: !visible.bazaarAdd });
+      const floorSuggestion = pace?.price ?? null;
       const rule = Store.pricingRules()[visible.itemId] || null;
       const fill = applyPricingRule({ rule, floorSuggestion, anchorSuggestion: target });
       const warning = underpriceWarning(fill.price || target, snapshot, shopSell);
-      return { visible, snapshot, historyStats, ownBazaar: { target, delta, estimate, fill, rule, floor: snapshot.lowestPrice, warning }, renderMeta };
+      return { visible, snapshot, historyStats, ownBazaar: { target, delta, estimate, fill, pace, rule, floor: snapshot.lowestPrice, warning }, renderMeta };
     }
 
     if (surface === "travel" && visible.abroad) {
@@ -5818,16 +5916,23 @@
       const routes = estimate.routes;
       const bazaarRoute = routes.bazaar || null;
       const resaleRoute = bazaarRoute ? "Bazaar" : routes.bestRoute;
-      const resalePrice = bazaarRoute ? bazaarRoute.suggestedPrice : Math.floor(routes.bestNet);
-      const evaluation = evaluateAbroadRow({
-        buyPrice: visible.price,
-        stock: visible.stock,
-        capacityLeft: context.capacityLeft,
-        money: context.money,
-        resalePrice,
-        oneWayMinutes: context.oneWayMinutes
-      });
-      return { visible, snapshot, historyStats, abroad: { context, evaluation, resaleRoute, resalePrice, estimate }, renderMeta };
+      const anchorResale = bazaarRoute ? bazaarRoute.suggestedPrice : Math.floor(routes.bestNet);
+      const rowArgs = { buyPrice: visible.price, stock: visible.stock, capacityLeft: context.capacityLeft, money: context.money, oneWayMinutes: context.oneWayMinutes };
+      // Resale is what Market Edge would fill in your Bazaar once this trip's
+      // units join what you already hold: the floor while you hold a trip or
+      // less, deeper as the backlog grows, never below the anchor. Without
+      // pacing (or with the Bazaar route off) it stays the anchor.
+      let resalePrice = anchorResale;
+      let pace = null;
+      if (bazaarRoute && currentTripUnits()) {
+        const units = evaluateAbroadRow({ ...rowArgs, resalePrice: anchorResale })?.units || 0;
+        pace = pacedFillFor(visible, snapshot, extras, anchorResale, { rowUnits: units });
+        const rule = Store.pricingRules()[visible.itemId] || null;
+        const fill = applyPricingRule({ rule, floorSuggestion: pace?.price ?? null, anchorSuggestion: anchorResale });
+        if (fill.price) resalePrice = fill.price;
+      }
+      const evaluation = evaluateAbroadRow({ ...rowArgs, resalePrice });
+      return { visible, snapshot, historyStats, abroad: { context, evaluation, resaleRoute, resalePrice, anchorResale, pace, estimate }, renderMeta };
     }
 
     let quantity = visible.quantity;
@@ -6057,6 +6162,13 @@
     }
 
     const sellSideSurface = surface === "inventory" || surface === "imsell" || (surface === "bazaar" && ownBazaar);
+    // What the player already holds for sale paces fill prices and the
+    // abroad resale price. Skipped when pacing is off.
+    const abroadRows = surface === "travel" && items.some((visible) => visible.abroad);
+    if (abroadRows) abroadContext(); // remembers the trip capacity before pacing reads it
+    const holdings = (surface === "imsell" || (surface === "bazaar" && ownBazaar) || abroadRows) && currentTripUnits()
+      ? await loadSellHoldings()
+      : null;
 
     const tasks = items.map(async (visible, index) => {
       const priority = viewportPriority(visible, index);
@@ -6074,7 +6186,7 @@
           return;
         }
         const museum = museumContext.get(visible.itemId) || null;
-        const extras = { shopSell: shopSellFloor(meta), salesSummary: null };
+        const extras = { shopSell: shopSellFloor(meta), salesSummary: null, holdings };
         if (surface === "auction" && settings.auctionEvidenceEnabled !== false && meta && metadataSupportsCommodity(meta)) {
           try {
             extras.salesSummary = stackableSalesSummary(await loadAuctionSales(visible.itemId, { priority: priority - 5 }));
@@ -7031,6 +7143,41 @@
     };
     body.querySelectorAll(".me-rule-mode").forEach((select) => select.addEventListener("change", () => saveRule(select.closest("tr"))));
     body.querySelectorAll(".me-rule-min").forEach((input) => input.addEventListener("change", () => saveRule(input.closest("tr"))));
+  }
+
+  let sellHoldingsImDenied = false;
+
+  // Units of each item listed in the player's Bazaar (public key) and on the
+  // Item Market (Limited key; skipped once the key is known to lack it).
+  // Returns null when neither is readable, so rows fall back to their own
+  // quantity.
+  async function loadSellHoldings() {
+    if (!Store.apiKey()) return null;
+    const map = new Map();
+    const add = (itemId, venue, amount) => {
+      const entry = map.get(itemId) || { bazaar: 0, im: 0 };
+      entry[venue] += Math.max(0, asInt(amount, 0));
+      map.set(itemId, entry);
+    };
+    let known = false;
+    try {
+      normalizeOwnBazaar(await api.ownBazaar({ priority: 90 })).forEach((row) => add(row.itemId, "bazaar", row.amount));
+      known = true;
+    } catch (error) {
+      if (!error?.marketEdgeCanceled) log("Bazaar holdings unavailable", error.message);
+    }
+    const keyInfo = Store.keyInfo()?.info || null;
+    const imAllowed = keySupports(keyInfo, { section: "user", selection: "itemmarket", minimumType: "Limited Access" });
+    if (imAllowed !== false && !sellHoldingsImDenied) {
+      try {
+        normalizeOwnListings(await api.ownListings({ priority: 90 })).filter((row) => !row.equipment).forEach((row) => add(row.itemId, "im", row.available || row.amount));
+        known = true;
+      } catch (error) {
+        if (asInt(error?.tornCode, 0) === 16) sellHoldingsImDenied = true;
+        if (!error?.marketEdgeCanceled) log("Item Market holdings unavailable", error.message);
+      }
+    }
+    return known ? map : null;
   }
 
   async function renderOwnListingsPanel({ force = false } = {}) {

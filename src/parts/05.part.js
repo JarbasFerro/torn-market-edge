@@ -155,6 +155,8 @@
         ${settingsSectionHtml("Selling", "undercut, fees, routes", `
           <div class="me-form-grid">
             ${f("itemMarketUndercut", "Undercut the cheapest listing by ($)", { min: 0, step: 1, help: "Fill buttons write the cheapest Item Market price minus this amount." })}
+            ${f("paceToTrips", "Pace prices to my trips", { type: "checkbox", help: "With one trip's worth or less listed and in hand, fills use the floor minus the undercut. With more, the price moves down toward the conservative anchor (capped by Torn's daily average of real sales), reaching it at three trips, so a big stack sells instead of waiting. Abroad, the resale price follows the same rule." })}
+            ${f("tripUnits", "Units per trip (0 = the capacity seen abroad)", { min: 0, max: 1000, step: 1 })}
             ${f("anonymousListing", "I list anonymously on the Item Market (+10% fee)", { type: "checkbox" })}
             ${f("anonymousFeeWaived", "Anonymous fee waived by a 5-star company perk", { type: "checkbox" })}
             ${f("bazaarEnabled", "Consider the Bazaar as an exit route", { type: "checkbox" })}

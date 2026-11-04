@@ -6,6 +6,17 @@ The project uses semantic-style version numbers for public userscript releases.
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-11-04
+
+### Added
+
+- **Prices paced to your trips.** Market Edge now counts what you already hold of an item: your Bazaar (public key) and your Item Market listings (Limited key), plus the units on the row you are adding. With one trip's worth or less, fills stay at the Item Market floor minus your undercut. With more, the price moves down toward the conservative anchor, which is capped by Torn's daily average of real purchases. It is halfway at two trips and the anchor itself from three trips, so a 112-unit stack sells instead of waiting behind fresh undercuts. The strip says why, for example "87 held (3.1 trips) · at anchor".
+- **Settings → Selling: "Pace prices to my trips"** (on by default) and **"Units per trip"**. 0 uses the trip capacity Market Edge last read on an abroad shop page ("purchased 0 / 28"), else the travel capacity setting.
+
+### Changed
+
+- **Abroad resale follows the same rule.** Each abroad row's resale price is what Market Edge would fill in your Bazaar once this trip's units join what you hold. With no backlog that is the floor minus your undercut (it used to be the anchor), and an item you already hold three trips of drops to the anchor. The best-trip plan therefore steers you to the item you hold least of. Unlisted units in your inventory are not counted.
+
 ## [0.7.1] - 2026-11-04
 
 ### Fixed
